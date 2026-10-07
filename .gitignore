@@ -1,0 +1,9 @@
+bin/
+obj/
+.fire-off/
+TestResults/
+*.nupkg
+*.snupkg
+.vs/
+.idea/
+.mutate4csharp/

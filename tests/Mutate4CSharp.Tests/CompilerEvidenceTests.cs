@@ -1,0 +1,100 @@
+namespace Mutate4CSharp.Tests;
+
+public sealed class CompilerEvidenceTests
+{
+    [Fact]
+    public void RequiresAttributableDiagnosticAndHealthySameInputControl()
+    {
+        var mutated = Run(1, "src/Subject.cs(4,12): error CS0019: Operator cannot be applied");
+        var healthyControl = Run(0, string.Empty, discovered: true, valid: true);
+
+        var evidence = CompilerEvidence.Evaluate(mutated, healthyControl, "src/Subject.cs", Environment.CurrentDirectory);
+
+        Assert.True(evidence.IsCompileInvalid);
+        Assert.Single(evidence.Diagnostics);
+        Assert.Contains("CS0019", evidence.Diagnostics[0]);
+    }
+
+    [Theory]
+    [InlineData("Build FAILED. The build failed.")]
+    [InlineData("restore error: package CS1002 was not found")]
+    [InlineData("warning: saw the text : error CS1002 without a file diagnostic")]
+    public void MereCompilerLookingTextCannotExcludeAUnit(string output)
+    {
+        var evidence = CompilerEvidence.Evaluate(Run(1, output), Run(0, string.Empty, true, true),
+            "src/Subject.cs", Environment.CurrentDirectory);
+
+        Assert.False(evidence.IsCompileInvalid);
+    }
+
+    [Fact]
+    public void UnhealthyControlCannotProveCompileInvalid()
+    {
+        var mutated = Run(1, "src/Subject.cs(1,1): error CS1002: ; expected");
+        var control = Run(1, "host failed");
+
+        Assert.False(CompilerEvidence.Evaluate(mutated, control, "src/Subject.cs",
+            Environment.CurrentDirectory).IsCompileInvalid);
+    }
+
+    [Fact]
+    public void DiagnosticsAreBoundedAndSanitized()
+    {
+        var output = string.Join('\n', Enumerable.Range(0, 100).Select(i => $"src/Subject.cs({i + 1},1): error CS1002: secret-{i}"));
+        var evidence = CompilerEvidence.Evaluate(Run(1, output), Run(0, string.Empty, true, true),
+            "src/Subject.cs", Environment.CurrentDirectory);
+
+        Assert.InRange(evidence.Diagnostics.Count, 1, CompilerEvidence.MaxDiagnostics);
+        Assert.All(evidence.Diagnostics, diagnostic => Assert.True(diagnostic.Length <= CompilerEvidence.MaxDiagnosticLength));
+    }
+
+    [Fact]
+    public void TrxHostErrorAlongsideFailedTestIsNotCleanKillEvidence()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "mutate4csharp-trx", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "results.trx"), """
+<TestRun><Results><UnitTestResult testName="Suite.Fails" outcome="Failed" /></Results>
+<ResultSummary outcome="Failed"><Counters total="1" executed="1" passed="0" failed="1" />
+<Output><ErrorInfo><Message>test host crashed</Message></ErrorInfo></Output></ResultSummary></TestRun>
+""");
+            var evidence = TestRunner.AnalyzeTrx(directory);
+
+            Assert.True(evidence.Valid);
+            Assert.True(evidence.HasRunErrors);
+            Assert.Contains("Suite.Fails", evidence.FailedTestIds);
+            Assert.False(StrictTestEvidence.IsCleanKill(evidence));
+            var legacy = new TestRunResult(1, TimeSpan.Zero, false, true, true, evidence.Valid,
+                string.Empty, string.Empty, evidence.Paths, evidence.HasRunErrors,
+                evidence.FailedTestIds, evidence.Diagnostics);
+            Assert.Equal(MutantStatus.Killed, MutationExecutor.Classify(legacy));
+        }
+        finally { try { Directory.Delete(directory, true); } catch { } }
+    }
+
+    [Fact]
+    public void WindowsDiagnosticUsesExactFullPathAttribution()
+    {
+        var control = Run(0, string.Empty, true, true);
+        var exact = Run(1, @"C:\repo\src\Subject.cs(4,12): error CS0019: bad operator");
+        var wrongDirectory = Run(1, @"C:\repo\other\Subject.cs(4,12): error CS0019: bad operator");
+
+        Assert.True(CompilerEvidence.Evaluate(exact, control, @"C:\repo\src\Subject.cs", @"C:\repo").IsCompileInvalid);
+        Assert.False(CompilerEvidence.Evaluate(wrongDirectory, control, @"C:\repo\src\Subject.cs", @"C:\repo").IsCompileInvalid);
+    }
+
+    [Fact]
+    public void SuccessfulMutantCannotBeCompileInvalidFromConsoleText()
+    {
+        var successfulMutant = Run(0, "src/Subject.cs(1,1): error CS1002: printed text", true, true);
+        var control = Run(0, string.Empty, true, true);
+
+        Assert.False(CompilerEvidence.Evaluate(successfulMutant, control, "src/Subject.cs",
+            Environment.CurrentDirectory).IsCompileInvalid);
+    }
+
+    private static TestRunResult Run(int exit, string output, bool discovered = false, bool valid = false) =>
+        new(exit, TimeSpan.Zero, false, discovered, false, valid, output, string.Empty, []);
+}

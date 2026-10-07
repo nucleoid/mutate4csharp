@@ -1,0 +1,87 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.103
+      - run: dotnet build mutate4csharp.slnx -m:1
+      - name: round-ten-contract-regressions
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~IssueEightReviewRoundTenTests" -- xUnit.MaxParallelThreads=1
+      - run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests" -- xUnit.MaxParallelThreads=1
+      - name: isolated-local-package
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORKSPACE="${RUNNER_TEMP}/mutate4csharp-package-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          RECEIPT="${WORKSPACE}.receipt.tsv"
+          scripts/agent-gate.sh prepare "$GITHUB_WORKSPACE" "$WORKSPACE" "$RECEIPT" | tee "${WORKSPACE}.prepare.txt"
+          echo "MUTATE4CSHARP_PACKED_FEED=${WORKSPACE}/feed" >> "$GITHUB_ENV"
+      - name: local-tool-workflow
+        if: runner.os == 'Linux'
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~ToolPackagingIntegrationTests" -- xUnit.MaxParallelThreads=1
+      - name: round-seven-shipped-workflow
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORKSPACE="${RUNNER_TEMP}/mutate4csharp-round-seven-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          RECEIPT="${WORKSPACE}.receipt.tsv"
+          PREPARE_OUTPUT="${WORKSPACE}.prepare.txt"
+          CONSUMER="${RUNNER_TEMP}/mutate4csharp-consumer-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          scripts/agent-gate.sh prepare "$GITHUB_WORKSPACE" "$WORKSPACE" "$RECEIPT" | tee "$PREPARE_OUTPUT"
+          PACKAGE_SHA256=$(awk -F= '$1 == "PACKAGE_SHA256" { print $2 }' "$PREPARE_OUTPUT")
+          PAYLOAD_SHA256=$(awk -F= '$1 == "PAYLOAD_SHA256" { print $2 }' "$PREPARE_OUTPUT")
+          TOOL_SOURCE_COMMIT=$(awk -F= '$1 == "TOOL_SOURCE_COMMIT" { print $2 }' "$PREPARE_OUTPUT")
+          mkdir "$CONSUMER"
+          cp -R examples/agent-gate/. "$CONSUMER/"
+          git -C "$CONSUMER" init --quiet
+          git -C "$CONSUMER" config user.email fixture@example.invalid
+          git -C "$CONSUMER" config user.name fixture
+          git -C "$CONSUMER" add .
+          git -C "$CONSUMER" commit --quiet -m fixture
+          TASK_START=$(git -C "$CONSUMER" rev-parse HEAD)
+          EXPECTED_TARGET_HEAD=$TASK_START
+          printf '\n' >> "$CONSUMER/src/Example/Flag.cs"
+          scripts/agent-gate.sh verify-example "$CONSUMER" "$RECEIPT" "$PACKAGE_SHA256" "$PAYLOAD_SHA256" "$TOOL_SOURCE_COMMIT" "$TASK_START" "$EXPECTED_TARGET_HEAD" "${WORKSPACE}.reports"
+          set +e
+          scripts/agent-gate.sh gate "$CONSUMER" "$RECEIPT" "$PACKAGE_SHA256" "$PAYLOAD_SHA256" "$TOOL_SOURCE_COMMIT" "$TASK_START" "$EXPECTED_TARGET_HEAD" "${WORKSPACE}.direct.json" no-state
+          GATE_EXIT=$?
+          set -e
+          test "$GATE_EXIT" -eq 4
+          FORGED_RECEIPT="${WORKSPACE}.forged.tsv"
+          cp "$RECEIPT" "$FORGED_RECEIPT"
+          printf 'tool_command\t/bin/true\n' >> "$FORGED_RECEIPT"
+          ! scripts/agent-gate.sh gate "$CONSUMER" "$FORGED_RECEIPT" "$PACKAGE_SHA256" "$PAYLOAD_SHA256" "$TOOL_SOURCE_COMMIT" "$TASK_START" "$EXPECTED_TARGET_HEAD" "${WORKSPACE}.forged.json" no-state 2>"${WORKSPACE}.forged.log"
+          grep -F 'receipt contains unknown key: tool_command' "${WORKSPACE}.forged.log"
+          ! scripts/agent-gate.sh gate "$CONSUMER" "$RECEIPT" "$(printf '0%.0s' {1..64})" "$PAYLOAD_SHA256" "$TOOL_SOURCE_COMMIT" "$TASK_START" "$EXPECTED_TARGET_HEAD" "${WORKSPACE}.drift.json" no-state 2>"${WORKSPACE}.drift.log"
+          grep -F 'package SHA256 mismatch' "${WORKSPACE}.drift.log"
+          ln -s mutate4csharp "$WORKSPACE/tool/payload-link"
+          ! scripts/agent-gate.sh gate "$CONSUMER" "$RECEIPT" "$PACKAGE_SHA256" "$PAYLOAD_SHA256" "$TOOL_SOURCE_COMMIT" "$TASK_START" "$EXPECTED_TARGET_HEAD" "${WORKSPACE}.symlink.json" no-state 2>"${WORKSPACE}.symlink.log"
+          grep -F 'payload contains a symbolic link' "${WORKSPACE}.symlink.log"
+          unlink "$WORKSPACE/tool/payload-link"
+          DUPLICATE_RECEIPT="${WORKSPACE}.duplicate.tsv"
+          cp "$RECEIPT" "$DUPLICATE_RECEIPT"
+          printf 'format\tmutate4csharp-agent-gate-v1\n' >> "$DUPLICATE_RECEIPT"
+          ! scripts/agent-gate.sh gate "$CONSUMER" "$DUPLICATE_RECEIPT" "$PACKAGE_SHA256" "$PAYLOAD_SHA256" "$TOOL_SOURCE_COMMIT" "$TASK_START" "$EXPECTED_TARGET_HEAD" "${WORKSPACE}.duplicate.json" no-state 2>"${WORKSPACE}.duplicate.log"
+          grep -F 'duplicate receipt key' "${WORKSPACE}.duplicate.log"
+          ! scripts/agent-gate.sh gate "$CONSUMER" "$RECEIPT" "$PACKAGE_SHA256" "$PAYLOAD_SHA256" "$TOOL_SOURCE_COMMIT" "$TASK_START" "$EXPECTED_TARGET_HEAD" "$CONSUMER/internal-report.json" no-state 2>"${WORKSPACE}.internal.log"
+          grep -F 'report must remain outside the target repository' "${WORKSPACE}.internal.log"
+          git -C "$CONSUMER" add src/Example/Flag.cs
+          git -C "$CONSUMER" commit --quiet -m changed-head
+          ! scripts/agent-gate.sh gate "$CONSUMER" "$RECEIPT" "$PACKAGE_SHA256" "$PAYLOAD_SHA256" "$TOOL_SOURCE_COMMIT" "$TASK_START" "$EXPECTED_TARGET_HEAD" "${WORKSPACE}.head.json" no-state 2>"${WORKSPACE}.head.log"
+          grep -F 'target repository HEAD changed from its approved current commit' "${WORKSPACE}.head.log"

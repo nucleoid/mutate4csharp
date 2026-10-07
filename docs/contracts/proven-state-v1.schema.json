@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mutate4csharp.dev/contracts/proven-state-v1.schema.json",
+  "title": "mutate4csharp proven evaluation state v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recordKind", "runId", "generatedAtUtc", "evaluationFingerprint", "snapshotId", "reportSha256", "reportLength", "policyComplete", "coverage", "counts"],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "recordKind": { "const": "PROVEN" },
+    "runId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "generatedAtUtc": { "type": "string", "format": "date-time" },
+    "evaluationFingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "snapshotId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reportSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reportLength": { "type": "integer", "minimum": 1 },
+    "policyComplete": { "const": true },
+    "coverage": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/coverage" }
+    },
+    "counts": {
+      "allOf": [
+        { "$ref": "evaluation-report-v1.schema.json#/$defs/counts" },
+        { "properties": {
+          "enumerated": { "type": "integer", "minimum": 1 },
+          "selected": { "type": "integer", "minimum": 1 },
+          "executed": { "type": "integer", "minimum": 1 },
+          "freshUncovered": { "const": 0 },
+          "omitted": { "const": 0 },
+          "survived": { "const": 0 },
+          "errors": { "const": 0 }
+        } }
+      ]
+    }
+  },
+  "$defs": {
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "runId", "suiteId", "evaluationFingerprint", "snapshotId", "baseline", "coverageReportSha256", "coverageReportLength", "pathMapVersion", "runnerIdentity", "collectedFresh"],
+      "properties": {
+        "schemaVersion": { "const": "1" },
+        "runId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "suiteId": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "evaluationFingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "snapshotId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "baseline": { "const": "GREEN" },
+        "coverageReportSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "coverageReportLength": { "type": "integer", "minimum": 1 },
+        "pathMapVersion": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "runnerIdentity": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "collectedFresh": { "const": true }
+      }
+    }
+  }
+}

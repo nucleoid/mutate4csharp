@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "id": "example",
+      "project": "src/Example/Example.csproj",
+      "targetFramework": "net10.0",
+      "parseContext": "net10-csharp14",
+      "sources": ["src/Example/**/*.cs"],
+      "testSuites": ["example-tests"]
+    }
+  ],
+  "testSuites": [
+    {
+      "id": "example-tests",
+      "path": "tests/Example.Tests/Example.Tests.csproj",
+      "runner": "vstest",
+      "framework": "net10.0",
+      "configuration": "Release",
+      "expectedMembers": ["Example.Tests.dll"]
+    }
+  ],
+  "policy": {
+    "maxWorkers": 1,
+    "mutationCap": 100,
+    "baselineTimeoutSeconds": 600,
+    "mutantTimeoutSeconds": 120,
+    "overallDeadlineSeconds": 1800,
+    "allowNotApplicable": false,
+    "stabilityRepetitions": 1
+  }
+}

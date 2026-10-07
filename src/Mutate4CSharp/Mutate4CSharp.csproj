@@ -1,0 +1,125 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>mutate4csharp</ToolCommandName>
+    <PackageId>mutate4csharp</PackageId>
+    <Version>0.1.0-local.development</Version>
+    <Authors>mutate4csharp contributors</Authors>
+    <Description>C# mutation-testing CLI with isolated repository execution and deterministic, Git-aware multi-file agent evaluation.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/nucleoid/mutate4csharp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/nucleoid/mutate4csharp</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <NoDefaultExcludes>true</NoDefaultExcludes>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <InformationalVersion Condition="'$(SourceRevisionId)' != ''">$(Version)+$(SourceRevisionId)</InformationalVersion>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode>true</RestoreLockedMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Mutate4CSharp.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <None Include="../../ATTRIBUTION.md" Pack="true" PackagePath="/" />
+    <None Include="../../NuGet.Config" Pack="true" PackagePath="/" />
+    <None Include="../../NuGet.local.config" Pack="true" PackagePath="/" />
+    <None Include="../../docs/agent-workflow.md" Pack="true" PackagePath="docs/" />
+    <None Include="../../docs/change-scope.md" Pack="true" PackagePath="docs/" />
+    <None Include="../../docs/check-configuration.md" Pack="true" PackagePath="docs/" />
+    <None Include="../../docs/evaluation-contract.md" Pack="true" PackagePath="docs/" />
+    <None Include="../../docs/reproducibility.md" Pack="true" PackagePath="docs/" />
+    <None Include="../../docs/sidecar-state.md" Pack="true" PackagePath="docs/" />
+    <None Include="../../docs/snapshot-inputs.md" Pack="true" PackagePath="docs/" />
+    <None Include="../../docs/supported-matrix.md" Pack="true" PackagePath="docs/" />
+    <None Include="../../scripts/agent-gate.sh" Pack="true" PackagePath="scripts/" />
+    <None Include="../../docs/contracts/check-config-v1.schema.json" Pack="true" PackagePath="docs/contracts/" />
+    <None Include="../../docs/contracts/discovery-state-v1.schema.json" Pack="true" PackagePath="docs/contracts/" />
+    <None Include="../../docs/contracts/evaluation-report-v1.schema.json" Pack="true" PackagePath="docs/contracts/" />
+    <None Include="../../docs/contracts/proven-state-v1.schema.json" Pack="true" PackagePath="docs/contracts/" />
+    <None Include="../../examples/agent-gate/NuGet.Config" Pack="true" PackagePath="examples/agent-gate/" />
+    <None Include="../../examples/agent-gate/.gitignore" Pack="true" PackagePath="examples/agent-gate/" />
+    <None Include="../../examples/agent-gate/mutate4csharp.json" Pack="true" PackagePath="examples/agent-gate/" />
+    <None Include="../../examples/agent-gate/src/Example/Example.csproj" Pack="true" PackagePath="examples/agent-gate/src/Example/" />
+    <None Include="../../examples/agent-gate/src/Example/Flag.cs" Pack="true" PackagePath="examples/agent-gate/src/Example/" />
+    <None Include="../../examples/agent-gate/src/Example/packages.lock.json" Pack="true" PackagePath="examples/agent-gate/src/Example/" />
+    <None Include="../../examples/agent-gate/tests/Example.Tests/Example.Tests.csproj" Pack="true" PackagePath="examples/agent-gate/tests/Example.Tests/" />
+    <None Include="../../examples/agent-gate/tests/Example.Tests/FlagTests.cs" Pack="true" PackagePath="examples/agent-gate/tests/Example.Tests/" />
+    <None Include="../../examples/agent-gate/tests/Example.Tests/packages.lock.json" Pack="true" PackagePath="examples/agent-gate/tests/Example.Tests/" />
+  </ItemGroup>
+  <Target Name="ValidateLocalCandidateIdentity" BeforeTargets="GenerateNuspec;Pack">
+    <PropertyGroup>
+      <_PackRepositoryRoot>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../..'))</_PackRepositoryRoot>
+      <_PackExtensionsRelative Condition="'$(MSBuildProjectExtensionsPath)' != ''">$([System.IO.Path]::GetRelativePath('$(_PackRepositoryRoot)', '$([System.IO.Path]::GetFullPath($(MSBuildProjectExtensionsPath)))'))</_PackExtensionsRelative>
+      <_PackIntermediateRelative Condition="'$(BaseIntermediateOutputPath)' != ''">$([System.IO.Path]::GetRelativePath('$(_PackRepositoryRoot)', '$([System.IO.Path]::GetFullPath($(BaseIntermediateOutputPath)))'))</_PackIntermediateRelative>
+      <_PackBaseOutputRelative Condition="'$(BaseOutputPath)' != ''">$([System.IO.Path]::GetRelativePath('$(_PackRepositoryRoot)', '$([System.IO.Path]::GetFullPath($(BaseOutputPath)))'))</_PackBaseOutputRelative>
+      <_PackOutputRelative Condition="'$(OutputPath)' != ''">$([System.IO.Path]::GetRelativePath('$(_PackRepositoryRoot)', '$([System.IO.Path]::GetFullPath($(OutputPath)))'))</_PackOutputRelative>
+      <_PackPackageRelative Condition="'$(PackageOutputPath)' != ''">$([System.IO.Path]::GetRelativePath('$(_PackRepositoryRoot)', '$([System.IO.Path]::GetFullPath($(PackageOutputPath)))'))</_PackPackageRelative>
+      <_PackPropsRelative Condition="'$(DirectoryBuildPropsPath)' != ''">$([System.IO.Path]::GetRelativePath('$(_PackRepositoryRoot)', '$([System.IO.Path]::GetFullPath($(DirectoryBuildPropsPath)))'))</_PackPropsRelative>
+      <_PackTargetsRelative Condition="'$(DirectoryBuildTargetsPath)' != ''">$([System.IO.Path]::GetRelativePath('$(_PackRepositoryRoot)', '$([System.IO.Path]::GetFullPath($(DirectoryBuildTargetsPath)))'))</_PackTargetsRelative>
+      <_PackUserExtensionsRelative Condition="'$(MSBuildUserExtensionsPath)' != ''">$([System.IO.Path]::GetRelativePath('$(_PackRepositoryRoot)', '$([System.IO.Path]::GetFullPath($(MSBuildUserExtensionsPath)))'))</_PackUserExtensionsRelative>
+    </PropertyGroup>
+    <Error Condition="'$(Mutate4CSharpPackIsolation)' != 'true'"
+           Text="Direct pack is fail closed. Use scripts/agent-gate.sh prepare or supply the complete documented isolation contract." />
+    <Error Condition="'$(ImportDirectoryBuildProps)' != 'false' Or '$(ImportDirectoryBuildTargets)' != 'false' Or '$(ImportDirectoryPackagesProps)' != 'false'"
+           Text="Pack isolation must disable ancestor Directory.Build and Directory.Packages imports." />
+    <Error Condition="'$(MSBuildProjectExtensionsPath)' == '' Or '$(BaseIntermediateOutputPath)' == '' Or '$(BaseOutputPath)' == ''"
+           Text="Pack isolation requires explicit external intermediate and output paths." />
+    <Error Condition="'$(OutputPath)' == '' Or '$(PackageOutputPath)' == '' Or '$(DirectoryBuildPropsPath)' == '' Or '$(DirectoryBuildTargetsPath)' == '' Or '$(MSBuildUserExtensionsPath)' == ''"
+           Text="Pack isolation requires explicit external output, neutral Directory.Build, and user-extension paths." />
+    <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(_PackExtensionsRelative)|$(_PackIntermediateRelative)|$(_PackBaseOutputRelative)|$(_PackOutputRelative)|$(_PackPackageRelative)|$(_PackPropsRelative)|$(_PackTargetsRelative)|$(_PackUserExtensionsRelative)', '^(\.\.[/\\][^|]*\|){7}\.\.[/\\]'))"
+           Text="All pack intermediate, output, package, props, targets, and user-extension paths must remain outside the source repository." />
+    <Error Condition="'$(CustomBeforeMicrosoftCommonProps)' != '' Or '$(CustomAfterMicrosoftCommonProps)' != '' Or '$(CustomBeforeMicrosoftCommonTargets)' != '' Or '$(CustomAfterMicrosoftCommonTargets)' != ''"
+           Text="Pack isolation must scrub CustomBefore/After MicrosoftCommon props and targets." />
+    <Error Condition="'$(CustomBeforeMicrosoftCSharpTargets)' != '' Or '$(CustomAfterMicrosoftCSharpTargets)' != ''"
+           Text="Pack isolation must scrub CustomBefore/After MicrosoftCSharp targets." />
+    <Error Condition="'$(ImportUserLocationsByWildcardBeforeMicrosoftCommonProps)' != 'false' Or '$(ImportUserLocationsByWildcardAfterMicrosoftCommonProps)' != 'false' Or '$(ImportUserLocationsByWildcardBeforeMicrosoftCommonTargets)' != 'false' Or '$(ImportUserLocationsByWildcardAfterMicrosoftCommonTargets)' != 'false' Or '$(ImportUserLocationsByWildcardBeforeMicrosoftCSharpTargets)' != 'false' Or '$(ImportUserLocationsByWildcardAfterMicrosoftCSharpTargets)' != 'false'"
+           Text="Pack isolation must disable user-location wildcard imports." />
+    <Error Condition="'$(Mutate4CSharpNoAutoResponse)' != 'true'"
+           Text="Pack isolation requires the -noAutoResponse invocation contract; response-file discovery is not supported." />
+    <Error Condition="'$(SourceRevisionId)' == ''" Text="Pack requires SourceRevisionId for fail-closed local candidate identity." />
+    <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(SourceRevisionId)', '^[0-9a-f]{40}$'))"
+           Text="SourceRevisionId must be a lowercase full Git commit." />
+    <Error Condition="'$(Version)' != '0.1.0-local.$(SourceRevisionId)'"
+           Text="Package version must be 0.1.0-local.&lt;full-SourceRevisionId&gt;." />
+    <Exec Command="git -C &quot;$(MSBuildProjectDirectory)&quot; rev-parse --show-prefix"
+          ConsoleToMSBuild="true" IgnoreStandardErrorWarningFormat="true">
+      <Output TaskParameter="ConsoleOutput" ItemName="_RepositoryPrefixOutput" />
+    </Exec>
+    <Error Condition="'@(_RepositoryPrefixOutput)' != 'src/Mutate4CSharp/'"
+           Text="Pack requires the project to belong to its expected Git-relative repository location." />
+    <Exec Command="git -C &quot;$(MSBuildProjectDirectory)&quot; rev-parse HEAD"
+          ConsoleToMSBuild="true" IgnoreStandardErrorWarningFormat="true">
+      <Output TaskParameter="ConsoleOutput" ItemName="_RepositoryHeadOutput" />
+    </Exec>
+    <Error Condition="'@(_RepositoryHeadOutput)' != '$(SourceRevisionId)'"
+           Text="SourceRevisionId must equal the actual repository HEAD." />
+    <Exec Command="git -C &quot;$(MSBuildProjectDirectory)&quot; status --porcelain=v1 --untracked-files=all"
+          ConsoleToMSBuild="true" IgnoreStandardErrorWarningFormat="true">
+      <Output TaskParameter="ConsoleOutput" ItemName="_RepositoryStatusOutput" />
+    </Exec>
+    <Error Condition="'@(_RepositoryStatusOutput)' != ''"
+           Text="Pack requires a clean repository index and worktree, including no untracked files." />
+    <Exec Command="git -C &quot;$(MSBuildProjectDirectory)&quot; ls-files --others --ignored --exclude-standard -- . &quot;:(exclude)bin/**&quot; &quot;:(exclude)obj/**&quot;"
+          ConsoleToMSBuild="true" IgnoreStandardErrorWarningFormat="true">
+      <Output TaskParameter="ConsoleOutput" ItemName="_IgnoredProjectInputOutput" />
+    </Exec>
+    <Error Condition="'@(_IgnoredProjectInputOutput)' != ''"
+           Text="Pack refuses ignored project inputs outside bin/obj because SDK globs could consume them." />
+    <Exec Command="git -C &quot;$(MSBuildProjectDirectory)&quot; ls-files --others --ignored --exclude-standard -- &quot;:(top,glob)**/Directory.Build.props&quot; &quot;:(top,glob)**/Directory.Build.targets&quot; &quot;:(top,glob)**/Directory.Packages.props&quot; &quot;:(top,glob)**/Directory.Build.rsp&quot; &quot;:(top,glob)**/MSBuild.rsp&quot; &quot;:(top,icase,glob)**/NuGet.Config&quot; &quot;:(top,glob)**/.editorconfig&quot; &quot;:(top,glob)**/.globalconfig&quot; &quot;:(top,glob)**/global.json&quot; &quot;:(top,glob)**/obj/Mutate4CSharp.csproj.*.props&quot; &quot;:(top,glob)**/obj/Mutate4CSharp.csproj.*.targets&quot; &quot;:(top,exclude,glob)**/obj/*.nuget.g.props&quot; &quot;:(top,exclude,glob)**/obj/*.nuget.g.targets&quot;"
+          ConsoleToMSBuild="true" IgnoreStandardErrorWarningFormat="true">
+      <Output TaskParameter="ConsoleOutput" ItemName="_IgnoredBuildControlInputOutput" />
+    </Exec>
+    <Error Condition="'@(_IgnoredBuildControlInputOutput)' != ''"
+           Text="Pack refuses ignored MSBuild, NuGet, editorconfig, SDK-selection, or project-extension inputs anywhere in the repository." />
+  </Target>
+</Project>

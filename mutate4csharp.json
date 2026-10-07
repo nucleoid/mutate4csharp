@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "id": "mutate4csharp",
+      "project": "src/Mutate4CSharp/Mutate4CSharp.csproj",
+      "targetFramework": "net10.0",
+      "parseContext": "net10-csharp14",
+      "sources": [
+        "src/Mutate4CSharp/**/*.cs"
+      ],
+      "testSuites": [
+        "unit"
+      ]
+    }
+  ],
+  "testSuites": [
+    {
+      "id": "unit",
+      "path": "tests/Mutate4CSharp.Tests/Mutate4CSharp.Tests.csproj",
+      "runner": "vstest",
+      "framework": "net10.0",
+      "configuration": "Release",
+      "expectedMembers": [
+        "Mutate4CSharp.Tests.dll"
+      ]
+    }
+  ],
+  "exclusions": [
+    {
+      "path": "**/*.g.cs",
+      "reason": "generated source"
+    }
+  ],
+  "policy": {
+    "maxWorkers": 1,
+    "mutationCap": 100,
+    "baselineTimeoutSeconds": 600,
+    "mutantTimeoutSeconds": 120,
+    "overallDeadlineSeconds": 1800,
+    "allowNotApplicable": false,
+    "stabilityRepetitions": 1
+  }
+}

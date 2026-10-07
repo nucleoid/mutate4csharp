@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/Mutate4CSharp/Mutate4CSharp.csproj" />
+  <Project Path="tests/Mutate4CSharp.Tests/Mutate4CSharp.Tests.csproj" />
+</Solution>
