@@ -231,6 +231,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         var targetedReport = Path.Combine(_directory, "targeted-plan.json");
         var staleReport = Path.Combine(_directory, "stale-targeted-plan.json");
         var manyIdsReport = Path.Combine(_directory, "many-targeted-ids.json");
+        var invalidatedReport = Path.Combine(_directory, "invalidated-targeted-plan.json");
         var previous = Environment.CurrentDirectory;
         Environment.CurrentDirectory = repository.Root;
         try
@@ -277,6 +278,31 @@ public sealed class StrictCheckIntegrationTests : IDisposable
             Assert.True(manyEvidence.Diagnostics!.Count <= EvaluationEvidence.MaxDiagnostics);
             Assert.Contains(manyEvidence.Diagnostics,
                 item => item == "ids-truncated=8");
+
+            var validationPass = 0;
+            var captureOptions = SnapshotCaptureOptions.Default with
+            {
+                Hook = (stage, relativePath) =>
+                {
+                    if (stage != SnapshotCaptureStage.BeforeOriginalFileHashed ||
+                        relativePath != "src/App/Flag.cs" || ++validationPass != 2) return;
+                    repository.WriteText("src/App/Flag.cs",
+                        $"public sealed class Flag {{ {changedMembers.Replace("=> 1;", "=> 2;", StringComparison.Ordinal)} }}\n");
+                }
+            };
+            var invalidated = await new EvaluationCoordinator(captureOptions).RunAsync(new(false, "HEAD", [],
+                invalidatedReport, "invalidated-targeted-plan", MutationIds: [mutation],
+                PlanFingerprint: planFingerprint), CancellationToken.None);
+            Assert.Contains(invalidated.Report.IncompleteConditions,
+                reason => reason.Code == "SNAPSHOT_DIVERGED");
+            Assert.Contains(invalidated.Report.IncompleteConditions,
+                reason => reason.Code == "EXACT_ID_RERUN_UNAVAILABLE");
+            Assert.Empty(invalidated.Report.Units);
+            var invalidatedExact = Assert.Single(invalidated.Report.Evidence,
+                item => item.Kind == "EXACT_ID_REQUEST");
+            Assert.StartsWith("Refused", invalidatedExact.Summary, StringComparison.Ordinal);
+            Assert.DoesNotContain(invalidatedExact.Diagnostics ?? [],
+                item => item.StartsWith("executed=", StringComparison.Ordinal));
         }
         finally { Environment.CurrentDirectory = previous; }
     }
