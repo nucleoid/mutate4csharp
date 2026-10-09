@@ -9,11 +9,23 @@ namespace Mutate4CSharp;
 internal sealed record StrictMutationEnumerationResult(
     IReadOnlyList<MutationCandidate> Candidates,
     IReadOnlyList<EvaluationReason> Reasons,
-    bool IsComplete);
+    bool IsComplete,
+    string? SemanticContextIdentity);
 
 internal static class StrictMutationEnumerator
 {
     private const int MaxDiagnostics = 100;
+    private static readonly Lazy<ReferenceSet> ReferenceSetCache = new(CreatePlatformReferences,
+        LazyThreadSafetyMode.ExecutionAndPublication);
+    private const string ImplicitUsingsSource = """
+        global using global::System;
+        global using global::System.Collections.Generic;
+        global using global::System.IO;
+        global using global::System.Linq;
+        global using global::System.Net.Http;
+        global using global::System.Threading;
+        global using global::System.Threading.Tasks;
+        """;
 
     public static StrictMutationEnumerationResult Enumerate(InputSnapshot snapshot,
         CheckConfiguration configuration, ScopePlan scopePlan, CancellationToken cancellationToken)
@@ -37,6 +49,7 @@ internal static class StrictMutationEnumerator
             var projects = configuration.Projects.ToDictionary(project => project.Project,
                 StringComparer.Ordinal);
             var candidates = new List<MutationCandidate>();
+            var contextIdentities = new List<(string Project, string Identity)>();
             foreach (var unit in scopePlan.ProjectUnits.OrderBy(unit => unit.Project,
                          StringComparer.Ordinal))
             {
@@ -44,8 +57,9 @@ internal static class StrictMutationEnumerator
                 if (!projects.TryGetValue(unit.Project, out var project))
                     return Refused("ENUMERATION_PROJECT_UNMAPPED",
                         $"Scope project {unit.Project} has no exact strict configuration context.");
-                var context = BuildContext(snapshot, captured, project, configuration.Exclusions,
+                var context = BuildContext(snapshot, captured, project, configuration,
                     cancellationToken);
+                contextIdentities.Add((project.Project, context.Identity));
                 var targetPaths = SelectTargetPaths(unit, scopePlan, context.SourcePaths)
                     .Where(path => !context.ExcludedPaths.Contains(path)).ToArray();
                 foreach (var path in targetPaths)
@@ -63,8 +77,16 @@ internal static class StrictMutationEnumerator
                         if (file is null)
                             return Refused("ENUMERATION_SCOPE_STALE",
                                 $"Changed-declaration source {path} has no captured declaration plan.");
-                        var spans = DeclarationCatalog.ResolveSelectionSpans(path,
-                            context.Sources[path], file.Declarations.Select(item => item.Id).ToArray());
+                        IReadOnlyList<TextSpan> spans;
+                        try
+                        {
+                            spans = DeclarationCatalog.ResolveSelectionSpans(path,
+                                context.Sources[path], file.Declarations.Select(item => item.Id).ToArray());
+                        }
+                        catch (EvaluationContractException ex)
+                        {
+                            return Refused("ENUMERATION_SCOPE_STALE", ex.Message);
+                        }
                         sites = sites.Where(site => spans.Any(span => span.Contains(
                             new Microsoft.CodeAnalysis.Text.TextSpan(site.Start, site.Length)))).ToArray();
                     }
@@ -86,16 +108,23 @@ internal static class StrictMutationEnumerator
                 }
             }
 
-            foreach (var group in candidates.GroupBy(candidate =>
-                         (candidate.ProjectPath, candidate.TargetFramework, candidate.ParseContext)))
-                MutationIdentity.RefuseCollisions(group.Select(candidate => new IdentifiedMutation(
-                    candidate.MutationId, candidate.Material, candidate.SourceStart, candidate.SourceLength)));
+            try
+            {
+                foreach (var group in candidates.GroupBy(candidate =>
+                             (candidate.ProjectPath, candidate.TargetFramework, candidate.ParseContext)))
+                    MutationIdentity.RefuseCollisions(group.Select(candidate => new IdentifiedMutation(
+                        candidate.MutationId, candidate.Material, candidate.SourceStart, candidate.SourceLength)));
+            }
+            catch (EvaluationContractException ex)
+            {
+                return Refused("ENUMERATION_IDENTITY_COLLISION", ex.Message);
+            }
             var duplicate = candidates.GroupBy(candidate => candidate.EvaluationUnitId,
                     StringComparer.Ordinal).FirstOrDefault(group => group.Count() > 1);
             if (duplicate is not null)
                 return Refused("ENUMERATION_DUPLICATE_UNIT",
                     $"Semantic enumeration produced duplicate evaluation unit {duplicate.Key}.");
-            return new(candidates.OrderBy(candidate => candidate.Material.RepositoryPath,
+            var ordered = candidates.OrderBy(candidate => candidate.Material.RepositoryPath,
                     StringComparer.Ordinal).ThenBy(candidate => candidate.Material.DeclarationIdentity,
                     StringComparer.Ordinal).ThenBy(candidate => candidate.Material.StructuralSiteIdentity,
                     StringComparer.Ordinal).ThenBy(candidate => candidate.Material.OperatorId,
@@ -103,9 +132,22 @@ internal static class StrictMutationEnumerator
                     StringComparer.Ordinal).ThenBy(candidate => candidate.ProjectPath,
                     StringComparer.Ordinal).ThenBy(candidate => candidate.TargetFramework,
                     StringComparer.Ordinal).ThenBy(candidate => candidate.ParseContext,
-                    StringComparer.Ordinal).ToArray(), [], true);
+                    StringComparer.Ordinal).ToArray();
+            var contextIdentity = MutationIdentity.ComputeDigest("semantic-enumeration-context-v1",
+                contextIdentities.Distinct().OrderBy(item => item.Project, StringComparer.Ordinal)
+                    .ThenBy(item => item.Identity, StringComparer.Ordinal)
+                    .SelectMany((item, index) => new[]
+                    {
+                        ($"project-{index:D8}", item.Project),
+                        ($"identity-{index:D8}", item.Identity)
+                    }).ToArray());
+            return new(ordered, [], true, contextIdentity);
         }
         catch (OperationCanceledException) { throw; }
+        catch (EnumerationContextException ex)
+        {
+            return Refused(ex.Code, ex.Message);
+        }
         catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or
                                    EvaluationContractException or System.Xml.XmlException or DecoderFallbackException)
         {
@@ -116,7 +158,7 @@ internal static class StrictMutationEnumerator
 
     private static ProjectContext BuildContext(InputSnapshot snapshot,
         IReadOnlyDictionary<string, SnapshotFile> captured, CheckProject project,
-        IReadOnlyList<CheckExclusion> exclusions, CancellationToken cancellationToken)
+        CheckConfiguration configuration, CancellationToken cancellationToken)
     {
         if (!captured.ContainsKey(project.Project))
             throw new EvaluationContractException($"Configured project is not captured: {project.Project}.");
@@ -126,11 +168,12 @@ internal static class StrictMutationEnumerator
         if (sourcePaths.Length == 0)
             throw new EvaluationContractException(
                 $"Configured project {project.Project} has no captured compile inputs.");
-        ValidateProjectFile(snapshot, captured, project, sourcePaths);
-        var excluded = sourcePaths.Where(path => exclusions.Any(exclusion =>
+        var projectSemantics = ValidateProjectFile(snapshot, captured, project, sourcePaths);
+        var buildConfiguration = ResolveBuildConfiguration(configuration, project);
+        var excluded = sourcePaths.Where(path => configuration.Exclusions.Any(exclusion =>
             ProjectOwnershipResolver.GlobMatches(path, exclusion.Path))).ToHashSet(StringComparer.Ordinal);
         var parseOptions = new CSharpParseOptions(LanguageVersion.CSharp14,
-            preprocessorSymbols: StandardSymbols(project).Concat(project.DefineConstants)
+            preprocessorSymbols: StandardSymbols(buildConfiguration).Concat(project.DefineConstants)
                 .Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal));
         var trees = new Dictionary<string, SyntaxTree>(StringComparer.Ordinal);
         var sources = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -139,17 +182,23 @@ internal static class StrictMutationEnumerator
             cancellationToken.ThrowIfCancellationRequested();
             var source = ReadCapturedText(snapshot, path);
             sources.Add(path, source);
-            if (IsGeneratedSource(path, source)) excluded.Add(path);
+            if (ScopePlanner.IsGeneratedSource(path, source)) excluded.Add(path);
             var tree = CSharpSyntaxTree.ParseText(SourceText.From(source, Encoding.UTF8), parseOptions,
                 path, cancellationToken);
             var parseErrors = tree.GetDiagnostics(cancellationToken).Where(diagnostic =>
                 diagnostic.Severity == DiagnosticSeverity.Error).Take(MaxDiagnostics).ToArray();
             if (parseErrors.Length > 0)
-                throw new EvaluationContractException(
+                throw new EnumerationContextException("ENUMERATION_PARSE_INVALID",
                     $"Captured source {path} has parse errors: {FormatDiagnostic(parseErrors[0])}");
             trees.Add(path, tree);
         }
-        var references = PlatformReferences();
+        if (projectSemantics.ImplicitUsings)
+        {
+            const string implicitPath = ".mutate4csharp/generated/ImplicitUsings.g.cs";
+            trees.Add(implicitPath, CSharpSyntaxTree.ParseText(ImplicitUsingsSource, parseOptions,
+                implicitPath, Encoding.UTF8, cancellationToken));
+        }
+        var referenceSet = PlatformReferences();
         var nullable = project.Nullable switch
         {
             "enable" => NullableContextOptions.Enable,
@@ -161,16 +210,28 @@ internal static class StrictMutationEnumerator
         var compilation = CSharpCompilation.Create(
             "StrictEnumeration_" + project.Id,
             trees.Values,
-            references,
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary,
+            referenceSet.References,
+            new CSharpCompilationOptions(projectSemantics.OutputKind,
                 deterministic: true, nullableContextOptions: nullable));
         var errors = compilation.GetDiagnostics(cancellationToken).Where(diagnostic =>
                 diagnostic.Severity == DiagnosticSeverity.Error)
             .Take(MaxDiagnostics).ToArray();
         if (errors.Length > 0)
-            throw new EvaluationContractException(
+            throw new EnumerationContextException("ENUMERATION_SEMANTIC_INVALID",
                 $"Captured project {project.Project} has unresolved semantic diagnostics: {FormatDiagnostic(errors[0])}");
-        return new(sourcePaths, excluded, sources, trees, compilation);
+        var identity = MutationIdentity.ComputeDigest("project-semantic-context-v1",
+            [
+                ("project", project.Project), ("configuration", buildConfiguration),
+                ("target-framework", project.TargetFramework), ("parse-context", project.ParseContext),
+                ("language-version", project.LanguageVersion), ("nullable", project.Nullable),
+                ("implicit-usings", projectSemantics.ImplicitUsings ? "enabled" : "disabled"),
+                ("output-kind", projectSemantics.OutputKind.ToString()),
+                ("references", referenceSet.Identity),
+                ("symbols", string.Join(";", StandardSymbols(buildConfiguration)
+                    .Concat(project.DefineConstants).Distinct(StringComparer.Ordinal)
+                    .OrderBy(value => value, StringComparer.Ordinal)))
+            ]);
+        return new(sourcePaths, excluded, sources, trees, compilation, identity);
     }
 
     private static IReadOnlyList<string> SelectTargetPaths(ProjectScopeUnit unit, ScopePlan scopePlan,
@@ -185,7 +246,7 @@ internal static class StrictMutationEnumerator
             .Distinct(StringComparer.Ordinal).OrderBy(path => path, StringComparer.Ordinal).ToArray();
     }
 
-    private static void ValidateProjectFile(InputSnapshot snapshot,
+    private static ProjectSemantics ValidateProjectFile(InputSnapshot snapshot,
         IReadOnlyDictionary<string, SnapshotFile> captured, CheckProject project,
         IReadOnlyList<string> configuredSourcePaths)
     {
@@ -199,35 +260,45 @@ internal static class StrictMutationEnumerator
         }
         var root = document.Root;
         if (root?.Name.LocalName != "Project")
-            throw new EvaluationContractException($"Configured project XML is invalid: {project.Project}.");
+            throw new EnumerationContextException("ENUMERATION_PROJECT_UNSUPPORTED",
+                $"Configured project XML is invalid: {project.Project}.");
+        var sdk = root.Attribute("Sdk")?.Value.Trim();
+        if (!string.Equals(sdk, "Microsoft.NET.Sdk", StringComparison.Ordinal))
+            throw new EnumerationContextException("ENUMERATION_SDK_UNSUPPORTED",
+                $"Enumeration v1 supports only Microsoft.NET.Sdk projects: {project.Project}.");
+        if (root.Descendants().Any(element => element.Name.LocalName is "Import" or "Sdk"))
+            throw new EnumerationContextException("ENUMERATION_IMPORT_UNSUPPORTED",
+                $"Explicit MSBuild imports and nested SDK declarations are unsupported: {project.Project}.");
+        RefuseApplicableDirectoryBuildFiles(captured, project.Project);
         if (root.Descendants().Any(element => element.Attribute("Condition") is not null))
-            throw new EvaluationContractException(
+            throw new EnumerationContextException("ENUMERATION_CONDITION_UNSUPPORTED",
                 $"Conditional project evaluation is unsupported for strict enumeration: {project.Project}.");
-        if (root.Descendants().Any(element => element.Name.LocalName is "ProjectReference" or "PackageReference"))
-            throw new EvaluationContractException(
+        if (root.Descendants().Any(element => element.Name.LocalName is "ProjectReference" or
+                "PackageReference" or "FrameworkReference" or "Reference" or "Using"))
+            throw new EnumerationContextException("ENUMERATION_REFERENCE_UNSUPPORTED",
                 $"Project/package reference semantic resolution is not supported in enumeration v1: {project.Project}.");
         if (root.Descendants().Any(element => element.Name.LocalName == "Compile" &&
                 (element.Attribute("Remove") is not null || element.Attribute("Update") is not null)))
-            throw new EvaluationContractException(
+            throw new EnumerationContextException("ENUMERATION_COMPILE_TRANSFORM_UNSUPPORTED",
                 $"Compile Remove/Update transforms are unsupported in enumeration v1: {project.Project}.");
         var compileElements = root.Descendants().Where(element =>
             element.Name.LocalName == "Compile").ToArray();
         if (compileElements.Any(element => element.Attribute("Exclude") is not null))
-            throw new EvaluationContractException(
+            throw new EnumerationContextException("ENUMERATION_COMPILE_TRANSFORM_UNSUPPORTED",
                 $"Compile Exclude transforms are unsupported in enumeration v1: {project.Project}.");
         var frameworks = root.Descendants().Where(element =>
             element.Name.LocalName is "TargetFramework" or "TargetFrameworks").ToArray();
         if (frameworks.Any(element => element.Name.LocalName == "TargetFrameworks") ||
             frameworks.Length != 1 || frameworks[0].Value.Trim() != project.TargetFramework)
-            throw new EvaluationContractException(
+            throw new EnumerationContextException("ENUMERATION_FRAMEWORK_UNSUPPORTED",
                 $"Captured project target framework does not match strict configuration: {project.Project}.");
         var langVersion = SingleProperty(root, "LangVersion");
         if (langVersion is not null && langVersion is not ("14" or "14.0"))
-            throw new EvaluationContractException(
+            throw new EnumerationContextException("ENUMERATION_LANGUAGE_UNSUPPORTED",
                 $"Captured project language version is unsupported: {langVersion}.");
         var nullable = SingleProperty(root, "Nullable");
         if (nullable is not null && !nullable.Equals(project.Nullable, StringComparison.OrdinalIgnoreCase))
-            throw new EvaluationContractException(
+            throw new EnumerationContextException("ENUMERATION_NULLABLE_MISMATCH",
                 $"Captured project nullable context does not match strict configuration: {project.Project}.");
         var constants = SingleProperty(root, "DefineConstants");
         if (constants is not null)
@@ -236,14 +307,14 @@ internal static class StrictMutationEnumerator
                 .OrderBy(value => value, StringComparer.Ordinal).ToArray();
             var expected = project.DefineConstants.OrderBy(value => value, StringComparer.Ordinal).ToArray();
             if (!actual.SequenceEqual(expected, StringComparer.Ordinal))
-                throw new EvaluationContractException(
+                throw new EnumerationContextException("ENUMERATION_SYMBOL_MISMATCH",
                     $"Captured project DefineConstants do not match strict configuration: {project.Project}.");
         }
 
         var compileInventory = new HashSet<string>(StringComparer.Ordinal);
         var defaultCompile = SingleProperty(root, "EnableDefaultCompileItems");
         if (defaultCompile is not null && !bool.TryParse(defaultCompile, out _))
-            throw new EvaluationContractException(
+            throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
                 $"EnableDefaultCompileItems must be true or false: {project.Project}.");
         if (!string.Equals(defaultCompile, "false", StringComparison.OrdinalIgnoreCase))
         {
@@ -257,11 +328,11 @@ internal static class StrictMutationEnumerator
         {
             var include = element.Attribute("Include")?.Value;
             if (string.IsNullOrWhiteSpace(include))
-                throw new EvaluationContractException(
+                throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
                     $"Compile items require one static Include in enumeration v1: {project.Project}.");
             var resolved = ResolveStaticCompilePath(snapshot, project.Project, include);
             if (!captured.ContainsKey(resolved))
-                throw new EvaluationContractException(
+                throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
                     $"Compile input is absent from the frozen snapshot: {resolved}.");
             compileInventory.Add(resolved);
         }
@@ -270,9 +341,42 @@ internal static class StrictMutationEnumerator
         {
             var missing = compileInventory.Except(configured, StringComparer.Ordinal).Order().FirstOrDefault();
             var extra = configured.Except(compileInventory, StringComparer.Ordinal).Order().FirstOrDefault();
-            throw new EvaluationContractException(
+            throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_MISMATCH",
                 $"Configured source inventory does not equal the captured static Compile inventory for " +
                 $"{project.Project}; missing={missing ?? "<none>"}, extra={extra ?? "<none>"}.");
+        }
+        var implicitUsings = SingleProperty(root, "ImplicitUsings")?.ToLowerInvariant();
+        var implicitEnabled = implicitUsings is not null && implicitUsings is not ("disable" or "false");
+        if (implicitUsings is not null && implicitUsings is not ("enable" or "true" or "disable" or "false"))
+            throw new EnumerationContextException("ENUMERATION_IMPLICIT_USINGS_UNSUPPORTED",
+                $"ImplicitUsings must be enabled or disabled explicitly: {project.Project}.");
+        var outputType = (SingleProperty(root, "OutputType") ?? "Library").ToLowerInvariant();
+        var outputKind = outputType switch
+        {
+            "library" => OutputKind.DynamicallyLinkedLibrary,
+            "exe" => OutputKind.ConsoleApplication,
+            "winexe" => OutputKind.WindowsApplication,
+            _ => throw new EnumerationContextException("ENUMERATION_OUTPUT_TYPE_UNSUPPORTED",
+                $"Unsupported OutputType {outputType}: {project.Project}.")
+        };
+        return new(outputKind, implicitEnabled);
+    }
+
+    private static void RefuseApplicableDirectoryBuildFiles(
+        IReadOnlyDictionary<string, SnapshotFile> captured, string projectPath)
+    {
+        var directory = RepositoryDirectory(projectPath);
+        while (true)
+        {
+            foreach (var name in new[] { "Directory.Build.props", "Directory.Build.targets" })
+            {
+                var path = directory.Length == 0 ? name : directory + "/" + name;
+                if (captured.ContainsKey(path))
+                    throw new EnumerationContextException("ENUMERATION_INHERITED_BUILD_UNSUPPORTED",
+                        $"Captured inherited build configuration is unsupported in enumeration v1: {path}.");
+            }
+            if (directory.Length == 0) break;
+            directory = RepositoryDirectory(directory);
         }
     }
 
@@ -281,7 +385,7 @@ internal static class StrictMutationEnumerator
         if (include.Contains(';') || include.IndexOfAny(['*', '?']) >= 0 ||
             include.Contains("$(", StringComparison.Ordinal) || include.Contains("@(", StringComparison.Ordinal) ||
             Path.IsPathRooted(include))
-            throw new EvaluationContractException(
+            throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
                 $"Dynamic or multi-value Compile Include is unsupported in enumeration v1: {include}.");
         var projectDirectory = Path.GetDirectoryName(CapturedPath(snapshot, projectPath))!;
         var full = Path.GetFullPath(include.Replace('/', Path.DirectorySeparatorChar), projectDirectory);
@@ -289,7 +393,7 @@ internal static class StrictMutationEnumerator
         try { return SnapshotInputPolicy.NormalizeRelative(relative); }
         catch (SnapshotCaptureException ex)
         {
-            throw new EvaluationContractException(
+            throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
                 $"Compile Include escapes the immutable snapshot: {include}.", ex);
         }
     }
@@ -307,22 +411,48 @@ internal static class StrictMutationEnumerator
     {
         var values = root.Descendants().Where(element => element.Name.LocalName == name).ToArray();
         if (values.Length > 1)
-            throw new EvaluationContractException($"Multiple {name} properties are unsupported.");
+            throw new EnumerationContextException("ENUMERATION_PROJECT_UNSUPPORTED",
+                $"Multiple {name} properties are unsupported.");
         return values.SingleOrDefault()?.Value.Trim();
     }
 
-    private static IReadOnlyList<MetadataReference> PlatformReferences()
+    private static ReferenceSet PlatformReferences() => ReferenceSetCache.Value;
+
+    private static ReferenceSet CreatePlatformReferences()
     {
-        var trusted = (string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES");
-        var paths = (trusted ?? string.Empty).Split(Path.PathSeparator,
-            StringSplitOptions.RemoveEmptyEntries).Distinct(HostPathComparer).OrderBy(path => path,
-            StringComparer.Ordinal).ToArray();
+        var runtimeDirectory = System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory();
+        var runtimeVersionDirectory = Directory.GetParent(Path.TrimEndingDirectorySeparator(runtimeDirectory));
+        var frameworkDirectory = runtimeVersionDirectory?.Parent;
+        var sharedDirectory = frameworkDirectory?.Parent;
+        var dotnetRoot = sharedDirectory?.FullName;
+        var packRoot = dotnetRoot is null ? null : Path.Combine(dotnetRoot, "packs", "Microsoft.NETCore.App.Ref");
+        if (packRoot is null || !Directory.Exists(packRoot))
+            throw new EnumerationContextException("ENUMERATION_REFERENCE_PACK_UNAVAILABLE",
+                "The pinned Microsoft.NETCore.App.Ref pack is unavailable.");
+        var versions = Directory.EnumerateDirectories(packRoot).Select(path =>
+                (Path: path, Version: Version.TryParse(Path.GetFileName(path), out var parsed) ? parsed : null))
+            .Where(item => item.Version?.Major == 10).OrderByDescending(item => item.Version).ToArray();
+        var referenceDirectory = versions.Select(item => Path.Combine(item.Path, "ref", "net10.0"))
+            .FirstOrDefault(Directory.Exists);
+        if (referenceDirectory is null)
+            throw new EnumerationContextException("ENUMERATION_REFERENCE_PACK_UNAVAILABLE",
+                "No net10.0 reference assembly directory exists in Microsoft.NETCore.App.Ref.");
+        var paths = Directory.EnumerateFiles(referenceDirectory, "*.dll", SearchOption.TopDirectoryOnly)
+            .OrderBy(Path.GetFileName, StringComparer.Ordinal).ToArray();
         if (paths.Length == 0)
-            throw new EvaluationContractException("Trusted net10.0 platform references are unavailable.");
-        return paths.Select(path => MetadataReference.CreateFromFile(path)).ToArray();
+            throw new EnumerationContextException("ENUMERATION_REFERENCE_PACK_UNAVAILABLE",
+                "The net10.0 reference assembly set is empty.");
+        var identity = MutationIdentity.ComputeDigest("net10-reference-set-v1", paths.SelectMany((path, index) =>
+            new[]
+            {
+                ($"name-{index:D8}", Path.GetFileName(path)),
+                ($"sha256-{index:D8}", Convert.ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant())
+            }).ToArray());
+        return new(paths.Select(path => MetadataReference.CreateFromFile(path)).ToArray(), identity);
     }
 
-    private static IEnumerable<string> StandardSymbols(CheckProject project)
+    private static IEnumerable<string> StandardSymbols(string configuration)
     {
         yield return "NET";
         yield return "NET10_0";
@@ -335,6 +465,19 @@ internal static class StrictMutationEnumerator
         yield return "NETCOREAPP3_0_OR_GREATER";
         yield return "NETCOREAPP3_1_OR_GREATER";
         for (var version = 5; version <= 10; version++) yield return $"NET{version}_0_OR_GREATER";
+        yield return "TRACE";
+        if (configuration.Equals("Debug", StringComparison.Ordinal)) yield return "DEBUG";
+    }
+
+    private static string ResolveBuildConfiguration(CheckConfiguration configuration, CheckProject project)
+    {
+        var suiteIds = project.TestSuites.ToHashSet(StringComparer.Ordinal);
+        var configurations = configuration.TestSuites.Where(suite => suiteIds.Contains(suite.Id))
+            .Select(suite => suite.Configuration).Distinct(StringComparer.Ordinal).ToArray();
+        if (configurations.Length != 1 || configurations[0] is not ("Debug" or "Release"))
+            throw new EnumerationContextException("ENUMERATION_CONFIGURATION_UNSUPPORTED",
+                $"Project {project.Project} requires one shared Debug or Release suite configuration.");
+        return configurations[0];
     }
 
     private static string ReadCapturedText(InputSnapshot snapshot, string path)
@@ -343,17 +486,6 @@ internal static class StrictMutationEnumerator
             FileShare.Read, 64 * 1024, FileOptions.SequentialScan);
         using var reader = new StreamReader(stream, new UTF8Encoding(false, true), true);
         return reader.ReadToEnd();
-    }
-
-    private static bool IsGeneratedSource(string path, string source)
-    {
-        var file = Path.GetFileName(path);
-        if (file.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase) ||
-            file.EndsWith(".generated.cs", StringComparison.OrdinalIgnoreCase) ||
-            file.EndsWith(".designer.cs", StringComparison.OrdinalIgnoreCase))
-            return true;
-        var prefix = source.AsSpan(0, Math.Min(source.Length, 2048));
-        return prefix.Contains("<auto-generated", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CapturedPath(InputSnapshot snapshot, string path) => Path.Combine(
@@ -366,16 +498,21 @@ internal static class StrictMutationEnumerator
     }
 
     private static StrictMutationEnumerationResult Refused(string code, string message) =>
-        new([], [new(code, Bound(message))], false);
+        new([], [new(code, Bound(message))], false, null);
 
     private static string Bound(string value) => value.Length <= 1024 ? value : value[..1024];
 
     private static StringComparison HostPathComparison => OperatingSystem.IsWindows()
         ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-    private static StringComparer HostPathComparer => OperatingSystem.IsWindows()
-        ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-
     private sealed record ProjectContext(IReadOnlyList<string> SourcePaths,
         IReadOnlySet<string> ExcludedPaths, IReadOnlyDictionary<string, string> Sources,
-        IReadOnlyDictionary<string, SyntaxTree> Trees, CSharpCompilation Compilation);
+        IReadOnlyDictionary<string, SyntaxTree> Trees, CSharpCompilation Compilation, string Identity);
+    private sealed record ProjectSemantics(OutputKind OutputKind, bool ImplicitUsings);
+    private sealed record ReferenceSet(IReadOnlyList<MetadataReference> References, string Identity);
+    private sealed class EnumerationContextException : Exception
+    {
+        public EnumerationContextException(string code, string message, Exception? inner = null) :
+            base(message, inner) => Code = code;
+        public string Code { get; }
+    }
 }

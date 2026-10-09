@@ -65,7 +65,7 @@ public sealed class CheckConfigurationTests : IDisposable
     }
 
     [Fact]
-    public void RejectsDuplicateIdsAndAllowsExplicitSharedSourceMembership()
+    public void RejectsDuplicateIdsAndLoadsOverlappingSourcePatternsForOwnershipValidation()
     {
         var duplicate = ValidConfiguration.Replace("\"projects\": [", "\"projects\": [" + Project + ",", StringComparison.Ordinal);
         Assert.Contains("Duplicate", Assert.Throws<ArgumentException>(() => Load(duplicate)).Message,
@@ -77,6 +77,19 @@ public sealed class CheckConfigurationTests : IDisposable
         var shared = Load(ambiguous);
         Assert.Equal(2, shared.Projects.Count(project =>
             project.Sources.Contains("src/App/**/*.cs", StringComparer.Ordinal)));
+    }
+
+    [Fact]
+    public void SharedSourcePatternsMustAlsoBeCompileSourcePatterns()
+    {
+        var invalid = ValidConfiguration.Replace(
+            "\"sources\": [\"src/App/**/*.cs\"]",
+            "\"sources\": [\"src/App/**/*.cs\"], \"sharedSources\": [\"shared/**/*.cs\"]",
+            StringComparison.Ordinal);
+
+        var error = Assert.Throws<ArgumentException>(() => Load(invalid));
+
+        Assert.Contains("sharedSources", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]

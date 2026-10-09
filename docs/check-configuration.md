@@ -10,7 +10,8 @@ and the repository root contains a working example. Unknown properties, duplicat
 unsupported versions/runners, empty mappings, rooted or escaping paths, duplicate mappings, conflicting suite
 aliases, and accidental ambiguous source membership are rejected before any test process is launched. A linked
 source may intentionally belong to multiple project contexts only when every owner declares the same explicit
-source glob; different overlapping globs remain ambiguous.
+pattern in both `sources` and `sharedSources`; broad or accidental overlapping globs remain ambiguous, including
+in plan mode.
 
 Each production project declares a stable ID, repository-relative `.csproj`, target framework, parse-context
 identity, source globs, and one or more test-suite IDs. Optional `languageVersion`, `nullable`, and
@@ -66,7 +67,11 @@ that path and reason into report and evaluation fingerprints.
 
 The public command now uses this captured configuration to enumerate canonical mutation and evaluation-unit IDs
 for supported, self-contained net10.0 projects. Version 1 refuses conditional project evaluation,
-`ProjectReference`/`PackageReference` resolution, Compile Remove/Update transforms, unresolved semantic diagnostics,
-and non-Git explicit-input enumeration rather than silently borrowing ambient MSBuild state. Supported checks end
+`ProjectReference`/`PackageReference` resolution, explicit imports, inherited `Directory.Build.props`/`.targets`,
+non-plain SDKs, Compile Remove/Update transforms, unresolved semantic diagnostics, and non-Git explicit-input
+enumeration rather than silently borrowing ambient MSBuild state. The suite configuration supplies `DEBUG`/`TRACE`
+semantics; any other conditional symbols must be listed in `defineConstants`. Plain SDK library, console/WinExe,
+and deterministic implicit-using contexts are supported against the installed net10.0 reference pack, whose
+content identity is bound into the evaluation fingerprint. Supported checks end
 at `EXECUTION_NOT_IMPLEMENTED` until baseline and mutant execution is connected by issue #3; no test process is
 launched at this boundary.

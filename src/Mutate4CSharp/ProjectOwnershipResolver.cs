@@ -21,7 +21,7 @@ internal static class ProjectOwnershipResolver
             }
             if (candidates.Length > 1)
             {
-                var commonExplicitPatterns = candidates.Select(candidate => candidate.Sources
+                var commonExplicitPatterns = candidates.Select(candidate => candidate.SharedSources
                         .Where(pattern => GlobMatches(input, pattern)).ToHashSet(StringComparer.Ordinal))
                     .Aggregate((left, right) =>
                     {
@@ -37,7 +37,7 @@ internal static class ProjectOwnershipResolver
                         $", +{candidateNames.Length - shown.Length} more" : string.Empty;
                     reasons.Add(new("AMBIGUOUS_PROJECT_OWNERSHIP",
                         $"{input} is owned by multiple configured projects: {string.Join(", ", shown)}{remainder}. " +
-                        "Declare one identical explicit source pattern in every intended linked-file context."));
+                        "Declare one identical sharedSources pattern in every intended linked-file context."));
                     continue;
                 }
             }

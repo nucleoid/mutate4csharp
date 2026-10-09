@@ -64,7 +64,7 @@ public sealed class ProjectOwnershipTests : IDisposable
               "version": 1,
               "projects": [
                 { "project": "src/A/A.csproj", "tests": ["tests/A.Tests.csproj"],
-                  "sources": ["shared/**/*.cs"] },
+                  "sources": ["shared/**/*.cs"], "sharedSources": ["shared/**/*.cs"] },
                 { "project": "src/B/B.csproj", "tests": ["tests/B.Tests.csproj"],
                   "sources": ["src/B/**/*.cs"] }
               ]
@@ -82,9 +82,9 @@ public sealed class ProjectOwnershipTests : IDisposable
               "version": 1,
               "projects": [
                 { "project": "src/A/A.csproj", "tests": ["tests/A.Tests.csproj"],
-                  "sources": ["shared/**/*.cs"] },
+                  "sources": ["shared/**/*.cs"], "sharedSources": ["shared/**/*.cs"] },
                 { "project": "src/B/B.csproj", "tests": ["tests/B.Tests.csproj"],
-                  "sources": ["shared/**/*.cs"] }
+                  "sources": ["shared/**/*.cs"], "sharedSources": ["shared/**/*.cs"] }
               ]
             }
             """);
@@ -98,7 +98,7 @@ public sealed class ProjectOwnershipTests : IDisposable
               "version": 1,
               "projects": [
                 { "project": "src/A/A.csproj", "tests": ["tests/A.Tests.csproj"],
-                  "sources": ["shared/**/*.cs"] },
+                  "sources": ["shared/**/*.cs"], "sharedSources": ["shared/**/*.cs"] },
                 { "project": "src/B/B.csproj", "tests": ["tests/B.Tests.csproj"],
                   "sources": ["**/*.cs"] }
               ]

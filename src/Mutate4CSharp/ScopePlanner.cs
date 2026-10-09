@@ -300,6 +300,15 @@ internal static class ScopePlanner
             name.EndsWith(".designer.cs", StringComparison.OrdinalIgnoreCase)) return true;
         if (bytes is null) return false;
         var source = new UTF8Encoding(false, true).GetString(bytes);
+        return IsGeneratedSource(path, source);
+    }
+
+    internal static bool IsGeneratedSource(string path, string source)
+    {
+        var name = Path.GetFileName(path);
+        if (name.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith(".generated.cs", StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith(".designer.cs", StringComparison.OrdinalIgnoreCase)) return true;
         var root = CSharpSyntaxTree.ParseText(source).GetRoot();
         return root.GetLeadingTrivia().Where(trivia => trivia.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.SingleLineCommentTrivia) ||
                 trivia.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.MultiLineCommentTrivia) ||

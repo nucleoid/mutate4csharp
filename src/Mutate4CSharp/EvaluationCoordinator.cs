@@ -40,6 +40,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         string? stateRoot = null;
         EvaluationFingerprintMaterial? fingerprintMaterial = null;
         Exception? fingerprintMaterialFailure = null;
+        string? semanticContextIdentity = null;
         CheckConfiguration? checkConfiguration = null;
         int? enumerationCount = null;
         IReadOnlyList<EvaluationUnitResult> reportUnits = [];
@@ -115,8 +116,6 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             }
             else
             {
-                fingerprintMaterial = await BuildEvaluationFingerprintMaterialAsync(snapshot,
-                    snapshotId!, scopePlan, checkConfiguration.Policy, cancellationToken);
                 var enumeration = StrictMutationEnumerator.Enumerate(snapshot, checkConfiguration,
                     scopePlan, cancellationToken);
                 if (!enumeration.IsComplete)
@@ -130,7 +129,33 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 }
                 else
                 {
-                    var bound = MutationSelection.Bind(enumeration.Candidates, fingerprintMaterial);
+                    semanticContextIdentity = enumeration.SemanticContextIdentity ??
+                        throw new EvaluationContractException(
+                            "Complete semantic enumeration requires one context identity.");
+                    try
+                    {
+                        fingerprintMaterial = await BuildEvaluationFingerprintMaterialAsync(snapshot,
+                            snapshotId!, scopePlan, checkConfiguration.Policy, semanticContextIdentity,
+                            cancellationToken);
+                    }
+                    catch (Exception ex) when (!IsFatal(ex))
+                    {
+                        enumerationReasons =
+                            [new("ENUMERATION_FINGERPRINT_UNAVAILABLE", Bound(ex.Message))];
+                        reason = enumerationReasons[0];
+                        evidence.Add(new("MUTATION_FINGERPRINT_REFUSAL", reason.Message));
+                        goto ScopeEvidence;
+                    }
+                    BoundMutationPlan bound;
+                    try { bound = MutationSelection.Bind(enumeration.Candidates, fingerprintMaterial); }
+                    catch (Exception ex) when (ex is ArgumentException or EvaluationContractException)
+                    {
+                        enumerationReasons =
+                            [new("ENUMERATION_FINGERPRINT_INVALID", Bound(ex.Message))];
+                        reason = enumerationReasons[0];
+                        evidence.Add(new("MUTATION_FINGERPRINT_REFUSAL", reason.Message));
+                        goto ScopeEvidence;
+                    }
                     MutationSelectionPlan mutationPlan;
                     try
                     {
@@ -230,7 +255,7 @@ ScopeEvidence:
                 catch (SnapshotCaptureException ex)
                 {
                     reason = SnapshotFailure(ex);
-                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN");
+                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
                     evidence.Add(new(SnapshotEvidenceKind(ex), Bound(ex.Message)));
                     snapshotId = null;
                     enumerationCount = null;
@@ -242,7 +267,7 @@ ScopeEvidence:
                 catch (OperationCanceledException)
                 {
                     reason = new("SNAPSHOT_CANCELLED", "Immutable capture validation was cancelled.");
-                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN");
+                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
                     evidence.Add(new("SNAPSHOT_CANCELLATION",
                         "Cancellation was observed before report publication."));
                     snapshotId = null;
@@ -256,7 +281,7 @@ ScopeEvidence:
                 {
                     reason = new("SNAPSHOT_VALIDATION_FAILED",
                         "Immutable capture failed closed during native or runtime validation.");
-                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN");
+                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
                     evidence.Add(new("SNAPSHOT_VALIDATION_FAILURE",
                         Bound($"{ex.GetType().Name}: {ex.Message}")));
                     snapshotId = null;
@@ -275,7 +300,7 @@ ScopeEvidence:
                     {
                         fingerprintMaterial ??= await BuildEvaluationFingerprintMaterialAsync(
                             snapshot, snapshotId, scopePlan, checkConfiguration?.Policy ?? EvaluationReport.DefaultPolicy,
-                            cancellationToken);
+                            semanticContextIdentity ?? "semantic-context-unavailable", cancellationToken);
                         evidence.Add(new("TOOL_INTERNAL_SDK",
                             "Recorded the SDK resolved inside the captured consumer snapshot.",
                             [fingerprintMaterial.SdkIdentity]));
@@ -290,7 +315,7 @@ ScopeEvidence:
                 {
                     reason = new("SNAPSHOT_CLEANUP_FAILED",
                         "The immutable capture could not be cleaned up safely.");
-                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN");
+                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
                     evidence.Add(new("SNAPSHOT_CLEANUP", Bound(ex.Message)));
                     snapshotId = null;
                     enumerationCount = null;
@@ -520,7 +545,7 @@ ScopeEvidence:
 
     private static async Task<EvaluationFingerprintMaterial> BuildEvaluationFingerprintMaterialAsync(
         InputSnapshot snapshot, string snapshotId, ScopePlan scopePlan, EvaluationPolicy policy,
-        CancellationToken cancellationToken)
+        string semanticContextIdentity, CancellationToken cancellationToken)
     {
         var inputs = snapshot.Files.Select(file => new FingerprintInput(Classify(file.RelativePath),
             file.RelativePath, file.Length, file.Sha256, file.Exists, file.IsTracked)).ToArray();
@@ -536,7 +561,8 @@ ScopeEvidence:
         var runtimeIdentity = $"framework={RuntimeInformation.FrameworkDescription};" +
             $"rid={RuntimeInformation.RuntimeIdentifier};os={RuntimeInformation.OSDescription};" +
             $"osArch={RuntimeInformation.OSArchitecture};processArch={RuntimeInformation.ProcessArchitecture}";
-        return new EvaluationFingerprintMaterial(inputs, snapshotId, scope, "strict-configuration-contract-v1",
+        return new EvaluationFingerprintMaterial(inputs, snapshotId, scope,
+            $"strict-configuration-contract-v1;semantic={semanticContextIdentity}",
             EvaluationFingerprint.ToolIdentity(typeof(EvaluationCoordinator).Assembly), "operator-registry-v1",
             $"dotnet-sdk={sdkVersion}", runtimeIdentity, "runner:not-executed",
             policy, ProvenanceComplete: false);

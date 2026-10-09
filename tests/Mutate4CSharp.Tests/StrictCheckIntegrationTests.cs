@@ -99,6 +99,45 @@ public sealed class StrictCheckIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task OriginalWorkspaceDriftAfterEnumerationInvalidatesTheBoundPlan()
+    {
+        using var repository = StrictEnumerationRepository("public int Value() => 0;");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "baseline");
+        repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public int Value() => 1; }\n");
+        var validationPass = 0;
+        var captureOptions = SnapshotCaptureOptions.Default with
+        {
+            Hook = (stage, relativePath) =>
+            {
+                if (stage != SnapshotCaptureStage.BeforeOriginalFileHashed ||
+                    relativePath != "src/App/Flag.cs" || ++validationPass != 2) return;
+                repository.WriteText("src/App/Flag.cs",
+                    "public sealed class Flag { public int Value() => 2; }\n");
+            }
+        };
+        var reportPath = Path.Combine(_directory, "post-enumeration-drift.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
+        EvaluationRunResult result;
+        try
+        {
+            result = await new EvaluationCoordinator(captureOptions).RunAsync(
+                new(false, "HEAD", [], reportPath, "post-enumeration-drift"), CancellationToken.None);
+        }
+        finally { Environment.CurrentDirectory = previous; }
+
+        Assert.Equal(4, result.Report.ExitCode);
+        Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+        Assert.Null(result.SnapshotId);
+        Assert.Null(result.Report.Counts.Enumerated);
+        Assert.Empty(result.Report.Units);
+        Assert.Contains(result.Report.Reasons, reason => reason.Code == "SNAPSHOT_DIVERGED");
+        Assert.DoesNotContain(result.Report.Evidence, item => item.Kind == "MUTATION_PLAN");
+    }
+
+    [Fact]
     public async Task CompleteZeroSiteEnumerationIsNotReportedAsUnknown()
     {
         using var repository = StrictEnumerationRepository("public int Value() => 2;");

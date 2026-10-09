@@ -12,6 +12,7 @@ internal sealed class CheckConfigurationException(string message, Exception? inn
 internal sealed record CheckProject(string Id, string Project, string TargetFramework,
     string ParseContext, string LanguageVersion, string Nullable,
     IReadOnlyList<string> DefineConstants, IReadOnlyList<string> Sources,
+    IReadOnlyList<string> SharedSources,
     IReadOnlyList<string> TestSuites);
 
 internal sealed record CheckTestSuite(string Id, string Path, string Runner, string Framework,
@@ -47,6 +48,7 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
         string? TargetFramework = null, string? ParseContext = null,
         string? LanguageVersion = null, string? Nullable = null,
         List<string>? DefineConstants = null, List<string>? Sources = null,
+        List<string>? SharedSources = null,
         List<string>? TestSuites = null);
     private sealed record SuiteDocument(string? Id = null, string? Path = null, string? Runner = null,
         string? Framework = null, string? Configuration = null, List<string>? ExpectedMembers = null);
@@ -196,9 +198,16 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
             throw new ArgumentException(
                 $"Production project {id} has an invalid preprocessor symbol: {invalidSymbol}.");
         var sources = NormalizeDistinct(item.Sources, $"projects[{index}].sources", requireNonEmpty: true);
+        var sharedSources = NormalizeDistinct(item.SharedSources ?? [],
+            $"projects[{index}].sharedSources", requireNonEmpty: false);
+        var undeclaredShared = sharedSources.FirstOrDefault(shared => !sources.Contains(shared,
+            StringComparer.Ordinal));
+        if (undeclaredShared is not null)
+            throw new ArgumentException(
+                $"Production project {id} sharedSources must also appear in sources: {undeclaredShared}.");
         var suites = DistinctValues(item.TestSuites, $"projects[{index}].testSuites", requireNonEmpty: true);
         return new(id, project, framework, parseContext, languageVersion, nullable,
-            defineConstants, sources, suites);
+            defineConstants, sources, sharedSources, suites);
     }
 
     private static CheckTestSuite ParseSuite(SuiteDocument item, int index)
