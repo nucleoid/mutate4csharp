@@ -161,7 +161,7 @@ public sealed class EvaluationSchedulerTests
             CancellationToken.None);
 
         var evidence = Assert.Single(result.Results).Evidence;
-        Assert.Equal(20, evidence.Count);
+        Assert.Equal(StabilityEvidence.MaxAttemptEvidence, evidence.Count);
         Assert.Contains(evidence, item => item.Kind == "EVIDENCE_TRUNCATED");
     }
 

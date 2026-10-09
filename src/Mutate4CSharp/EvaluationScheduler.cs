@@ -182,7 +182,7 @@ internal sealed class EvaluationScheduler
 
     private static ScheduledMutationResult Bound(ScheduledMutationResult result)
     {
-        const int maximum = 20;
+        const int maximum = StabilityEvidence.MaxAttemptEvidence;
         var source = result.Evidence.Count <= maximum
             ? result.Evidence
             : result.Evidence.Take(maximum - 1).Append(new EvaluationEvidence("EVIDENCE_TRUNCATED",

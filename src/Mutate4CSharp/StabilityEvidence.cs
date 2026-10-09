@@ -5,6 +5,7 @@ internal sealed record StabilityAttempt(int Attempt, UnitDisposition Disposition
 
 internal static class StabilityEvidence
 {
+    public const int MaxAttemptEvidence = 20;
     public const int MaxUnitEvidence = 200;
 
     public static EvaluationUnitResult Reduce(string mutationId, string evaluationUnitId,
@@ -36,7 +37,7 @@ internal static class StabilityEvidence
                 .SequenceEqual(Enumerable.Range(1, attempts.Count)))
             throw new EvaluationContractException("Stability attempts must be unique and contiguous from one.");
         if (attempts.Any(item => item.Disposition is UnitDisposition.Pending or UnitDisposition.Omitted or
-                                 UnitDisposition.Unstable || item.Evidence.Count is 0 or > 20))
+                                 UnitDisposition.Unstable || item.Evidence.Count is 0 or > MaxAttemptEvidence))
             throw new EvaluationContractException("Stability attempts require terminal executed evidence.");
 
         var dispositions = attempts.Select(item => item.Disposition).Distinct().ToArray();
