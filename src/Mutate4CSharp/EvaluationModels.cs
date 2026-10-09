@@ -3,7 +3,11 @@ using System.Text.Json.Serialization;
 namespace Mutate4CSharp;
 
 internal sealed record EvaluationEvidence(string Kind, string Summary,
-    IReadOnlyList<string>? Diagnostics = null);
+    IReadOnlyList<string>? Diagnostics = null)
+{
+    public const int MaxDiagnostics = 20;
+    public const int MaxDiagnosticLength = 512;
+}
 internal sealed record EvaluationReason(string Code, string Message);
 internal sealed record EvaluationUnitResult(string UnitId, string EvaluationUnitId,
     UnitDisposition Disposition, IReadOnlyList<EvaluationEvidence> Evidence)

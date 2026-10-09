@@ -42,6 +42,8 @@ internal static class AsyncDisposal
     public static Exception CombineFailure(Exception? primaryFailure, Exception cleanupFailure)
     {
         ArgumentNullException.ThrowIfNull(cleanupFailure);
+        if (cleanupFailure is SnapshotCleanupException { OriginalFailure: null } cleanupOnly)
+            cleanupFailure = cleanupOnly.CleanupFailure;
         if (primaryFailure is not null)
             return new SnapshotCleanupException(primaryFailure, cleanupFailure);
         return cleanupFailure is SnapshotCleanupException
@@ -61,6 +63,19 @@ internal static class AsyncDisposal
         if (failures is not null)
             throw new SnapshotCleanupException(
                 new AggregateException("One or more owned-resource cleanups failed.", failures));
+    }
+
+    public static async ValueTask DisposeAllPreservingFailureAsync(
+        IEnumerable<IAsyncDisposable?> owners, Exception? primaryFailure)
+    {
+        Exception? failure = primaryFailure;
+        try { await DisposeAllAsync(owners); }
+        catch (Exception cleanupFailure)
+        {
+            failure = CombineFailure(primaryFailure, cleanupFailure);
+        }
+        if (failure is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     }
 }
 

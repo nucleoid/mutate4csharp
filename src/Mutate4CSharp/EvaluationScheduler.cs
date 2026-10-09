@@ -199,10 +199,11 @@ internal sealed class EvaluationScheduler
     private static IReadOnlyList<string>? BoundDiagnostics(IReadOnlyList<string>? diagnostics)
     {
         if (diagnostics is null) return null;
-        const int maximum = 20;
+        const int maximum = EvaluationEvidence.MaxDiagnostics;
         if (diagnostics.Count <= maximum)
-            return diagnostics.Select(value => Bound(value, 512)).ToArray();
-        return diagnostics.Take(maximum - 1).Select(value => Bound(value, 512))
+            return diagnostics.Select(value => Bound(value, EvaluationEvidence.MaxDiagnosticLength)).ToArray();
+        return diagnostics.Take(maximum - 1)
+            .Select(value => Bound(value, EvaluationEvidence.MaxDiagnosticLength))
             .Append($"diagnostics-truncated={diagnostics.Count - (maximum - 1)}").ToArray();
     }
 

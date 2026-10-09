@@ -186,7 +186,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         catch (SnapshotCaptureException ex)
         {
             reason = SnapshotFailure(ex);
-            evidence.Add(new(SnapshotEvidenceKind(ex), Bound(ex.Message)));
+            enumerationReasons = NestedSnapshotFailureReasons(ex);
+            AddSnapshotFailureEvidence(evidence, ex);
         }
         catch (OperationCanceledException)
         {
@@ -226,11 +227,11 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 {
                     reason = SnapshotFailure(ex);
                     evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
-                    evidence.Add(new(SnapshotEvidenceKind(ex), Bound(ex.Message)));
+                    AddSnapshotFailureEvidence(evidence, ex);
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
-                    enumerationReasons = [];
+                    enumerationReasons = NestedSnapshotFailureReasons(ex);
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot divergence."));
                 }
@@ -284,14 +285,25 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 try { await snapshot.DisposeAsync(); }
                 catch (Exception ex)
                 {
+                    var retainedIntegrity = IsIntegrityFailure(reason) ? reason : null;
                     reason = new("SNAPSHOT_CLEANUP_FAILED",
                         "The immutable capture could not be cleaned up safely.");
                     evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
-                    evidence.Add(new("SNAPSHOT_CLEANUP", Bound(ex.Message)));
+                    if (ex is SnapshotCaptureException snapshotFailure)
+                    {
+                        AddSnapshotFailureEvidence(evidence, snapshotFailure);
+                        enumerationReasons = NestedSnapshotFailureReasons(snapshotFailure);
+                    }
+                    else
+                    {
+                        evidence.Add(new("SNAPSHOT_CLEANUP", Bound(ex.Message)));
+                        enumerationReasons = [];
+                    }
+                    if (retainedIntegrity is not null)
+                        enumerationReasons = enumerationReasons.Append(retainedIntegrity).Distinct().ToArray();
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
-                    enumerationReasons = [];
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot cleanup failure."));
                 }
@@ -487,8 +499,40 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         SnapshotCleanupException => "SNAPSHOT_CLEANUP",
         SnapshotEnvironmentException => "SNAPSHOT_ENVIRONMENT",
         ExecutionBoundaryIntegrityException => "EXECUTION_BOUNDARY_INTEGRITY",
+        SnapshotDivergedException => "SNAPSHOT_DIVERGENCE",
+        SnapshotLimitException => "SNAPSHOT_LIMIT",
         _ => "SNAPSHOT_REFUSAL"
     };
+
+    private static IReadOnlyList<EvaluationReason> NestedSnapshotFailureReasons(
+        SnapshotCaptureException exception) => SnapshotFailureChain(exception).Skip(1)
+        .Select(SnapshotFailure).Distinct().ToArray();
+
+    private static void AddSnapshotFailureEvidence(List<EvaluationEvidence> evidence,
+        SnapshotCaptureException exception)
+    {
+        foreach (var failure in SnapshotFailureChain(exception))
+        {
+            var item = new EvaluationEvidence(SnapshotEvidenceKind(failure), Bound(failure.Message));
+            if (!evidence.Contains(item)) evidence.Add(item);
+        }
+    }
+
+    private static IEnumerable<SnapshotCaptureException> SnapshotFailureChain(
+        SnapshotCaptureException exception)
+    {
+        SnapshotCaptureException? current = exception;
+        for (var depth = 0; current is not null && depth < 16; depth++)
+        {
+            yield return current;
+            current = current is SnapshotCleanupException { OriginalFailure: SnapshotCaptureException original }
+                ? original
+                : null;
+        }
+    }
+
+    private static bool IsIntegrityFailure(EvaluationReason reason) => reason.Code is
+        "EXECUTION_BOUNDARY_INTEGRITY" or "SNAPSHOT_DIVERGED" or "SNAPSHOT_LIMIT";
 
     private static string Bound(string value) => value.Length <= 1024 ? value : value[..1024];
     private static string BoundDiagnostic(string value) => value.Length <= 512 ? value : value[..512];

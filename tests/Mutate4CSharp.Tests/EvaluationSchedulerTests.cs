@@ -182,7 +182,7 @@ public sealed class EvaluationSchedulerTests
         Assert.Equal("PARTIAL_STABILITY_EVIDENCE", evidence[^1].Kind);
         Assert.All(evidence, item => Assert.True(
             item.Diagnostics is null or { Count: <= EvaluationEvidence.MaxDiagnostics }));
-        Assert.Contains("attempts-truncated=80", evidence[^1].Diagnostics!);
+        Assert.Contains("attempts-truncated=81", evidence[^1].Diagnostics!);
     }
 
     [Fact]

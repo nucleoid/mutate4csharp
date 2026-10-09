@@ -76,3 +76,6 @@ as `EXECUTION_BOUNDARY_INTEGRITY`, not as an unsupported capture or ordinary mut
 preserves cleanup failure evidence because continuing after a proven frozen-boundary violation would make later
 unit evidence untrustworthy. Ordinary feed, restore, SDK, host, workload, and per-mutant timeout failures remain
 nonpassing execution evidence rather than being promoted to boundary violations.
+When cleanup also fails, the report retains both `SNAPSHOT_CLEANUP_FAILED` and the typed primary divergence,
+boundary, or limit condition with separate evidence. Partial stability markers share the report's bounded
+20-diagnostic evidence contract and summarize any additional attempts with an explicit truncation count.

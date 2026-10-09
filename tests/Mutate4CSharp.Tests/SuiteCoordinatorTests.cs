@@ -30,7 +30,8 @@ public sealed class SuiteCoordinatorTests
                 [new ThrowingOwner(cleanup)], integrity));
 
         Assert.Same(integrity, combined.OriginalFailure);
-        Assert.Same(cleanup, combined.CleanupFailure);
+        var aggregate = Assert.IsType<AggregateException>(combined.CleanupFailure);
+        Assert.Same(cleanup, Assert.Single(aggregate.InnerExceptions));
     }
 
     [Fact]

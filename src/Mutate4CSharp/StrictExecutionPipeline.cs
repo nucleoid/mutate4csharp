@@ -69,7 +69,10 @@ internal static class StrictExecutionPipeline
                 "The configured .NET execution environment could not be started."),
                 [new("EXECUTION_ENVIRONMENT_UNAVAILABLE", ex.Message)]);
         }
-        await using (environment)
+        SuiteBaselineResult? baselines = null;
+        StrictExecutionOutcome? outcome = null;
+        Exception? failure = null;
+        try
         {
         var enumeration = StrictMutationEnumerator.Enumerate(snapshot, configuration, scopePlan,
             cancellationToken, environment.SdkVersion);
@@ -111,7 +114,7 @@ internal static class StrictExecutionPipeline
             .ToDictionary(item => item.EvaluationUnitId, StringComparer.Ordinal);
         var completed = issued.Where(item => item.Disposition != UnitDisposition.Pending).ToList();
 
-        await using var baselines = await new SuiteCoordinator(new VstestSuiteExecutor(snapshot, environment),
+        baselines = await new SuiteCoordinator(new VstestSuiteExecutor(snapshot, environment),
             Clock).RunBaselinesAsync(snapshotId, configuration.ExecutionSuites,
             TimeSpan.FromSeconds(policy.BaselineTimeoutSeconds), deadline, cancellationToken);
         var aliases = MapBaselineExecutions(configuration.ExecutionSuites, baselines.Executions);
@@ -201,10 +204,14 @@ internal static class StrictExecutionPipeline
             "Fresh strict execution evidence is available, but issue #4 must complete final verification " +
             "before strict PASS can be published.");
         conditions.Add(finalization);
-        return new(material, semanticContext, environment.SdkVersion, issued.Count,
+        outcome = new(material, semanticContext, environment.SdkVersion, issued.Count,
             plan.OrderResults(completed), baselines.Status, suiteEvidence,
             conditions.Distinct().ToArray(), finalization, evidence);
         }
+        catch (Exception ex) { failure = ex; }
+        await AsyncDisposal.DisposeAllPreservingFailureAsync([baselines, environment], failure);
+        return outcome ?? throw new EvaluationContractException(
+            "Strict execution completed without an outcome or preserved failure.");
     }
 
     internal static IReadOnlyList<EvaluationEvidence> BuildPartialEvidence(
@@ -219,9 +226,19 @@ internal static class StrictExecutionPipeline
             StabilityEvidence.MaxUnitEvidence - 1);
         bounded.Add(new("PARTIAL_STABILITY_EVIDENCE",
             "The unit retained every completed stability attempt before execution stopped.",
-            results.Select((item, index) =>
-                $"attempt={index + 1};disposition={item.Disposition}").Take(100).ToArray()));
+            BoundAttemptDiagnostics(results)));
         return bounded;
+    }
+
+    private static IReadOnlyList<string> BoundAttemptDiagnostics(
+        IReadOnlyList<ScheduledMutationResult> results)
+    {
+        var diagnostics = results.Select((item, index) =>
+            $"attempt={index + 1};disposition={item.Disposition}").ToArray();
+        if (diagnostics.Length <= EvaluationEvidence.MaxDiagnostics) return diagnostics;
+        var retained = EvaluationEvidence.MaxDiagnostics - 1;
+        return diagnostics.Take(retained)
+            .Append($"attempts-truncated={diagnostics.Length - retained}").ToArray();
     }
 
     internal static async Task<ContiguousAttemptBatch> RunContiguousAttemptsAsync(
