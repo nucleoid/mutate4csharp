@@ -244,7 +244,7 @@ public sealed class WorkspaceOwnershipTests
             Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, mode);
         }
         File.WriteAllText(Path.Combine(owned.Root, ".mutate4csharp-owner"), "wrong-owner");
-        await Assert.ThrowsAsync<IOException>(async () => await owned.DisposeAsync());
+        await Assert.ThrowsAsync<SnapshotCleanupException>(async () => await owned.DisposeAsync());
         Directory.Delete(owned.Root, true);
         var cleanup = OwnedDirectory.Create(parent, "cleanup");
         await cleanup.DisposeAsync();

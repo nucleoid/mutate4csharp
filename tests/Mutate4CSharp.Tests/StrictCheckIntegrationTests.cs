@@ -11,6 +11,19 @@ public sealed class StrictCheckIntegrationTests : IDisposable
     public StrictCheckIntegrationTests() => Directory.CreateDirectory(_directory);
 
     [Fact]
+    public void ExecutionBoundaryIntegrityHasAnExplicitRunLevelReason()
+    {
+        var method = typeof(EvaluationCoordinator).GetMethod("SnapshotFailure",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var reason = Assert.IsType<EvaluationReason>(method!.Invoke(null,
+            [new ExecutionBoundaryIntegrityException("private package cache changed")]));
+
+        Assert.Equal("EXECUTION_BOUNDARY_INTEGRITY", reason.Code);
+    }
+
+    [Fact]
     public void RequiresExactlyOneStrictSelectionMode()
     {
         Assert.NotNull(Cli.Parse(["check"]).Error);
