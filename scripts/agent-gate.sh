@@ -204,8 +204,14 @@ try:
         isinstance(item, dict) and item.get("code") == "EXECUTION_NOT_IMPLEMENTED"
         for item in conditions
     )
+    scope_refusal_codes = {
+        "AMBIGUOUS_PROJECT_OWNERSHIP", "UNMAPPED_PROJECT", "CONFIGURED_PATH_MISSING",
+        "UNSUPPORTED_SYNTAX", "NO_SUPPORTED_DECLARATION", "UNSUPPORTED_CHANGED_INPUT",
+        "EXACT_ID_RERUN_UNAVAILABLE", "TARGET_SELECTION_INVALID",
+    }
     enumeration_refusal = not execution_pending and all(
-        item["code"].startswith("ENUMERATION_") for item in conditions
+        item["code"].startswith("ENUMERATION_") or item["code"] in scope_refusal_codes
+        for item in conditions
     )
     if not execution_pending and not enumeration_refusal:
         raise ValueError("report lacks an accepted execution or enumeration incomplete condition")

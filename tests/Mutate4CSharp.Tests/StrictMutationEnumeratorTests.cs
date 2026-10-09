@@ -312,6 +312,27 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
     }
 
     [Fact]
+    public async Task DefinesEveryNetCoreAppOrGreaterSymbolFromThePinnedSdk()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Conditional.cs", """
+            #if NETCOREAPP1_1_OR_GREATER
+            public sealed class Conditional { public bool Value() => true; }
+            #endif
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Conditional.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Single(result.Candidates,
+            candidate => candidate.Material.DeclarationIdentity.Contains("Value", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task ResolvesBackslashLinkedCompilePathsOnLinux()
     {
         WriteSharedProjects();

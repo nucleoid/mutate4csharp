@@ -116,12 +116,10 @@ public sealed class IssueEightReviewRoundTwelveTests : IDisposable
         File.Delete(resolverMarker);
 
         var hostilePythonMarker = Path.Combine(_root, "hostile-python-executed");
-        var hostilePython = Path.Combine(_root, "hostile-python");
-        Directory.CreateDirectory(hostilePython);
-        await File.WriteAllTextAsync(Path.Combine(hostilePython, "json.py"),
+        await File.WriteAllTextAsync(Path.Combine(consumer, "json.py"),
             $"from pathlib import Path\nPath({PythonLiteral(hostilePythonMarker)}).write_text('json')\nraise RuntimeError('hostile json imported')\n",
             TestContext.Current.CancellationToken);
-        var hostileXml = Path.Combine(hostilePython, "xml");
+        var hostileXml = Path.Combine(consumer, "xml");
         Directory.CreateDirectory(hostileXml);
         await File.WriteAllTextAsync(Path.Combine(hostileXml, "__init__.py"),
             $"from pathlib import Path\nPath({PythonLiteral(hostilePythonMarker)}).write_text('xml')\nraise RuntimeError('hostile xml imported')\n",
@@ -140,7 +138,7 @@ public sealed class IssueEightReviewRoundTwelveTests : IDisposable
             ["NUGET_HTTP_CACHE_PATH"] = Path.Combine(hostileHome, "caller-http-cache"),
             ["NUGET_PLUGINS_CACHE_PATH"] = Path.Combine(hostileHome, "caller-plugins-cache"),
             ["PATH"] = hostileBin + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH"),
-            ["PYTHONPATH"] = hostilePython,
+            ["PYTHONPATH"] = consumer,
             ["DOTNET_HOST_PATH"] = CanonicalDotnetHost(),
             ["MSBUILDADDITIONALSDKRESOLVERSFOLDER"] = resolver,
             ["DOTNET_MSBUILD_SDK_RESOLVER_SDKS_DIR"] = resolver,

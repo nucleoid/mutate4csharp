@@ -99,6 +99,35 @@ public sealed class StrictCheckIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task ChangedNonProductionInputRemainsValidatedScopeIncompleteRatherThanIntegrityFailure()
+    {
+        using var repository = StrictEnumerationRepository("public int Value() => 0;");
+        repository.WriteText("README.md", "baseline\n");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "baseline");
+        repository.WriteText("src/App/Flag.cs", "public sealed class Flag { public int Value() => 1; }\n");
+        repository.WriteText("README.md", "changed\n");
+        var reportPath = Path.Combine(_directory, "scope-incomplete.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
+        EvaluationRunResult result;
+        try
+        {
+            result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], reportPath, "scope-incomplete-run"), CancellationToken.None);
+        }
+        finally { Environment.CurrentDirectory = previous; }
+
+        Assert.Equal(4, result.Report.ExitCode);
+        Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+        Assert.Null(result.Report.Counts.Enumerated);
+        Assert.Contains(result.Report.IncompleteConditions,
+            reason => reason.Code == "ENUMERATION_SCOPE_INCOMPLETE");
+        Assert.Contains(result.Report.IncompleteConditions,
+            reason => reason.Code == "UNSUPPORTED_CHANGED_INPUT");
+    }
+
+    [Fact]
     public async Task OriginalWorkspaceDriftAfterEnumerationInvalidatesTheBoundPlan()
     {
         using var repository = StrictEnumerationRepository("public int Value() => 0;");

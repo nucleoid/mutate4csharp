@@ -173,9 +173,7 @@ internal static class StrictMutationEnumerator
         {
             return Refused(ex.Code, ex.Message);
         }
-        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or
-                                   EvaluationContractException or System.Xml.XmlException or DecoderFallbackException or
-                                   System.Text.RegularExpressions.RegexMatchTimeoutException)
+        catch (Exception ex) when (!IsFatal(ex))
         {
             return Refused("ENUMERATION_CONTEXT_UNSUPPORTED",
                 $"Strict semantic context could not be proven complete: {Bound(ex.Message)}");
@@ -641,6 +639,7 @@ internal static class StrictMutationEnumerator
         yield return "NET10_0_OR_GREATER";
         yield return "NETCOREAPP";
         yield return "NETCOREAPP1_0_OR_GREATER";
+        yield return "NETCOREAPP1_1_OR_GREATER";
         yield return "NETCOREAPP2_0_OR_GREATER";
         yield return "NETCOREAPP2_1_OR_GREATER";
         yield return "NETCOREAPP2_2_OR_GREATER";
@@ -681,6 +680,9 @@ internal static class StrictMutationEnumerator
         new([], [new(code, Bound(message))], false, null);
 
     private static string Bound(string value) => value.Length <= 1024 ? value : value[..1024];
+
+    private static bool IsFatal(Exception exception) =>
+        exception is OutOfMemoryException or StackOverflowException or AccessViolationException;
 
     private static StringComparison HostPathComparison => OperatingSystem.IsWindows()
         ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
