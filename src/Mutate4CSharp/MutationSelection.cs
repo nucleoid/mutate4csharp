@@ -155,6 +155,37 @@ internal sealed class MutationSelectionPlan
         }
     }
 
+    public EvaluationUnitResult CompleteWithoutExecution(EvaluationUnitResult plannedUnit,
+        UnitDisposition disposition, IReadOnlyList<EvaluationEvidence> evidence)
+    {
+        ArgumentNullException.ThrowIfNull(plannedUnit);
+        if (disposition is not (UnitDisposition.Uncovered or UnitDisposition.Omitted) ||
+            evidence is null || evidence.Count == 0 || evidence.Any(item => item is null))
+            throw new EvaluationContractException(
+                "Non-executed plan completion requires uncovered or omitted terminal evidence.");
+        lock (_reductionLock)
+        {
+            _ = plannedUnit.RequireIssuedPolicy(_policy);
+            if (!plannedUnit.WasIssuedBy(_provenanceToken) ||
+                !string.Equals(plannedUnit.OriginatingPlanFingerprint, PlanFingerprint,
+                    StringComparison.Ordinal) || plannedUnit.DiagnosticPartial != IsDiagnosticPartial ||
+                !Selected.Any(candidate =>
+                    string.Equals(candidate.MutationId, plannedUnit.UnitId, StringComparison.Ordinal) &&
+                    string.Equals(candidate.EvaluationUnitId, plannedUnit.EvaluationUnitId,
+                        StringComparison.Ordinal)))
+                throw new EvaluationContractException(
+                    "Non-executed completion unit does not belong to this mutation selection plan.");
+            if (!_issuedCompletionDigests.TryAdd(plannedUnit.EvaluationUnitId, null))
+                throw new EvaluationContractException(
+                    "Each selected evaluation unit can be completed only once by its mutation selection plan.");
+            var completed = plannedUnit.CompleteFromStabilityReducer(disposition, evidence, _policy,
+                _completionToken);
+            _issuedCompletionDigests[plannedUnit.EvaluationUnitId] =
+                completed.RequireTrustedCompletionDigest(_completionToken, _policy);
+            return completed;
+        }
+    }
+
     public EvaluationFacts FinalizeFacts(BaselineStatus baseline,
         IEnumerable<EvaluationUnitResult> results, bool allowNotApplicable,
         IReadOnlyList<EvaluationReason>? incompleteConditions = null)

@@ -74,6 +74,15 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
             if (!string.Equals(_environment.PackageFingerprint,
                     ExecutionEnvironment.FingerprintPackages(packages.Root), StringComparison.Ordinal))
                 throw new SnapshotDivergedException("Mutant execution changed the frozen package cache.");
+            var accounted = VstestSuiteExecutor.AccountedMembers(run.TrxPaths);
+            var missing = suite.ExpectedMembers.Except(accounted,
+                StringComparer.OrdinalIgnoreCase).ToArray();
+            if (missing.Length > 0)
+            {
+                evidence.Add(new(suite.Identity, SuiteRunDisposition.Error, [],
+                    [$"Mutant TRX omitted expected member(s): {string.Join(", ", missing.Take(20))}."]));
+                continue;
+            }
             var compile = CompilerEvidence.Evaluate(run,
                 _healthyControls.TryGetValue(suite.Identity, out var healthy) && healthy,
                 Path.Combine(worker.Root, candidate.Material.RepositoryPath.Replace('/',

@@ -11,26 +11,29 @@ public sealed class StrictMutationExecutorTests : IDisposable
     [Fact(Timeout = 420_000)]
     public async Task ExecutesOneExactMutationInAFreshFrozenWorker()
     {
+        var cancellationToken = TestContext.Current.CancellationToken;
         WriteFixture();
         _repository.Git("add", ".");
         _repository.Git("commit", "-m", "fixture");
         await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
-            SnapshotCaptureOptions.Default, CancellationToken.None);
+            SnapshotCaptureOptions.Default, cancellationToken);
         await using var environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
             ["tests/App.Tests/App.Tests.csproj"],
             DependencyPreparationOptions.Default with { Timeout = TimeSpan.FromMinutes(2) },
-            CancellationToken.None);
+            cancellationToken);
         var suite = new SuiteExecution("suite-identity", ["unit"],
             "tests/App.Tests/App.Tests.csproj", "vstest", "net10.0", "Release",
             ["App.Tests.dll"]);
         await using var baseline = await new VstestSuiteExecutor(snapshot, environment)
-            .RunBaselineAsync(suite, TimeSpan.FromMinutes(2), CancellationToken.None);
+            .RunBaselineAsync(suite, TimeSpan.FromMinutes(2), cancellationToken);
         Assert.Equal(SuiteRunDisposition.Passed, baseline.Disposition);
 
         var source = File.ReadAllText(Path.Combine(_repository.Root, "src/App/Flag.cs"));
-        var tree = CSharpSyntaxTree.ParseText(SourceText.From(source), path: "src/App/Flag.cs");
-        var token = tree.GetRoot().DescendantTokens().Single(item => item.ValueText == "true");
-        var mutation = MutationIdentity.Create("src/App/Flag.cs", tree.GetRoot(), token.Span,
+        var tree = CSharpSyntaxTree.ParseText(SourceText.From(source), path: "src/App/Flag.cs",
+            cancellationToken: cancellationToken);
+        var root = tree.GetRoot(cancellationToken);
+        var token = root.DescendantTokens().Single(item => item.ValueText == "true");
+        var mutation = MutationIdentity.Create("src/App/Flag.cs", root, token.Span,
             "literal.boolean", MutationIdentity.OperatorContractVersion, "false");
         var evaluationId = EvaluationUnitIdentity.Compute(new(mutation.MutationId,
             "src/App/App.csproj", "net10.0", "net10-csharp14"));
@@ -41,7 +44,7 @@ public sealed class StrictMutationExecutorTests : IDisposable
             new Dictionary<string, bool>(StringComparer.Ordinal) { [suite.Identity] = true });
 
         var result = await executor.ExecuteAsync(new ScheduledMutation(mutation.MutationId,
-            evaluationId, [suite.Identity]), TimeSpan.FromMinutes(2), CancellationToken.None);
+            evaluationId, [suite.Identity]), TimeSpan.FromMinutes(2), cancellationToken);
 
         Assert.Equal(UnitDisposition.Killed, result.Disposition);
         Assert.Contains(result.Evidence, item => item.Kind == "SUITE_MUTANT_RESULT");

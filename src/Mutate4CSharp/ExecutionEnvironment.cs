@@ -623,12 +623,13 @@ internal sealed record DependencyPreparationOptions(TimeSpan Timeout, int MaxFil
 
 internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string packageRoot,
     string graphRoot, string fingerprint, string packageFingerprint, string? configRelativePath,
-    string? generatedConfigPath) : IAsyncDisposable
+    string? generatedConfigPath, string sdkVersion) : IAsyncDisposable
 {
     public string PackageRoot { get; } = packageRoot;
     public string GraphRoot { get; } = graphRoot;
     public string Fingerprint { get; } = fingerprint;
     public string PackageFingerprint { get; } = packageFingerprint;
+    public string SdkVersion { get; } = sdkVersion;
 
     public async Task<OwnedPackageCache> CreateWorkerPackageCacheAsync(string purpose,
         CancellationToken cancellationToken)
@@ -845,7 +846,7 @@ internal static class ExecutionEnvironment
             var identity = HashStrings("dependencies-v1", snapshot.Identity.CaptureId, sdk.StandardOutput.Trim(),
                 packageFingerprint, graphFingerprint);
             return new(owner, packages, graphs, identity, packageFingerprint,
-                configRelativePath, null);
+                configRelativePath, null, sdk.StandardOutput.Trim());
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
         {

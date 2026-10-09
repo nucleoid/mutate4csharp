@@ -17,6 +17,10 @@ internal sealed record SuiteRunResult(SuiteRunDisposition Disposition, TimeSpan 
     IReadOnlyList<string> Diagnostics, IReadOnlyList<string> CoverageReports) : IAsyncDisposable
 {
     internal OwnedCoverageReports? CoverageOwner { get; init; }
+    internal CoverageMap? CoverageMap { get; init; }
+    internal string? CoverageSha256 { get; init; }
+    internal long CoverageLength { get; init; }
+    internal bool HealthyControl { get; init; }
     public ValueTask DisposeAsync() => CoverageOwner?.DisposeAsync() ?? ValueTask.CompletedTask;
 }
 
@@ -217,9 +221,9 @@ internal sealed class SuiteCoordinator
         }
 
         var compileInvalid = validEvidence.Any(item => item.CompileInvalid);
-        var incomplete = validEvidence.Any(item => item.Disposition is SuiteRunDisposition.Cancelled or
-            SuiteRunDisposition.TimedOut or SuiteRunDisposition.Error or SuiteRunDisposition.Empty or
-            SuiteRunDisposition.Failed);
+        var incomplete = validEvidence.Any(item => !item.CompileInvalid &&
+            item.Disposition is SuiteRunDisposition.Cancelled or SuiteRunDisposition.TimedOut or
+                SuiteRunDisposition.Error or SuiteRunDisposition.Empty or SuiteRunDisposition.Failed);
         var disposition = incomplete || compileInvalid && validEvidence.Any(item => !item.CompileInvalid)
             ? UnitDisposition.Error
             : compileInvalid ? UnitDisposition.CompileInvalid

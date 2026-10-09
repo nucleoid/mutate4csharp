@@ -62,8 +62,11 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                         ExecutionEnvironment.FingerprintPackages(packages.Root), StringComparison.Ordinal))
                     throw new SnapshotDivergedException("Baseline execution changed the frozen package cache.");
                 var disposition = ClassifyBaseline(run);
+                var rawCoverage = TestRunner.FindCoverage(results);
+                var coverageMap = disposition == SuiteRunDisposition.Passed
+                    ? CoverageMap.Load(rawCoverage, worker) : null;
                 coverage = disposition == SuiteRunDisposition.Passed
-                    ? await PreserveOpenCoverReportsAsync(TestRunner.FindCoverage(results),
+                    ? await PreserveOpenCoverReportsAsync(rawCoverage,
                         $"baseline-{Sanitize(suite.Aliases[0])}") : null;
                 var diagnostics = BaselineDiagnostics(run, disposition == SuiteRunDisposition.Passed &&
                     coverage is null).ToList();
@@ -71,7 +74,13 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                     diagnostics.Add(CoverageInventory(results));
                 completed = new(disposition, _timeProvider.GetUtcNow() - started, AccountedMembers(run.TrxPaths),
                     run.FailedTestIds ?? [], diagnostics.Take(20).ToArray(), coverage?.Reports ?? [])
-                    { CoverageOwner = coverage };
+                    {
+                        CoverageOwner = coverage,
+                        CoverageMap = coverageMap,
+                        CoverageSha256 = coverage is null ? null : HashReports(coverage.Reports),
+                        CoverageLength = coverage?.Reports.Sum(path => new FileInfo(path).Length) ?? 0,
+                        HealthyControl = disposition == SuiteRunDisposition.Passed
+                    };
             }
             catch (Exception ex) { failure = ex; }
 
@@ -132,7 +141,7 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
         return value.Length <= 512 ? value : value[..512];
     }
 
-    private static IReadOnlyList<string> AccountedMembers(IReadOnlyList<string> trxPaths)
+    internal static IReadOnlyList<string> AccountedMembers(IReadOnlyList<string> trxPaths)
     {
         var members = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var path in trxPaths)
@@ -182,6 +191,21 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
             }
             throw;
         }
+    }
+
+    private static string HashReports(IReadOnlyList<string> reports)
+    {
+        using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(
+            System.Security.Cryptography.HashAlgorithmName.SHA256);
+        Span<byte> length = stackalloc byte[8];
+        foreach (var path in reports.OrderBy(value => value, StringComparer.Ordinal))
+        {
+            var bytes = File.ReadAllBytes(path);
+            System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(length, bytes.LongLength);
+            hash.AppendData(length);
+            hash.AppendData(bytes);
+        }
+        return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
     }
 
     private static string Sanitize(string value)
