@@ -49,6 +49,8 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
         WriteProject("src/App", "src/App/**/*.cs");
         _repository.WriteText("src/App/A.cs", "public sealed class A { public int Value() => 0; }\n");
         _repository.WriteText("src/App/B.cs", "public sealed class B { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/Tests/SelfCheck.cs",
+            "public sealed class SelfCheck { public bool Value() => true; }\n");
         Commit();
         await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
             SnapshotCaptureOptions.Default, CancellationToken.None);
@@ -64,7 +66,8 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
         Assert.Equal(["src/App/A.cs", "src/App/B.cs"], result.Candidates
             .Select(candidate => candidate.Material.RepositoryPath).Distinct(StringComparer.Ordinal));
         Assert.DoesNotContain(result.Candidates,
-            candidate => candidate.Material.RepositoryPath.StartsWith("tests/", StringComparison.Ordinal));
+            candidate => candidate.Material.RepositoryPath.Contains("/Tests/", StringComparison.OrdinalIgnoreCase) ||
+                         candidate.Material.RepositoryPath.StartsWith("tests/", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -844,6 +847,51 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
         Assert.Empty(result.Candidates);
         Assert.Contains(result.Reasons,
             reason => reason.Code == "ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED");
+    }
+
+    [Fact]
+    public async Task DuplicateDefaultAndExplicitCompileInputIsRefusedLikeTheSdkBuild()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+              <ItemGroup><Compile Include="Flag.cs" /></ItemGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason =>
+            reason.Code == "ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED" &&
+            reason.Message.Contains("more than once", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task NonUtf8SourceIsAValidatedEnumerationLimitation()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        var prefix = Encoding.ASCII.GetBytes(
+            "public sealed class Legacy { public bool Value() => true; } // ");
+        _repository.Write("src/App/Legacy.cs", prefix.Concat([(byte)0x80, (byte)'\n']).ToArray());
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Legacy.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason => reason.Code == "ENUMERATION_ENCODING_UNSUPPORTED");
     }
 
     [Fact]

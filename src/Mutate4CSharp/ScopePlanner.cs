@@ -334,14 +334,16 @@ internal static class ScopePlanner
             SyntaxKind.ElseDirectiveTrivia or SyntaxKind.EndIfDirectiveTrivia);
     }
 
-    private static bool IsTest(string path, ScopeConfiguration configuration)
+    private static bool IsTest(string path, ScopeConfiguration configuration) =>
+        IsTestSource(path, configuration.Projects.SelectMany(project => project.Tests));
+
+    internal static bool IsTestSource(string path, IEnumerable<string> mappedTestProjects)
     {
         var parts = path.Split('/');
         return parts.Any(part => part.Equals("test", StringComparison.OrdinalIgnoreCase) ||
                                  part.Equals("tests", StringComparison.OrdinalIgnoreCase)) ||
                Path.GetFileNameWithoutExtension(path).EndsWith(".Tests", StringComparison.OrdinalIgnoreCase) ||
-               configuration.Projects.SelectMany(project => project.Tests)
-                   .Any(test => ProjectOwnershipResolver.IsUnderTestProject(path, test));
+               mappedTestProjects.Any(test => ProjectOwnershipResolver.IsUnderTestProject(path, test));
     }
 
     internal static bool IsBlockingCode(string code) => code is "AMBIGUOUS_PROJECT_OWNERSHIP" or

@@ -78,7 +78,9 @@ diagnostics, and non-Git explicit-input
 enumeration rather than silently borrowing ambient MSBuild state. Project property names must use their canonical
 SDK casing; case variants are refused rather than risk modelling different semantics from case-insensitive MSBuild.
 Enumeration is bounded at 10,000 evaluation units; exceeding it is an explicit incomplete refusal with an unknown
-count, not a truncated plan. SDK semantics supply the upper-case configuration
+count, not a truncated plan. Production compile inputs classified as tests by the same path and mapped-project
+rules used in scope planning remain compilation inputs but are never mutation targets. Non-UTF-8 source text and
+duplicate explicit/default Compile inputs are explicit incomplete limitations. SDK semantics supply the upper-case configuration
 symbol (`DEBUG`, `RELEASE`, or the configured equivalent) unless `DisableImplicitConfigurationDefines` is true;
 `TRACE` is inherited unless a bare `DefineConstants` value replaces it or `DisableDiagnosticTracing` is true.
 User symbols are derived from captured project bytes; when the optional `defineConstants` assertion is supplied,

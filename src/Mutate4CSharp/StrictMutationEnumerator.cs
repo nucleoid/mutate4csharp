@@ -196,7 +196,8 @@ internal static class StrictMutationEnumerator
     {
         foreach (var path in capturedPaths.Where(path => path.EndsWith(".cs",
                      StringComparison.OrdinalIgnoreCase) && !configuration.Exclusions.Any(exclusion =>
-                     ProjectOwnershipResolver.GlobMatches(path, exclusion.Path)))
+                     ProjectOwnershipResolver.GlobMatches(path, exclusion.Path)) &&
+                     !ScopePlanner.IsTestSource(path, configuration.TestSuites.Select(suite => suite.Path)))
                  .OrderBy(path => path, StringComparer.Ordinal))
         {
             var owners = configuration.Projects.Where(project => project.Sources.Any(pattern =>
@@ -237,6 +238,10 @@ internal static class StrictMutationEnumerator
             buildConfiguration);
         var excluded = sourcePaths.Where(path => configuration.Exclusions.Any(exclusion =>
             ProjectOwnershipResolver.GlobMatches(path, exclusion.Path))).ToHashSet(StringComparer.Ordinal);
+        var mappedTestPaths = configuration.TestSuites.Where(suite =>
+                project.TestSuites.Contains(suite.Id, StringComparer.Ordinal))
+            .Select(suite => suite.Path).ToArray();
+        excluded.UnionWith(sourcePaths.Where(path => ScopePlanner.IsTestSource(path, mappedTestPaths)));
         var parseOptions = new CSharpParseOptions(LanguageVersion.CSharp14,
             preprocessorSymbols: projectSemantics.PreprocessorSymbols);
         var trees = new Dictionary<string, SyntaxTree>(StringComparer.Ordinal);
@@ -244,7 +249,13 @@ internal static class StrictMutationEnumerator
         foreach (var path in sourcePaths)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var source = ReadCapturedText(snapshot, path);
+            string source;
+            try { source = ReadCapturedText(snapshot, path); }
+            catch (DecoderFallbackException ex)
+            {
+                throw new EnumerationContextException("ENUMERATION_ENCODING_UNSUPPORTED",
+                    $"Captured source {path} is not supported UTF-8 text.", ex);
+            }
             sources.Add(path, source);
             if (ScopePlanner.IsGeneratedSource(path, source)) excluded.Add(path);
             var tree = CSharpSyntaxTree.ParseText(SourceText.From(source, Encoding.UTF8), parseOptions,
@@ -433,7 +444,9 @@ internal static class StrictMutationEnumerator
             if (!captured.ContainsKey(resolved))
                 throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
                     $"Compile input is absent from the frozen snapshot: {resolved}.");
-            compileInventory.Add(resolved);
+            if (!compileInventory.Add(resolved))
+                throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
+                    $"Compile input is included more than once under SDK default-item semantics: {resolved}.");
         }
         var configured = configuredSourcePaths.ToHashSet(StringComparer.Ordinal);
         if (!compileInventory.SetEquals(configured))

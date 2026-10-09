@@ -95,6 +95,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
     [Theory]
     [InlineData("ENUMERATION_REFERENCE_UNSUPPORTED")]
     [InlineData("ENUMERATION_LIMIT_EXCEEDED")]
+    [InlineData("ENUMERATION_ENCODING_UNSUPPORTED")]
     [InlineData("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED")]
     [InlineData("UNSUPPORTED_CHANGED_INPUT")]
     [InlineData("UNSUPPORTED_SYNTAX")]
