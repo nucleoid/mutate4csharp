@@ -200,6 +200,13 @@ try:
         for item in conditions
     ):
         raise ValueError("report lacks valid incomplete conditions")
+    if any(item.get("code") == "SIDECAR_WRITE_FAILED" for item in conditions):
+        raise ValueError("report contains SIDECAR_WRITE_FAILED")
+    evidence = report.get("evidence", [])
+    if not isinstance(evidence, list):
+        raise ValueError("report evidence is not an array")
+    if any(isinstance(item, dict) and item.get("kind") == "SIDECAR_PUBLICATION_FAILURE" for item in evidence):
+        raise ValueError("report contains SIDECAR_PUBLICATION_FAILURE")
     execution_pending = any(
         isinstance(item, dict) and item.get("code") == "EXECUTION_NOT_IMPLEMENTED"
         for item in conditions
@@ -242,13 +249,6 @@ try:
             raise ValueError("report lacks a bounded nonnegative enumeration count")
     elif enumerated is not None:
         raise ValueError("enumeration refusal must retain unknown enumeration count")
-    if any(isinstance(item, dict) and item.get("code") == "SIDECAR_WRITE_FAILED" for item in conditions):
-        raise ValueError("report contains SIDECAR_WRITE_FAILED")
-    evidence = report.get("evidence", [])
-    if not isinstance(evidence, list):
-        raise ValueError("report evidence is not an array")
-    if any(isinstance(item, dict) and item.get("kind") == "SIDECAR_PUBLICATION_FAILURE" for item in evidence):
-        raise ValueError("report contains SIDECAR_PUBLICATION_FAILURE")
     if state_mode == "default-state":
         with open(path, "rb") as stream:
             report_bytes = stream.read()
