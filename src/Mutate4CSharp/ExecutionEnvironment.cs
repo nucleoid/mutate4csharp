@@ -716,9 +716,10 @@ internal static class ExecutionEnvironment
     ];
     internal static IReadOnlyList<string> StrictSemanticPropertyEnvironmentVariableNames { get; } =
     [
-        "TargetFramework", "TargetFrameworks", "Nullable", "LangVersion", "DefineConstants",
+        "TargetFramework", "TargetFrameworks", "Configuration", "Nullable", "LangVersion", "DefineConstants",
         "ImplicitUsings", "OutputType", "EnableDefaultItems", "EnableDefaultCompileItems",
-        "DefaultItemExcludes", "DisableImplicitFrameworkDefines"
+        "DefaultItemExcludes", "DisableImplicitFrameworkDefines", "DisableImplicitConfigurationDefines",
+        "DisableDiagnosticTracing"
     ];
 
     internal static async Task CreateExecutionBoundaryAsync(string ownedRoot, string sdkWorkingDirectory,

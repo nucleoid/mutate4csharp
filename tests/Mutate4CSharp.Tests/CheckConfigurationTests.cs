@@ -53,6 +53,24 @@ public sealed class CheckConfigurationTests : IDisposable
     }
 
     [Theory]
+    [InlineData("net10.0-windows")]
+    [InlineData("net10.0-linux")]
+    public void RejectsPlatformSpecificTargetFrameworksUntilTheirSymbolsAreModelled(string framework)
+    {
+        var project = ValidConfiguration.Replace(
+            "\"targetFramework\": \"net10.0\"", $"\"targetFramework\": \"{framework}\"",
+            StringComparison.Ordinal);
+        var projectError = Assert.Throws<ArgumentException>(() => Load(project));
+        Assert.Contains("exact net10.0", projectError.Message, StringComparison.Ordinal);
+
+        var suite = ValidConfiguration.Replace(
+            "\"framework\": \"net10.0\"", $"\"framework\": \"{framework}\"",
+            StringComparison.Ordinal);
+        var suiteError = Assert.Throws<ArgumentException>(() => Load(suite));
+        Assert.Contains("exact net10.0", suiteError.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData("../outside.csproj")]
     [InlineData("/outside.csproj")]
     [InlineData("C:/outside.csproj")]

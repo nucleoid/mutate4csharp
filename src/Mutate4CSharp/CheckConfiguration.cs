@@ -34,8 +34,6 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
     private const int MaxOverallDeadlineSeconds = 604_800;
     private static readonly Regex Identifier = new("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
-    private static readonly Regex Net10Framework = new("^net10\\.0(?:-[a-z0-9.]+)?$",
-        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     private static readonly Regex ConfigurationName = new("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     private static readonly Regex PreprocessorSymbol = new("^[A-Za-z_][A-Za-z0-9_]{0,127}$",
@@ -178,8 +176,8 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
         if (!project.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException($"Production project {id} must use a .csproj path.");
         var framework = Required(item.TargetFramework, $"projects[{index}].targetFramework", 128);
-        if (!Net10Framework.IsMatch(framework))
-            throw new ArgumentException($"Production project {id} targetFramework must use the version-1 net10.0 contract.");
+        if (!framework.Equals("net10.0", StringComparison.Ordinal))
+            throw new ArgumentException($"Production project {id} targetFramework must be exact net10.0 in version 1.");
         var parseContext = Required(item.ParseContext, $"projects[{index}].parseContext", 256);
         var languageVersion = item.LanguageVersion is null ? "14.0" :
             Required(item.LanguageVersion, $"projects[{index}].languageVersion", 32);
@@ -222,8 +220,8 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
         if (!runner.Equals("vstest", StringComparison.Ordinal))
             throw new ArgumentException($"Unsupported test runner '{runner}' for suite {id}; version 1 supports only vstest/TRX.");
         var framework = Required(item.Framework, $"testSuites[{index}].framework", 128);
-        if (!Net10Framework.IsMatch(framework))
-            throw new ArgumentException($"Test suite {id} framework must use the version-1 net10.0 contract.");
+        if (!framework.Equals("net10.0", StringComparison.Ordinal))
+            throw new ArgumentException($"Test suite {id} framework must be exact net10.0 in version 1.");
         var configuration = Required(item.Configuration, $"testSuites[{index}].configuration", 128);
         if (!ConfigurationName.IsMatch(configuration))
             throw new ArgumentException($"Test suite {id} configuration must be a stable ASCII identifier.");

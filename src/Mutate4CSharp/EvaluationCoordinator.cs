@@ -564,7 +564,7 @@ ScopeEvidence:
             $"rid={RuntimeInformation.RuntimeIdentifier};os={RuntimeInformation.OSDescription};" +
             $"osArch={RuntimeInformation.OSArchitecture};processArch={RuntimeInformation.ProcessArchitecture}";
         return new EvaluationFingerprintMaterial(inputs, snapshotId, scope,
-            $"strict-configuration-contract-v1;semantic={semanticContextIdentity}",
+            $"strict-configuration-contract-v2;semantic={semanticContextIdentity}",
             EvaluationFingerprint.ToolIdentity(typeof(EvaluationCoordinator).Assembly), "operator-registry-v1",
             $"dotnet-sdk={sdkVersion}", runtimeIdentity, "runner:not-executed",
             policy, ProvenanceComplete: false);

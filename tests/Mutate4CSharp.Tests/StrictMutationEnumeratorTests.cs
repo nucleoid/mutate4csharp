@@ -203,14 +203,18 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
     }
 
     [Fact]
-    public async Task BareDefineConstantsReplaceConfigurationSymbolsButKeepFrameworkSymbols()
+    public async Task BareDefineConstantsReplaceTraceButKeepDebugAndFrameworkSymbols()
     {
-        WriteProject("src/App", "src/App/**/*.cs", ["FEATURE"], defineConstantsInherit: false);
+        WriteProject("src/App", "src/App/**/*.cs", ["FEATURE"], suiteConfiguration: "Debug",
+            defineConstantsInherit: false);
         _repository.WriteText("src/App/Conditional.cs", """
             public sealed class Conditional
             {
             #if TRACE
                 public bool TraceOnly() => true;
+            #endif
+            #if DEBUG
+                public bool DebugOnly() => true;
             #endif
             #if FEATURE && NET10_0
                 public bool Feature() => true;
@@ -224,8 +228,13 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
             FullProjectScope(snapshot, "src/App/Conditional.cs"), CancellationToken.None);
 
         Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
-        var candidate = Assert.Single(result.Candidates);
-        Assert.Contains("Feature", candidate.Material.DeclarationIdentity, StringComparison.Ordinal);
+        Assert.Equal(2, result.Candidates.Count);
+        Assert.Contains(result.Candidates,
+            candidate => candidate.Material.DeclarationIdentity.Contains("DebugOnly", StringComparison.Ordinal));
+        Assert.Contains(result.Candidates,
+            candidate => candidate.Material.DeclarationIdentity.Contains("Feature", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Candidates,
+            candidate => candidate.Material.DeclarationIdentity.Contains("TraceOnly", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -333,6 +342,12 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
             #if DEBUG
                 public bool DebugOnly() => true;
             #endif
+            #if RELEASE
+                public bool Released() => true;
+            #endif
+            #if !RELEASE
+                public bool NotReleased() => true;
+            #endif
             }
             """);
         Commit();
@@ -342,10 +357,15 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
             FullProjectScope(snapshot, "src/App/Conditional.cs"), CancellationToken.None);
 
         Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
-        var candidate = Assert.Single(result.Candidates);
-        Assert.Contains("Traced", candidate.Material.DeclarationIdentity, StringComparison.Ordinal);
+        Assert.Equal(2, result.Candidates.Count);
+        Assert.Contains(result.Candidates,
+            item => item.Material.DeclarationIdentity.Contains("Traced", StringComparison.Ordinal));
+        Assert.Contains(result.Candidates,
+            item => item.Material.DeclarationIdentity.Contains("Released", StringComparison.Ordinal));
         Assert.DoesNotContain(result.Candidates,
             item => item.Material.DeclarationIdentity.Contains("DebugOnly", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Candidates,
+            item => item.Material.DeclarationIdentity.Contains("NotReleased", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -361,6 +381,9 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
             #if DEBUG
                 public bool DebugOnly() => true;
             #endif
+            #if RELEASE
+                public bool Released() => true;
+            #endif
             }
             """);
         Commit();
@@ -375,6 +398,53 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
             item => item.Material.DeclarationIdentity.Contains("Traced", StringComparison.Ordinal));
         Assert.Contains(result.Candidates,
             item => item.Material.DeclarationIdentity.Contains("DebugOnly", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Candidates,
+            item => item.Material.DeclarationIdentity.Contains("Released", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task HiddenDefaultCompileItemMakesConfiguredInventoryUntrusted()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Visible.cs",
+            "public sealed class Visible { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/.tools/Hidden.cs",
+            "public sealed class Hidden { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Visible.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons,
+            reason => reason.Code == "ENUMERATION_COMPILE_INVENTORY_MISMATCH");
+    }
+
+    [Fact]
+    public async Task RefusesOutputPathPropertiesThatCanChangeDefaultCompileExclusions()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><BaseOutputPath>artifacts/</BaseOutputPath></PropertyGroup>
+            </Project>
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons,
+            reason => reason.Code == "ENUMERATION_PROPERTY_UNSUPPORTED");
     }
 
     [Fact]

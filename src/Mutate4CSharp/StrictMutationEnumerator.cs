@@ -22,15 +22,16 @@ internal static class StrictMutationEnumerator
     [
         "TargetFramework", "Nullable", "LangVersion", "DefineConstants",
         "EnableDefaultItems", "EnableDefaultCompileItems", "DefaultItemExcludes",
-        "DisableImplicitFrameworkDefines", "ImplicitUsings", "OutputType",
+        "DisableImplicitFrameworkDefines", "DisableImplicitConfigurationDefines",
+        "DisableDiagnosticTracing", "ImplicitUsings", "OutputType",
         "RootNamespace", "AssemblyName", "Configurations", "Platforms", "PlatformTarget",
         "IsPackable", "IsPublishable", "GenerateDocumentationFile", "NoWarn",
         "TreatWarningsAsErrors", "WarningsAsErrors", "WarningsNotAsErrors", "WarningLevel",
         "AnalysisLevel", "AnalysisMode", "EnforceCodeStyleInBuild", "Deterministic", "DebugType",
-        "DebugSymbols", "Optimize", "CheckForOverflowUnderflow", "AllowUnsafeBlocks",
+        "DebugSymbols", "Optimize",
         "RestorePackagesWithLockFile", "RestoreLockedMode", "ContinuousIntegrationBuild",
-        "GenerateAssemblyInfo", "AppendTargetFrameworkToOutputPath", "BaseOutputPath",
-        "BaseIntermediateOutputPath", "Version", "VersionPrefix", "VersionSuffix", "PackageId",
+        "GenerateAssemblyInfo", "AppendTargetFrameworkToOutputPath", "Version", "VersionPrefix",
+        "VersionSuffix", "PackageId",
         "Authors", "Company", "Description", "Copyright", "RepositoryUrl", "RepositoryType",
         "PackageTags", "PackageLicenseExpression", "PackageReadmeFile", "PublishRepositoryUrl",
         "IncludeSymbols", "SymbolPackageFormat", "GeneratePackageOnBuild", "IsTestProject",
@@ -153,7 +154,7 @@ internal static class StrictMutationEnumerator
                     StringComparer.Ordinal).ThenBy(candidate => candidate.TargetFramework,
                     StringComparer.Ordinal).ThenBy(candidate => candidate.ParseContext,
                     StringComparer.Ordinal).ToArray();
-            var contextIdentity = MutationIdentity.ComputeDigest("semantic-enumeration-context-v1",
+            var contextIdentity = MutationIdentity.ComputeDigest("semantic-enumeration-context-v2",
                 contextIdentities.Distinct().OrderBy(item => item.Project, StringComparer.Ordinal)
                     .ThenBy(item => item.Identity, StringComparer.Ordinal)
                     .SelectMany((item, index) => new[]
@@ -231,7 +232,7 @@ internal static class StrictMutationEnumerator
         if (errors.Length > 0)
             throw new EnumerationContextException("ENUMERATION_SEMANTIC_INVALID",
                 $"Captured project {project.Project} has unresolved semantic diagnostics: {FormatDiagnostic(errors[0])}");
-        var identity = MutationIdentity.ComputeDigest("project-semantic-context-v1",
+        var identity = MutationIdentity.ComputeDigest("project-semantic-context-v2",
             [
                 ("project", project.Project), ("configuration", buildConfiguration),
                 ("target-framework", project.TargetFramework), ("parse-context", project.ParseContext),
@@ -314,6 +315,10 @@ internal static class StrictMutationEnumerator
             (!bool.TryParse(disableFrameworkDefines, out var disabled) || disabled))
             throw new EnumerationContextException("ENUMERATION_PROPERTY_UNSUPPORTED",
                 $"DisableImplicitFrameworkDefines is unsupported in enumeration v1: {project.Project}.");
+        var disableConfigurationDefines = OptionalBooleanProperty(root,
+            "DisableImplicitConfigurationDefines", project.Project);
+        var disableDiagnosticTracing = OptionalBooleanProperty(root,
+            "DisableDiagnosticTracing", project.Project);
         if (root.Descendants().Any(element => element.Name.LocalName == "Compile" &&
                 (element.Attribute("Remove") is not null || element.Attribute("Update") is not null)))
             throw new EnumerationContextException("ENUMERATION_COMPILE_TRANSFORM_UNSUPPORTED",
@@ -337,7 +342,8 @@ internal static class StrictMutationEnumerator
         if (!nullable.Equals(project.Nullable, StringComparison.Ordinal))
             throw new EnumerationContextException("ENUMERATION_NULLABLE_MISMATCH",
                 $"Captured project nullable context does not match strict configuration: {project.Project}.");
-        var symbols = ResolvePreprocessorSymbols(root, project, buildConfiguration);
+        var symbols = ResolvePreprocessorSymbols(root, project, buildConfiguration,
+            disableConfigurationDefines, disableDiagnosticTracing);
 
         var compileInventory = new HashSet<string>(StringComparer.Ordinal);
         var defaultItems = SingleProperty(root, "EnableDefaultItems");
@@ -354,7 +360,7 @@ internal static class StrictMutationEnumerator
             var projectDirectory = RepositoryDirectory(project.Project);
             foreach (var source in captured.Keys.Where(path =>
                          path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) &&
-                         IsUnderDirectory(path, projectDirectory)))
+                         IsUnderDirectory(path, projectDirectory) && !HasHiddenSegment(path, projectDirectory)))
                 compileInventory.Add(source);
         }
         foreach (var element in compileElements)
@@ -445,7 +451,8 @@ internal static class StrictMutationEnumerator
     }
 
     private static IReadOnlyList<string> ResolvePreprocessorSymbols(XElement root,
-        CheckProject project, string buildConfiguration)
+        CheckProject project, string buildConfiguration, bool disableConfigurationDefines,
+        bool disableDiagnosticTracing)
     {
         const string inheritedPrefix = "$(DefineConstants)";
         var property = SingleProperty(root, "DefineConstants");
@@ -479,7 +486,8 @@ internal static class StrictMutationEnumerator
             throw new EnumerationContextException("ENUMERATION_SYMBOL_MISMATCH",
                 $"Captured project DefineConstants do not match strict configuration: {project.Project}.");
         return FrameworkSymbols()
-            .Concat(retainsConfigurationSymbols ? ConfigurationSymbols(buildConfiguration) : [])
+            .Concat(retainsConfigurationSymbols && !disableDiagnosticTracing ? ["TRACE"] : [])
+            .Concat(disableConfigurationDefines ? [] : [buildConfiguration.ToUpperInvariant()])
             .Concat(declared).Distinct(StringComparer.Ordinal).OrderBy(value => value,
                 StringComparer.Ordinal).ToArray();
 
@@ -514,6 +522,12 @@ internal static class StrictMutationEnumerator
     private static bool IsUnderDirectory(string path, string directory) =>
         directory.Length == 0 || path.StartsWith(directory + "/", StringComparison.Ordinal);
 
+    private static bool HasHiddenSegment(string path, string projectDirectory)
+    {
+        var relative = projectDirectory.Length == 0 ? path : path[(projectDirectory.Length + 1)..];
+        return relative.Split('/').Any(segment => segment.Length > 0 && segment[0] == '.');
+    }
+
     private static string? SingleProperty(XElement root, string name)
     {
         var values = root.Descendants().Where(element => element.Name.LocalName == name).ToArray();
@@ -521,6 +535,15 @@ internal static class StrictMutationEnumerator
             throw new EnumerationContextException("ENUMERATION_PROJECT_UNSUPPORTED",
                 $"Multiple {name} properties are unsupported.");
         return values.SingleOrDefault()?.Value.Trim();
+    }
+
+    private static bool OptionalBooleanProperty(XElement root, string name, string projectPath)
+    {
+        var value = SingleProperty(root, name);
+        if (value is null) return false;
+        if (bool.TryParse(value, out var parsed)) return parsed;
+        throw new EnumerationContextException("ENUMERATION_PROPERTY_UNSUPPORTED",
+            $"{name} must be true or false: {projectPath}.");
     }
 
     private static ReferenceSet PlatformReferences(string? sdkVersion)
@@ -608,12 +631,6 @@ internal static class StrictMutationEnumerator
         yield return "NETCOREAPP3_0_OR_GREATER";
         yield return "NETCOREAPP3_1_OR_GREATER";
         for (var version = 5; version <= 10; version++) yield return $"NET{version}_0_OR_GREATER";
-    }
-
-    private static IEnumerable<string> ConfigurationSymbols(string configuration)
-    {
-        yield return "TRACE";
-        if (configuration.Equals("Debug", StringComparison.Ordinal)) yield return "DEBUG";
     }
 
     private static string ResolveBuildConfiguration(CheckConfiguration configuration, CheckProject project)
