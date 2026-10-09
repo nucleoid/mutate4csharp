@@ -2,7 +2,15 @@ namespace Mutate4CSharp;
 
 internal sealed record MutationCandidate(string MutationId, string EvaluationUnitId,
     MutationIdentityMaterial Material, string ProjectPath, string TargetFramework, string ParseContext,
-    int SourceStart = -1, int SourceLength = -1, string? Original = null, int SourceLine = -1);
+    int SourceStart = -1, int SourceLength = -1, string? Original = null, int SourceLine = -1)
+{
+    internal MutationCandidate(string mutationId, string evaluationUnitId,
+        MutationIdentityMaterial material, string projectPath, string targetFramework,
+        string parseContext, int sourceStart, int sourceLength) :
+        this(mutationId, evaluationUnitId, material, projectPath, targetFramework, parseContext,
+            sourceStart, sourceLength, null, -1)
+    { }
+}
 
 internal sealed record MutationOmission(MutationCandidate Candidate, string ReasonCode, string Message);
 

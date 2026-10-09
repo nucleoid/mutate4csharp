@@ -33,9 +33,34 @@ internal static class StrictExecutionPipeline
         if (preparationTimeout > DependencyPreparationOptions.Default.Timeout)
             preparationTimeout = DependencyPreparationOptions.Default.Timeout;
 
-        await using var environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
-            dependencyPaths, DependencyPreparationOptions.Default with { Timeout = preparationTimeout },
-            cancellationToken);
+        FrozenExecutionEnvironment environment;
+        try
+        {
+            environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
+                dependencyPaths, DependencyPreparationOptions.Default with { Timeout = preparationTimeout },
+                cancellationToken);
+        }
+        catch (SnapshotCleanupException) { throw; }
+        catch (OperationCanceledException) { throw; }
+        catch (SnapshotCaptureException ex)
+        {
+            var code = ex.Message.Contains(".NET SDK", StringComparison.Ordinal) ||
+                       ex.Message.Contains("dotnet", StringComparison.OrdinalIgnoreCase)
+                ? "EXECUTION_ENVIRONMENT_UNAVAILABLE" : "DEPENDENCY_INPUT_UNAVAILABLE";
+            var summary = code == "EXECUTION_ENVIRONMENT_UNAVAILABLE"
+                ? "The configured .NET execution environment could not be started."
+                : "Strict dependency preparation could not establish one frozen package graph.";
+            throw new StrictExecutionRefusalException(new(code, summary), [new(code, ex.Message)]);
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or
+                                   InvalidOperationException)
+        {
+            throw new StrictExecutionRefusalException(new("EXECUTION_ENVIRONMENT_UNAVAILABLE",
+                "The configured .NET execution environment could not be started."),
+                [new("EXECUTION_ENVIRONMENT_UNAVAILABLE", ex.Message)]);
+        }
+        await using (environment)
+        {
         var enumeration = StrictMutationEnumerator.Enumerate(snapshot, configuration, scopePlan,
             cancellationToken, environment.SdkVersion);
         if (!enumeration.IsComplete)
@@ -150,6 +175,7 @@ internal static class StrictExecutionPipeline
         return new(material, semanticContext, environment.SdkVersion, issued.Count,
             plan.OrderResults(completed), baselines.Status, suiteEvidence,
             conditions.Distinct().ToArray(), finalization, evidence);
+        }
     }
 
     private static TimeSpan Remaining(DateTimeOffset deadline)
