@@ -243,8 +243,10 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot divergence."));
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException ex)
                 {
+                    var previousReason = reason;
+                    var previousReasons = enumerationReasons;
                     reason = new("SNAPSHOT_CANCELLED", "Immutable capture validation was cancelled.");
                     evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
                     evidence.Add(new("SNAPSHOT_CANCELLATION",
@@ -252,12 +254,14 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
-                    enumerationReasons = [];
+                    enumerationReasons = PreservedFailureReasons(previousReason, previousReasons, ex);
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot cancellation."));
                 }
                 catch (Exception ex)
                 {
+                    var previousReason = reason;
+                    var previousReasons = enumerationReasons;
                     reason = new("SNAPSHOT_VALIDATION_FAILED",
                         "Immutable capture failed closed during native or runtime validation.");
                     evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
@@ -266,7 +270,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
-                    enumerationReasons = [];
+                    enumerationReasons = PreservedFailureReasons(previousReason, previousReasons, ex);
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot validation failure."));
                 }

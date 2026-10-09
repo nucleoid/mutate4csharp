@@ -1164,6 +1164,6 @@ internal static class ExecutionEnvironment
     private static string Tail(params string[] values)
     {
         var lines = string.Join('\n', values).Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        return string.Join(" | ", lines.TakeLast(4)).Trim();
+        return EvaluationReason.BoundMessage(string.Join(" | ", lines.TakeLast(4)).Trim());
     }
 }

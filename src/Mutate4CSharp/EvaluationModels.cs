@@ -33,7 +33,25 @@ internal sealed record EvaluationEvidence(string Kind, string Summary,
         return value.Length <= MaxDiagnosticLength ? value : value[..MaxDiagnosticLength];
     }
 }
-internal sealed record EvaluationReason(string Code, string Message);
+internal sealed record EvaluationReason
+{
+    public const int MaxMessageLength = 1024;
+
+    public EvaluationReason(string code, string message)
+    {
+        Code = code;
+        Message = BoundMessage(message);
+    }
+
+    public string Code { get; init; }
+    public string Message { get; init; }
+
+    public static string BoundMessage(string message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        return message.Length <= MaxMessageLength ? message : message[..MaxMessageLength];
+    }
+}
 internal sealed record EvaluationUnitResult(string UnitId, string EvaluationUnitId,
     UnitDisposition Disposition, IReadOnlyList<EvaluationEvidence> Evidence)
 {

@@ -79,4 +79,6 @@ nonpassing execution evidence rather than being promoted to boundary violations.
 When cleanup also fails, the report retains both `SNAPSHOT_CLEANUP_FAILED` and the typed primary divergence,
 boundary, limit, or strict-execution-refusal condition with separate evidence. Exact-ID reruns and partial
 stability markers share the report's bounded 20-diagnostic evidence contract and summarize any additional
-identities or attempts with an explicit truncation count.
+identities or attempts with an explicit truncation count. Generated reason and incomplete-condition messages
+are bounded to the report schema's 1,024-character limit, including dependency-preparation failures. Later
+validation cancellation or native/runtime failure retains any integrity condition already observed.
