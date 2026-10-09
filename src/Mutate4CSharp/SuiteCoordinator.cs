@@ -128,6 +128,11 @@ internal sealed class SuiteCoordinator
                 AddCondition(conditions, "EXECUTION_CANCELLED", "Baseline execution was cancelled.");
                 break;
             }
+            catch (SnapshotCaptureException)
+            {
+                if (unboundedResult is not null) await DisposeFailedResultAsync(unboundedResult);
+                throw;
+            }
             catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
             {
                 if (unboundedResult is not null)

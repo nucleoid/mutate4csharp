@@ -748,13 +748,16 @@ internal static class ExecutionEnvironment
     internal static void ValidateExecutionBoundary(string executionRoot)
     {
         var ownedRoot = Directory.GetParent(Path.GetFullPath(executionRoot))?.FullName ??
-            throw new SnapshotCaptureException("Snapshot execution root has no owned parent.");
+            throw new ExecutionBoundaryIntegrityException(
+                "Snapshot execution root has no owned parent.");
         if (!OperatingSystem.IsWindows())
         {
             var mode = File.GetUnixFileMode(ownedRoot);
             var forbidden = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
                             UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
-            if ((mode & forbidden) != 0) throw new SnapshotCaptureException("Snapshot execution parent is not private.");
+            if ((mode & forbidden) != 0)
+                throw new ExecutionBoundaryIntegrityException(
+                    "Snapshot execution parent is not private.");
         }
         foreach (var boundary in new Dictionary<string, string>
                  {
@@ -769,16 +772,19 @@ internal static class ExecutionEnvironment
         {
             var path = Path.Combine(ownedRoot, boundary.Key);
             if (!File.Exists(path) || (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-                throw new SnapshotCaptureException($"Private execution boundary is missing or unsafe: {boundary.Key}");
+                throw new ExecutionBoundaryIntegrityException(
+                    $"Private execution boundary is missing or unsafe: {boundary.Key}");
             if (!string.Equals(File.ReadAllText(path), boundary.Value, StringComparison.Ordinal))
-                throw new SnapshotCaptureException($"Private execution boundary was modified: {boundary.Key}");
+                throw new ExecutionBoundaryIntegrityException(
+                    $"Private execution boundary was modified: {boundary.Key}");
         }
         var global = Path.Combine(ownedRoot, "global.json");
         if (!File.Exists(global) || (File.GetAttributes(global) & FileAttributes.ReparsePoint) != 0)
-            throw new SnapshotCaptureException("Private execution boundary is missing or unsafe: global.json");
+            throw new ExecutionBoundaryIntegrityException(
+                "Private execution boundary is missing or unsafe: global.json");
         for (var ancestor = Directory.GetParent(ownedRoot); ancestor is not null; ancestor = ancestor.Parent)
             if (File.Exists(Path.Combine(ancestor.FullName, ".globalconfig")))
-                throw new SnapshotCaptureException(
+                throw new ExecutionBoundaryIntegrityException(
                     $"Private execution boundary cannot stop inherited .globalconfig: {ancestor.FullName}");
     }
 
@@ -1055,7 +1061,8 @@ internal static class ExecutionEnvironment
                      .OrderBy(path => Path.GetRelativePath(fullRoot, path), StringComparer.Ordinal))
         {
             if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
-                throw new SnapshotCaptureException("Resolved dependency content contains a link or reparse point.");
+                throw new ExecutionBoundaryIntegrityException(
+                    "Resolved dependency content contains a link or reparse point.");
             if (++count > maxFiles) throw new SnapshotLimitException("Resolved dependency file count exceeds its bound.");
             var bytes = File.ReadAllBytes(file);
             checked { total += bytes.Length; }

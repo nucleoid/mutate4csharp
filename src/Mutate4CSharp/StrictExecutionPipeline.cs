@@ -15,6 +15,7 @@ internal sealed record StrictExecutionOutcome(
 internal static class StrictExecutionPipeline
 {
     private static readonly TimeProvider Clock = TimeProvider.System;
+    internal const int MaxStrictWorkers = 1;
 
     public static async Task<StrictExecutionOutcome> RunAsync(InputSnapshot snapshot, string snapshotId,
         ScopePlan scopePlan, CheckConfiguration configuration, IReadOnlyList<string> exactMutationIds,
@@ -41,6 +42,10 @@ internal static class StrictExecutionPipeline
                 cancellationToken);
         }
         catch (SnapshotCleanupException) { throw; }
+        catch (SnapshotDivergedException) { throw; }
+        catch (SnapshotLimitException) { throw; }
+        catch (SnapshotEnvironmentException) { throw; }
+        catch (ExecutionBoundaryIntegrityException) { throw; }
         catch (OperationCanceledException) { throw; }
         catch (ExecutionEnvironmentUnavailableException ex)
         {
@@ -54,8 +59,7 @@ internal static class StrictExecutionPipeline
                 "Strict dependency preparation could not establish one frozen package graph."),
                 [new("DEPENDENCY_INPUT_UNAVAILABLE", ex.Message)]);
         }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or
-                                   InvalidOperationException)
+        catch (System.ComponentModel.Win32Exception ex)
         {
             throw new StrictExecutionRefusalException(new("EXECUTION_ENVIRONMENT_UNAVAILABLE",
                 "The configured .NET execution environment could not be started."),
@@ -119,7 +123,8 @@ internal static class StrictExecutionPipeline
                 $"and omitted {plan.Omitted.Count}.",
                 [$"evaluationFingerprint={bound.EvaluationFingerprint}",
                  $"planFingerprint={bound.PlanFingerprint}",
-                 $"selectionFingerprint={plan.PlanFingerprint}"])
+                 $"selectionFingerprint={plan.PlanFingerprint}",
+                 $"configuredWorkers={policy.MaxWorkers};effectiveWorkers={MaxStrictWorkers}"])
         };
         var conditions = plan.IncompleteConditions.Concat(baselines.IncompleteConditions).ToList();
 
@@ -172,7 +177,7 @@ internal static class StrictExecutionPipeline
             for (var repetition = 1; repetition <= policy.StabilityRepetitions; repetition++)
             {
                 var run = await new EvaluationScheduler(executor, Clock).RunAsync(scheduled,
-                    policy.MaxWorkers, TimeSpan.FromSeconds(policy.MutantTimeoutSeconds), deadline,
+                    MaxStrictWorkers, TimeSpan.FromSeconds(policy.MutantTimeoutSeconds), deadline,
                     cancellationToken);
                 conditions.AddRange(run.IncompleteConditions);
                 foreach (var result in run.Results) attempts[result.EvaluationUnitId].Add(result);

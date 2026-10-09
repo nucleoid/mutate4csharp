@@ -186,17 +186,17 @@ internal sealed class CoverageMap
     private readonly Dictionary<string, List<CoveragePoint>> _spans;
     private readonly string _root;
     private readonly bool _incomplete;
-    private readonly bool _spanIncomplete;
+    private readonly HashSet<string> _spanIncompleteFiles;
 
     private CoverageMap(Dictionary<string, Dictionary<int, bool>> points,
         Dictionary<string, List<CoveragePoint>> spans, string root, bool incomplete,
-        bool spanIncomplete)
+        HashSet<string> spanIncompleteFiles)
     {
         _points = points;
         _spans = spans;
         _root = root;
         _incomplete = incomplete;
-        _spanIncomplete = spanIncomplete;
+        _spanIncompleteFiles = spanIncompleteFiles;
     }
 
     public static CoverageMap? Load(string? report, string root) =>
@@ -217,7 +217,7 @@ internal sealed class CoverageMap
         var points = new Dictionary<string, Dictionary<int, bool>>(comparer);
         var spans = new Dictionary<string, List<CoveragePoint>>(comparer);
         var incomplete = false;
-        var spanIncomplete = false;
+        var spanIncompleteFiles = new HashSet<string>(comparer);
 
         foreach (var report in paths)
         {
@@ -262,9 +262,11 @@ internal sealed class CoverageMap
                                 !TryPosition(point, "ec", out var endColumn) || endLine < line ||
                                 endLine == line && endColumn <= startColumn)
                             {
-                                spanIncomplete = true;
+                                spanIncompleteFiles.Add(file);
                                 continue;
                             }
+                            if (startColumn == 1 && endLine == line && endColumn == 2)
+                                spanIncompleteFiles.Add(file);
                             if (!spans.TryGetValue(file, out var fileSpans)) spans[file] = fileSpans = [];
                             fileSpans.Add(new(line, startColumn, endLine, endColumn, visits > 0));
                         }
@@ -276,7 +278,8 @@ internal sealed class CoverageMap
                 incomplete = true;
             }
         }
-        return new(points, spans, Path.GetFullPath(canonicalRoot), incomplete, spanIncomplete);
+        return new(points, spans, Path.GetFullPath(canonicalRoot), incomplete,
+            spanIncompleteFiles);
 
         static bool TryPosition(XElement point, string name, out int value) =>
             int.TryParse(point.Attribute(name)?.Value, NumberStyles.Integer,
@@ -299,14 +302,15 @@ internal sealed class CoverageMap
         if (startLine <= 0 || startColumn <= 0 || endLine < startLine || endColumn <= 0 ||
             endLine == startLine && endColumn <= startColumn)
             return CoverageState.Unknown;
-        if (!_spans.TryGetValue(Normalize(path, _root), out var points))
+        var normalized = Normalize(path, _root);
+        if (!_spans.TryGetValue(normalized, out var points))
             return CoverageState.Unknown;
         var start = new SourcePosition(startLine, startColumn);
         var end = new SourcePosition(endLine, endColumn);
         var overlapping = points.Where(point => point.Start.CompareTo(end) < 0 &&
             start.CompareTo(point.End) < 0).ToArray();
         if (overlapping.Any(point => point.Covered)) return CoverageState.Covered;
-        if (_incomplete || _spanIncomplete) return CoverageState.Unknown;
+        if (_incomplete || _spanIncompleteFiles.Contains(normalized)) return CoverageState.Unknown;
         return overlapping.Any(point => point.Start.CompareTo(start) <= 0 &&
                 point.End.CompareTo(end) >= 0)
             ? CoverageState.Uncovered

@@ -25,4 +25,8 @@ local restore, invocation, strict configuration/scope loading, fresh coverage, a
 At the current integration boundary a supported self-contained project reports real unit dispositions and a
 nonzero executed count, but remains `INCOMPLETE` with `FINALIZATION_PENDING` until final verification is connected.
 That is a deliberate release boundary, not a claim that execution is absent.
+Coverlet 6.0.4 OpenCover reports are line-granular (`sc=1`, `ec=2` placeholders), so strict execution treats
+their exact-span coverage as unknown and executes those mutants conservatively. Strict `Uncovered` evidence is
+available only from a collector that supplies non-placeholder complete sequence-point spans; the tool never falls
+back to line-only coverage for this decision.
 Build/test/restore timing varies with host, cache, and project size; no universal runtime promise is made.

@@ -13,6 +13,8 @@ internal sealed class SnapshotEnvironmentException(string message, Exception? in
     SnapshotCaptureException(message, inner);
 internal sealed class ExecutionEnvironmentUnavailableException(string message, Exception? inner = null) :
     SnapshotCaptureException(message, inner);
+internal sealed class ExecutionBoundaryIntegrityException(string message, Exception? inner = null) :
+    SnapshotCaptureException(message, inner);
 internal sealed class SnapshotCleanupException : SnapshotCaptureException
 {
     public SnapshotCleanupException(Exception originalFailure, Exception cleanupFailure)

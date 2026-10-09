@@ -63,6 +63,18 @@ public sealed class SuiteCoordinatorTests
         Assert.Contains(result.IncompleteConditions, item => item.Code == "SUITE_MEMBERS_MISSING");
     }
 
+    [Fact]
+    public async Task BaselineSnapshotIntegrityFailuresEscapeSuiteClassification()
+    {
+        var executor = new DelegateSuiteExecutor((_, _, _) =>
+            throw new SnapshotDivergedException("frozen package cache changed"));
+
+        await Assert.ThrowsAsync<SnapshotDivergedException>(() =>
+            new SuiteCoordinator(executor, TimeProvider.System).RunBaselinesAsync(
+                "snapshot", [Suite("unit", "App.Tests.csproj")], TimeSpan.FromSeconds(10),
+                DateTimeOffset.UtcNow.AddMinutes(1), CancellationToken.None));
+    }
+
     [Theory]
     [InlineData(3, 0, 0)]
     [InlineData(4, 0, 1)]

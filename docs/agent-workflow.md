@@ -132,7 +132,10 @@ symbolic repository boundaries, identity drift, non-commit baselines, existing/s
 changed target `HEAD` fail before a result is accepted.
 The current gate accepts a tool result only when a newly created regular report parses, its `exitCode` equals the
 process exit, and it says `INCOMPLETE` / `4`. A supported run must contain `FINALIZATION_PENDING` and a bounded
-nonnegative `counts.enumerated`. Dependency preparation intentionally precedes semantic enumeration because the
+nonnegative `counts.enumerated`. A supported execution may additionally retain named baseline, coverage,
+deadline, cancellation, or omitted-attempt conditions; these remain honest nonpassing evidence. Snapshot,
+boundary, sidecar, and other integrity failures are never allowlisted by the gate. Dependency preparation
+intentionally precedes semantic enumeration because the
 resolved SDK and frozen package graph are part of the candidate-plan identity. A project that cannot establish
 those inputs may instead report only `DEPENDENCY_INPUT_UNAVAILABLE` or `EXECUTION_ENVIRONMENT_UNAVAILABLE`;
 both are nonpassing, keep `counts.enumerated` null, and are explicitly allowlisted by the gate. A project outside

@@ -33,7 +33,7 @@ public sealed class StrictMutationExecutorTests : IDisposable
             cancellationToken: cancellationToken);
         var root = tree.GetRoot(cancellationToken);
         var token = root.DescendantTokens().Single(item => item.ValueText == "true");
-        var lineSpan = tree.GetLineSpan(token.Span);
+        var lineSpan = tree.GetLineSpan(token.Span, cancellationToken);
         Assert.Equal(CoverageState.Unknown, baseline.CoverageMap!.GetState("src/App/Flag.cs",
             lineSpan.StartLinePosition.Line + 1, lineSpan.StartLinePosition.Character + 1,
             lineSpan.EndLinePosition.Line + 1, lineSpan.EndLinePosition.Character + 1));
