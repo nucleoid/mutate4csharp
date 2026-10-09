@@ -9,6 +9,8 @@ combinations probably work.
 | In-repository strict fixtures | Snapshot, scope, configuration, canonical enumeration, fresh VSTest/TRX/xUnit/Coverlet baseline coverage, isolated mutants, deterministic selection, report, and fail-closed orchestration contracts. Final PASS publication remains disabled. |
 | Legacy/in-repository real-process fixtures | VSTest runner with TRX; xUnit through `xunit.runner.visualstudio`; Coverlet `XPlat Code Coverage` in OpenCover format; `xUnit.MaxParallelThreads=1` for serialized real-process suites |
 
+Neither hosted OS is claimed successful until its CI run completes for the exact release candidate.
+
 Microsoft.Testing.Platform, NUnit, MSTest, macOS, older target frameworks, other coverage formats, and custom
 shell runners are not claimed. Ordinary project/test execution is trusted code; the tool is not a security
 sandbox. The shipped orchestration script is currently a Linux Bash workflow and requires GNU `realpath`, GNU

@@ -36,13 +36,23 @@ public sealed class StrictCheckIntegrationTests : IDisposable
     [Fact]
     public async Task PublicStrictCheckFailsClosedUntilFrozenCaptureExists()
     {
+        using var repository = new SnapshotTestRepository();
+        repository.WriteText("src/A.cs", "class A { }\n");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "fixture");
         var reportPath = Path.Combine(_directory, "strict.json");
         var oldOut = Console.Out;
         var output = new StringWriter();
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
         Console.SetOut(output);
         int code;
         try { code = await Program.Main(["check", "--base", "HEAD", "--report", reportPath]); }
-        finally { Console.SetOut(oldOut); }
+        finally
+        {
+            Console.SetOut(oldOut);
+            Environment.CurrentDirectory = previous;
+        }
 
         Assert.Equal(4, code);
         using var report = JsonDocument.Parse(File.ReadAllBytes(reportPath));
@@ -53,7 +63,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         Assert.Contains(report.RootElement.GetProperty("reasons").EnumerateArray(),
             reason => reason.GetProperty("code").GetString() is
                 "ENUMERATION_SCOPE_INCOMPLETE" or "ENUMERATION_CONTEXT_UNSUPPORTED" or
-                "ENUMERATION_PROJECT_ELEMENT_UNSUPPORTED" or "FINALIZATION_PENDING");
+                "ENUMERATION_CONFIGURATION_REQUIRED");
         Assert.DoesNotContain(report.RootElement.GetProperty("reasons").EnumerateArray(),
             reason => reason.GetProperty("code").GetString() == "ENUMERATION_NOT_IMPLEMENTED");
         var snapshot = report.RootElement.GetProperty("evidence").EnumerateArray()
@@ -761,13 +771,23 @@ public sealed class StrictCheckIntegrationTests : IDisposable
     [Fact]
     public async Task NonStringExistingReportEnvelopeIsAUsageError()
     {
+        using var repository = new SnapshotTestRepository();
+        repository.WriteText("src/A.cs", "class A { }\n");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "fixture");
         var path = Path.Combine(_directory, "wrong-types.json");
-        Assert.Equal(4, await Program.Main(["check", "--base", "HEAD", "--report", path]));
-        File.WriteAllText(path, "{\"schemaVersion\":1,\"runId\":false,\"outcome\":[]}");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
+        try
+        {
+            Assert.Equal(4, await Program.Main(["check", "--base", "HEAD", "--report", path]));
+            File.WriteAllText(path, "{\"schemaVersion\":1,\"runId\":false,\"outcome\":[]}");
 
-        var code = await Program.Main(["check", "--base", "HEAD", "--report", path]);
+            var code = await Program.Main(["check", "--base", "HEAD", "--report", path]);
 
-        Assert.Equal(1, code);
+            Assert.Equal(1, code);
+        }
+        finally { Environment.CurrentDirectory = previous; }
     }
 
     private static SnapshotTestRepository StrictEnumerationRepository(string member)

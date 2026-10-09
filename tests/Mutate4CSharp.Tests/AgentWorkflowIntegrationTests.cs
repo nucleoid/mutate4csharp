@@ -66,7 +66,7 @@ public sealed class AgentWorkflowIntegrationTests
         Assert.Contains("OpenCover", matrix, StringComparison.Ordinal);
         Assert.Contains("packaged strict", matrix, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("legacy", matrix, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("does not run VSTest", matrix, StringComparison.Ordinal);
+        Assert.Contains("fresh VSTest", matrix, StringComparison.Ordinal);
         Assert.DoesNotContain("SLA", matrix, StringComparison.Ordinal);
 
         Assert.Contains("5 not applicable", Cli.HelpText, StringComparison.OrdinalIgnoreCase);
