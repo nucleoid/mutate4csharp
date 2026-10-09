@@ -60,6 +60,62 @@ public sealed class StrictCheckIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task SupportedCapturedScopePublishesBoundEnumerationBeforeExecutionIntegration()
+    {
+        using var repository = StrictEnumerationRepository("public int Value() => 0;");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "baseline");
+        repository.WriteText("src/App/Flag.cs", "public sealed class Flag { public int Value() => 1; }\n");
+        var reportPath = Path.Combine(_directory, "enumerated.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
+        EvaluationRunResult result;
+        try
+        {
+            result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], reportPath, "enumerated-run"), CancellationToken.None);
+        }
+        finally { Environment.CurrentDirectory = previous; }
+
+        Assert.Equal(4, result.Report.ExitCode);
+        Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+        Assert.Equal(1, result.Report.Counts.Enumerated);
+        var unit = Assert.Single(result.Report.Units);
+        Assert.Equal(UnitDisposition.Error, unit.Disposition);
+        Assert.True(MutationIdentity.IsMutationId(unit.UnitId));
+        Assert.True(EvaluationUnitIdentity.IsEvaluationUnitId(unit.EvaluationUnitId));
+        Assert.Contains(result.Report.Reasons, reason => reason.Code == "EXECUTION_NOT_IMPLEMENTED");
+        Assert.DoesNotContain(result.Report.Reasons, reason => reason.Code == "ENUMERATION_NOT_IMPLEMENTED");
+        Assert.Contains(result.Report.Evidence, item => item.Kind == "MUTATION_PLAN" &&
+            item.Diagnostics?.Any(value => value.StartsWith("planFingerprint=sha256:",
+                StringComparison.Ordinal)) == true);
+    }
+
+    [Fact]
+    public async Task CompleteZeroSiteEnumerationIsNotReportedAsUnknown()
+    {
+        using var repository = StrictEnumerationRepository("public int Value() => 2;");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "baseline");
+        repository.WriteText("src/App/Flag.cs", "public sealed class Flag { public int Value() => 3; }\n");
+        var reportPath = Path.Combine(_directory, "zero.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
+        EvaluationRunResult result;
+        try
+        {
+            result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], reportPath, "zero-run"), CancellationToken.None);
+        }
+        finally { Environment.CurrentDirectory = previous; }
+
+        Assert.Equal(0, result.Report.Counts.Enumerated);
+        Assert.Empty(result.Report.Units);
+        Assert.Contains(result.Report.Reasons, reason => reason.Code == "EXECUTION_NOT_IMPLEMENTED");
+        Assert.DoesNotContain(result.Report.Reasons, reason => reason.Code == "ENUMERATION_INCOMPLETE");
+    }
+
+    [Fact]
     public async Task RefusedReportWritePrintsCurrentRunIdAndCannotBeMistakenForStaleReport()
     {
         var reportPath = Path.Combine(_directory, "stale.json");
@@ -604,6 +660,47 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         var code = await Program.Main(["check", "--base", "HEAD", "--report", path]);
 
         Assert.Equal(1, code);
+    }
+
+    private static SnapshotTestRepository StrictEnumerationRepository(string member)
+    {
+        var repository = new SnapshotTestRepository();
+        repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+            </Project>
+            """);
+        repository.WriteText("src/App/Flag.cs", $"public sealed class Flag {{ {member} }}\n");
+        repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+            </Project>
+            """);
+        repository.WriteText("mutate4csharp.json", """
+            {
+              "version": 1,
+              "projects": [{
+                "id": "app",
+                "project": "src/App/App.csproj",
+                "targetFramework": "net10.0",
+                "parseContext": "net10-csharp14",
+                "languageVersion": "14.0",
+                "nullable": "enable",
+                "defineConstants": [],
+                "sources": ["src/App/**/*.cs"],
+                "testSuites": ["unit"]
+              }],
+              "testSuites": [{
+                "id": "unit",
+                "path": "tests/App.Tests/App.Tests.csproj",
+                "runner": "vstest",
+                "framework": "net10.0",
+                "configuration": "Release",
+                "expectedMembers": ["App.Tests.dll"]
+              }]
+            }
+            """);
+        return repository;
     }
 
     public void Dispose() { try { Directory.Delete(_directory, true); } catch { } }
