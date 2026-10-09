@@ -101,6 +101,34 @@ public sealed class SafetyRegressionTests : IDisposable
     }
 
     [Fact]
+    public void StrictCoverageUsesCompleteSequencePointSpansConservatively()
+    {
+        var target = Write("Target.cs", "class Target {}\n");
+        var report = Write("coverage-spans.xml", $"""
+            <CoverageSession><Modules><Module><Files><File uid="1" fullPath="{System.Security.SecurityElement.Escape(target)}"/></Files>
+            <Classes><Class><Methods><Method><FileRef uid="1"/><SequencePoints>
+            <SequencePoint vc="1" sl="10" sc="5" el="12" ec="30"/>
+            <SequencePoint vc="0" sl="11" sc="15" el="11" ec="20"/>
+            </SequencePoints></Method></Methods></Class></Classes>
+            </Module></Modules></CoverageSession>
+            """);
+        var map = CoverageMap.Load(report, _directory)!;
+
+        Assert.Equal(CoverageState.Covered, map.GetState(target, 11, 16, 11, 18));
+        Assert.Equal(CoverageState.Unknown, map.GetState(target, 12, 25, 13, 2));
+
+        var onlyZero = Write("coverage-zero-span.xml", $"""
+            <CoverageSession><Modules><Module><Files><File uid="1" fullPath="{System.Security.SecurityElement.Escape(target)}"/></Files>
+            <Classes><Class><Methods><Method><FileRef uid="1"/><SequencePoints>
+            <SequencePoint vc="0" sl="20" sc="5" el="22" ec="30"/>
+            </SequencePoints></Method></Methods></Class></Classes>
+            </Module></Modules></CoverageSession>
+            """);
+        Assert.Equal(CoverageState.Uncovered,
+            CoverageMap.Load(onlyZero, _directory)!.GetState(target, 21, 8, 21, 12));
+    }
+
+    [Fact]
     public void SafeEnumerationPrunesSecretsExcludedTreesAndSymlinks()
     {
         var visible = Write("src/visible.cs", "ok");

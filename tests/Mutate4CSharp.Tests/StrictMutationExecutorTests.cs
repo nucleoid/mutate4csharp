@@ -56,6 +56,81 @@ public sealed class StrictMutationExecutorTests : IDisposable
     }
 
     [Fact(Timeout = 420_000)]
+    public async Task RealProcessDistinguishesSurvivedAndCompileInvalidMutants()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        WriteFixture();
+        _repository.WriteText("tests/App.Tests/FlagTests.cs", """
+            using Xunit;
+            public sealed class FlagTests
+            {
+                [Fact] public void WeakTest() => Assert.True(true);
+            }
+            """);
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "weak-fixture");
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, cancellationToken);
+        await using var environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
+            ["tests/App.Tests/App.Tests.csproj"],
+            DependencyPreparationOptions.Default with { Timeout = TimeSpan.FromMinutes(2) },
+            cancellationToken);
+        var suite = new SuiteExecution("suite-identity", ["unit"],
+            "tests/App.Tests/App.Tests.csproj", "vstest", "net10.0", "Release",
+            ["App.Tests.dll"]);
+        await using var baseline = await new VstestSuiteExecutor(snapshot, environment)
+            .RunBaselineAsync(suite, TimeSpan.FromMinutes(2), cancellationToken);
+        Assert.Equal(SuiteRunDisposition.Passed, baseline.Disposition);
+
+        var source = File.ReadAllText(Path.Combine(_repository.Root, "src/App/Flag.cs"));
+        var tree = CSharpSyntaxTree.ParseText(SourceText.From(source), path: "src/App/Flag.cs",
+            cancellationToken: cancellationToken);
+        var root = tree.GetRoot(cancellationToken);
+        var token = root.DescendantTokens().Single(item => item.ValueText == "true");
+        MutationCandidate Candidate(string replacement)
+        {
+            var mutation = MutationIdentity.Create("src/App/Flag.cs", root, token.Span,
+                "literal.boolean", MutationIdentity.OperatorContractVersion, replacement);
+            var evaluationId = EvaluationUnitIdentity.Compute(new(mutation.MutationId,
+                "src/App/App.csproj", "net10.0", "net10-csharp14"));
+            return new(mutation.MutationId, evaluationId, mutation.Material,
+                "src/App/App.csproj", "net10.0", "net10-csharp14", token.SpanStart,
+                token.Span.Length, token.Text, 1);
+        }
+        var survived = Candidate("false");
+        var invalid = Candidate("42");
+        var executor = new StrictMutationExecutor(snapshot, environment, [survived, invalid], [suite],
+            new Dictionary<string, bool>(StringComparer.Ordinal) { [suite.Identity] = true });
+
+        var survivedResult = await executor.ExecuteAsync(new(survived.MutationId,
+            survived.EvaluationUnitId, [suite.Identity]), TimeSpan.FromMinutes(2), cancellationToken);
+        var invalidResult = await executor.ExecuteAsync(new(invalid.MutationId,
+            invalid.EvaluationUnitId, [suite.Identity]), TimeSpan.FromMinutes(2), cancellationToken);
+
+        Assert.Equal(UnitDisposition.Survived, survivedResult.Disposition);
+        Assert.Equal(UnitDisposition.CompileInvalid, invalidResult.Disposition);
+        Assert.Contains(invalidResult.Evidence, item => item.Kind == "SUITE_MUTANT_RESULT" &&
+            item.Diagnostics?.Any(value => value == "compile-invalid=true") == true);
+        Assert.Equal(source, File.ReadAllText(Path.Combine(_repository.Root, "src/App/Flag.cs")));
+    }
+
+    [Fact]
+    public void PartialBaselineAccountingRetainsCompletedSuitesWithoutForgingMissingOnes()
+    {
+        var one = new SuiteExecution("one", ["one"], "One.csproj", "vstest", "net10.0",
+            "Release", ["One.Tests.dll"]);
+        var two = new SuiteExecution("two", ["two"], "Two.csproj", "vstest", "net10.0",
+            "Release", ["Two.Tests.dll"]);
+        var completed = new SuiteBaselineExecution("snapshot-key", ["one"],
+            new(SuiteRunDisposition.Passed, TimeSpan.Zero, ["One.Tests.dll"], [], [], []));
+
+        var mapped = StrictExecutionPipeline.MapBaselineExecutions([one, two], [completed]);
+
+        Assert.Same(completed, mapped["one"]);
+        Assert.False(mapped.ContainsKey("two"));
+    }
+
+    [Fact(Timeout = 420_000)]
     public async Task CoordinatorRunsFreshBaselineCoverageAndMutantBeforeFinalizationGate()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

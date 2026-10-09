@@ -209,6 +209,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         repository.WriteText("src/App/Flag.cs", "public sealed class Flag { public int Value() => 1; }\n");
         var firstReport = Path.Combine(_directory, "full-plan.json");
         var targetedReport = Path.Combine(_directory, "targeted-plan.json");
+        var staleReport = Path.Combine(_directory, "stale-targeted-plan.json");
         var previous = Environment.CurrentDirectory;
         Environment.CurrentDirectory = repository.Root;
         try
@@ -229,6 +230,14 @@ public sealed class StrictCheckIntegrationTests : IDisposable
             Assert.Contains(targeted.Report.IncompleteConditions,
                 reason => reason.Code == MutationSelection.TargetedDiagnosticCode);
             Assert.Contains(targeted.Report.Evidence, item => item.Kind == "EXACT_ID_REQUEST");
+
+            var stale = await coordinator.RunAsync(new(false, "HEAD", [], staleReport,
+                "stale-targeted-plan", MutationIds: [mutation],
+                PlanFingerprint: "sha256:" + new string('0', 64)), CancellationToken.None);
+            Assert.Contains(stale.Report.IncompleteConditions,
+                reason => reason.Code == "TARGET_SELECTION_INVALID");
+            Assert.DoesNotContain(stale.Report.IncompleteConditions,
+                reason => reason.Code == "SNAPSHOT_VALIDATION_FAILED");
         }
         finally { Environment.CurrentDirectory = previous; }
     }
