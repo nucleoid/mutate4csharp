@@ -75,6 +75,21 @@ public sealed class SuiteCoordinatorTests
                 DateTimeOffset.UtcNow.AddMinutes(1), CancellationToken.None));
     }
 
+    [Fact]
+    public async Task OrdinaryBaselineRestoreFailuresRemainInconclusiveEvidence()
+    {
+        var executor = new DelegateSuiteExecutor((_, _, _) =>
+            throw new SnapshotCaptureException("Frozen worker restore failed: feed unavailable"));
+
+        var result = await new SuiteCoordinator(executor, TimeProvider.System).RunBaselinesAsync(
+            "snapshot", [Suite("unit", "App.Tests.csproj")], TimeSpan.FromSeconds(10),
+            DateTimeOffset.UtcNow.AddMinutes(1), CancellationToken.None);
+
+        Assert.Equal(BaselineStatus.Unknown, result.Status);
+        Assert.Equal(SuiteRunDisposition.Error, Assert.Single(result.Executions).Result.Disposition);
+        Assert.Contains(result.IncompleteConditions, item => item.Code == "BASELINE_INCONCLUSIVE");
+    }
+
     [Theory]
     [InlineData(3, 0, 0)]
     [InlineData(4, 0, 1)]

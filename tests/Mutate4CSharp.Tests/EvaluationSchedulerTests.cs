@@ -15,6 +15,48 @@ public sealed class EvaluationSchedulerTests
             1, TimeSpan.FromSeconds(10), DateTimeOffset.UtcNow.AddMinutes(1),
             CancellationToken.None));
     }
+
+    [Fact]
+    public async Task OrdinaryWorkerRestoreFailuresRemainUnitErrors()
+    {
+        var executor = new DelegateMutationExecutor((_, _, _) =>
+            throw new SnapshotCaptureException("Frozen worker restore failed: feed unavailable"));
+
+        var result = await new EvaluationScheduler(executor, TimeProvider.System).RunAsync(
+            [new ScheduledMutation("mutation:v1:" + new string('3', 64),
+                "evaluation:v1:" + new string('4', 64), ["unit"])],
+            1, TimeSpan.FromSeconds(10), DateTimeOffset.UtcNow.AddMinutes(1),
+            CancellationToken.None);
+
+        var unit = Assert.Single(result.Results);
+        Assert.Equal(UnitDisposition.Error, unit.Disposition);
+        Assert.Contains(unit.Evidence, item => item.Kind == "MUTANT_EXECUTION_INCOMPLETE");
+    }
+
+    [Fact]
+    public async Task StrictStabilityAttemptsAreContiguousPerEvaluationUnit()
+    {
+        var calls = new List<string>();
+        var executor = new DelegateMutationExecutor((work, _, _) =>
+        {
+            calls.Add(work.EvaluationUnitId);
+            return Task.FromResult(new ScheduledMutationResult(work.EvaluationUnitId,
+                UnitDisposition.Killed, [new("KILLED", "fixture")]));
+        });
+        var first = new ScheduledMutation("mutation:v1:" + new string('5', 64),
+            "evaluation:v1:" + new string('5', 64), ["unit"]);
+        var second = new ScheduledMutation("mutation:v1:" + new string('6', 64),
+            "evaluation:v1:" + new string('6', 64), ["unit"]);
+
+        var result = await StrictExecutionPipeline.RunContiguousAttemptsAsync(executor,
+            [first, second], 2, TimeSpan.FromSeconds(10), DateTimeOffset.UtcNow.AddMinutes(1),
+            TimeProvider.System, CancellationToken.None);
+
+        Assert.Equal([first.EvaluationUnitId, first.EvaluationUnitId,
+            second.EvaluationUnitId, second.EvaluationUnitId], calls);
+        Assert.Equal(2, result.Attempts[first.EvaluationUnitId].Count);
+        Assert.Equal(2, result.Attempts[second.EvaluationUnitId].Count);
+    }
     [Fact]
     public async Task SchedulerNeverExceedsWorkerBoundAndReturnsCanonicalOrder()
     {
