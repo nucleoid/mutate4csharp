@@ -732,7 +732,8 @@ internal static class ExecutionEnvironment
         var version = sdk.StandardOutput.Trim();
         if (sdk.TimedOut || sdk.ExitCode != 0 || version.Length == 0 ||
             version.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not ('.' or '-' or '+')))
-            throw new SnapshotCaptureException("Could not pin the .NET SDK for the private execution boundary.");
+            throw new ExecutionEnvironmentUnavailableException(
+                "Could not pin the .NET SDK for the private execution boundary.");
         WriteBoundary(Path.Combine(ownedRoot, "Directory.Build.props"), "<Project />\n");
         WriteBoundary(Path.Combine(ownedRoot, "Directory.Build.targets"), "<Project />\n");
         WriteBoundary(Path.Combine(ownedRoot, "Directory.Packages.props"), "<Project />\n");
@@ -842,7 +843,9 @@ internal static class ExecutionEnvironment
             var graphFingerprint = FingerprintTreeBounded(graphs, options.MaxFiles, options.MaxBytes);
             var sdk = await ProcessTree.RunAsync(dotnet, ["--version"], preparation.Root,
                 TimeSpan.FromSeconds(30), deadline.Token, requireLinuxSessionIsolation: true);
-            if (sdk.ExitCode != 0 || sdk.TimedOut) throw new SnapshotCaptureException("Could not identify the resolved .NET SDK.");
+            if (sdk.ExitCode != 0 || sdk.TimedOut)
+                throw new ExecutionEnvironmentUnavailableException(
+                    "Could not identify the resolved .NET SDK.");
             var identity = HashStrings("dependencies-v1", snapshot.Identity.CaptureId, sdk.StandardOutput.Trim(),
                 packageFingerprint, graphFingerprint);
             return new(owner, packages, graphs, identity, packageFingerprint,

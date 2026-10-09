@@ -130,11 +130,33 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 reportSuites = execution.Suites;
                 enumerationReasons = execution.IncompleteConditions;
                 reason = execution.Reason;
+                var dependency = execution.FingerprintMaterial.Inputs.Single(input =>
+                    input.Kind == "dependency" &&
+                    input.Path == ".mutate4csharp/frozen-dependencies");
+                var snapshotEvidenceIndex = evidence.FindIndex(item => item.Kind == "INPUT_SNAPSHOT");
+                if (snapshotEvidenceIndex >= 0)
+                {
+                    var captured = evidence[snapshotEvidenceIndex];
+                    evidence[snapshotEvidenceIndex] = captured with
+                    {
+                        Diagnostics = (captured.Diagnostics ?? [])
+                            .Where(value => !value.StartsWith("dependencyFingerprint=",
+                                StringComparison.Ordinal))
+                            .Append("dependencyFingerprint=" +
+                                (dependency.Sha256.StartsWith("sha256:", StringComparison.Ordinal)
+                                    ? dependency.Sha256
+                                    : "sha256:" + dependency.Sha256)).ToArray()
+                    };
+                }
                 evidence.AddRange(execution.Evidence);
                 if (exactIdRequest)
                     evidence.Add(new("EXACT_ID_REQUEST",
-                        $"Executed {exactMutationIds.Count} freshly bound diagnostic mutation ID(s).",
-                        exactMutationIds.Take(100).ToArray()));
+                        $"Freshly bound {exactMutationIds.Count} diagnostic mutation ID(s); " +
+                        "terminal dispositions are recorded in the unit ledger.",
+                        exactMutationIds.Take(100).Concat([
+                            $"executed={reportUnits.Count(item => item.Disposition is not (UnitDisposition.Omitted or UnitDisposition.Uncovered or UnitDisposition.Pending))}",
+                            $"omitted={reportUnits.Count(item => item.Disposition == UnitDisposition.Omitted)}"
+                        ]).ToArray()));
             }
             if (exactIdRequest && reason.Code != "FINALIZATION_PENDING" &&
                 evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))

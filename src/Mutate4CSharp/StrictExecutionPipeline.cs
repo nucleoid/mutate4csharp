@@ -42,15 +42,17 @@ internal static class StrictExecutionPipeline
         }
         catch (SnapshotCleanupException) { throw; }
         catch (OperationCanceledException) { throw; }
+        catch (ExecutionEnvironmentUnavailableException ex)
+        {
+            throw new StrictExecutionRefusalException(new("EXECUTION_ENVIRONMENT_UNAVAILABLE",
+                "The configured .NET execution environment could not be started."),
+                [new("EXECUTION_ENVIRONMENT_UNAVAILABLE", ex.Message)]);
+        }
         catch (SnapshotCaptureException ex)
         {
-            var code = ex.Message.Contains(".NET SDK", StringComparison.Ordinal) ||
-                       ex.Message.Contains("dotnet", StringComparison.OrdinalIgnoreCase)
-                ? "EXECUTION_ENVIRONMENT_UNAVAILABLE" : "DEPENDENCY_INPUT_UNAVAILABLE";
-            var summary = code == "EXECUTION_ENVIRONMENT_UNAVAILABLE"
-                ? "The configured .NET execution environment could not be started."
-                : "Strict dependency preparation could not establish one frozen package graph.";
-            throw new StrictExecutionRefusalException(new(code, summary), [new(code, ex.Message)]);
+            throw new StrictExecutionRefusalException(new("DEPENDENCY_INPUT_UNAVAILABLE",
+                "Strict dependency preparation could not establish one frozen package graph."),
+                [new("DEPENDENCY_INPUT_UNAVAILABLE", ex.Message)]);
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or
                                    InvalidOperationException)
@@ -73,12 +75,29 @@ internal static class StrictExecutionPipeline
         var material = EvaluationCoordinator.BuildEvaluationFingerprintMaterial(snapshot, snapshotId,
             scopePlan, policy, semanticContext, environment.SdkVersion, environment,
             configuration.ExecutionSuites);
-        var bound = MutationSelection.Bind(enumeration.Candidates, material);
+        BoundMutationPlan bound;
+        try { bound = MutationSelection.Bind(enumeration.Candidates, material); }
+        catch (Exception ex) when (ex is EvaluationContractException or ArgumentException)
+        {
+            throw new StrictExecutionRefusalException(new("ENUMERATION_FINGERPRINT_INVALID",
+                "Fresh semantic enumeration could not bind to the current evaluation fingerprint."),
+                [new("ENUMERATION_FINGERPRINT_INVALID", ex.Message)]);
+        }
         var targeted = exactMutationIds.Count > 0;
-        var plan = targeted
-            ? MutationSelection.PlanTargeted(bound, exactMutationIds,
-                expectedPlanFingerprint ?? string.Empty, material)
-            : MutationSelection.Plan(bound, material);
+        MutationSelectionPlan plan;
+        try
+        {
+            plan = targeted
+                ? MutationSelection.PlanTargeted(bound, exactMutationIds,
+                    expectedPlanFingerprint ?? string.Empty, material)
+                : MutationSelection.Plan(bound, material);
+        }
+        catch (EvaluationContractException ex) when (targeted)
+        {
+            throw new StrictExecutionRefusalException(new("TARGET_SELECTION_INVALID",
+                "The exact-ID diagnostic request did not match the freshly bound mutation plan."),
+                [new("TARGET_SELECTION_INVALID", ex.Message)]);
+        }
         var issued = plan.CreatePendingLedger();
         var pending = issued.Where(item => item.Disposition == UnitDisposition.Pending)
             .ToDictionary(item => item.EvaluationUnitId, StringComparer.Ordinal);
@@ -114,6 +133,11 @@ internal static class StrictExecutionPipeline
         }
         else
         {
+            if (aliases.Count != configuration.ExecutionSuites.Count)
+                throw new StrictExecutionRefusalException(new("BASELINE_ACCOUNTING_INCOMPLETE",
+                    "A green baseline omitted one or more configured suite executions."),
+                    [new("BASELINE_ACCOUNTING_INCOMPLETE",
+                        $"completed={aliases.Count};required={configuration.ExecutionSuites.Count}")]);
             var mappedSuites = plan.Selected.ToDictionary(item => item.EvaluationUnitId,
                 item => MapCandidateSuites(configuration, item), StringComparer.Ordinal);
             var scheduled = new List<ScheduledMutation>();
@@ -121,7 +145,9 @@ internal static class StrictExecutionPipeline
             {
                 var suites = mappedSuites[candidate.EvaluationUnitId];
                 var coverage = suites.Select(item => aliases[item.Identity].Result.CoverageMap?
-                        .GetState(candidate.Material.RepositoryPath, candidate.SourceLine) ?? CoverageState.Unknown)
+                        .GetState(candidate.Material.RepositoryPath, candidate.SourceLine,
+                            candidate.SourceColumn, candidate.SourceEndLine, candidate.SourceEndColumn) ??
+                    CoverageState.Unknown)
                     .ToArray();
                 if (coverage.All(item => item == CoverageState.Uncovered))
                 {
@@ -187,7 +213,7 @@ internal static class StrictExecutionPipeline
         return remaining;
     }
 
-    private static IReadOnlyDictionary<string, SuiteBaselineExecution> MapBaselineExecutions(
+    internal static IReadOnlyDictionary<string, SuiteBaselineExecution> MapBaselineExecutions(
         IReadOnlyList<SuiteExecution> suites, IReadOnlyList<SuiteBaselineExecution> baselines)
     {
         var result = new Dictionary<string, SuiteBaselineExecution>(StringComparer.Ordinal);
@@ -195,10 +221,10 @@ internal static class StrictExecutionPipeline
         {
             var matches = baselines.Where(item =>
                 item.SuiteIds.Intersect(suite.Aliases, StringComparer.Ordinal).Any()).ToArray();
-            if (matches.Length != 1)
+            if (matches.Length > 1)
                 throw new EvaluationContractException(
-                    $"Suite {suite.Identity} has no exact baseline execution identity mapping.");
-            result.Add(suite.Identity, matches[0]);
+                    $"Suite {suite.Identity} has duplicate baseline execution identity mappings.");
+            if (matches.Length == 1) result.Add(suite.Identity, matches[0]);
         }
         return result;
     }
@@ -223,7 +249,11 @@ internal static class StrictExecutionPipeline
         IReadOnlyDictionary<string, SuiteBaselineExecution> baselines) => suites
         .OrderBy(item => item.Identity, StringComparer.Ordinal).Select(suite =>
         {
-            var run = baselines[suite.Identity].Result;
+            if (!baselines.TryGetValue(suite.Identity, out var execution))
+                return new SuiteEvidence(suite.Identity, BaselineStatus.Unknown,
+                    [new("SUITE_BASELINE_NOT_RUN",
+                        "The suite did not start before baseline cancellation or deadline exhaustion.")]);
+            var run = execution.Result;
             var baseline = run.Disposition switch
             {
                 SuiteRunDisposition.Passed => BaselineStatus.Green,

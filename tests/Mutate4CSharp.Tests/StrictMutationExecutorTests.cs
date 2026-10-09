@@ -167,6 +167,12 @@ public sealed class StrictMutationExecutorTests : IDisposable
                 item => item.Code == "EXECUTION_NOT_IMPLEMENTED");
             Assert.Single(result.Report.Suites);
             Assert.Equal(BaselineStatus.Green, result.Report.Suites[0].Baseline);
+            var snapshotEvidence = Assert.Single(result.Report.Evidence,
+                item => item.Kind == "INPUT_SNAPSHOT");
+            Assert.Contains(snapshotEvidence.Diagnostics ?? [], value =>
+                value.StartsWith("dependencyFingerprint=sha256:", StringComparison.Ordinal));
+            Assert.DoesNotContain(snapshotEvidence.Diagnostics ?? [], value =>
+                value == "dependencyFingerprint=not-prepared");
             Assert.Equal(original, File.ReadAllBytes(Path.Combine(_repository.Root, "src/App/Flag.cs")));
             Assert.False(Directory.Exists(Path.Combine(_repository.Root, "obj")));
             Assert.False(Directory.Exists(Path.Combine(_repository.Root, "bin")));

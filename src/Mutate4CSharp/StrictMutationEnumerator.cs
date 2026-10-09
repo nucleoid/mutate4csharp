@@ -136,11 +136,15 @@ internal static class StrictMutationEnumerator
                         if (candidates.Count == maxCandidates)
                             throw new EnumerationContextException("ENUMERATION_LIMIT_EXCEEDED",
                                 $"Semantic enumeration exceeds the bounded limit of {maxCandidates} evaluation units.");
+                        var lineSpan = tree.GetLineSpan(
+                            new Microsoft.CodeAnalysis.Text.TextSpan(site.Start, site.Length));
                         candidates.Add(new(mutation.MutationId, evaluationId, mutation.Material,
                             project.Project, project.TargetFramework, project.ParseContext,
                             site.Start, site.Length, context.Sources[path].Substring(site.Start, site.Length),
-                            tree.GetLineSpan(new Microsoft.CodeAnalysis.Text.TextSpan(site.Start, site.Length))
-                                .StartLinePosition.Line + 1));
+                            lineSpan.StartLinePosition.Line + 1,
+                            lineSpan.StartLinePosition.Character + 1,
+                            lineSpan.EndLinePosition.Line + 1,
+                            lineSpan.EndLinePosition.Character + 1));
                     }
                 }
             }

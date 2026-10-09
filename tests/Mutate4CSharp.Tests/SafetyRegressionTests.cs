@@ -115,7 +115,7 @@ public sealed class SafetyRegressionTests : IDisposable
         var map = CoverageMap.Load(report, _directory)!;
 
         Assert.Equal(CoverageState.Covered, map.GetState(target, 11, 16, 11, 18));
-        Assert.Equal(CoverageState.Unknown, map.GetState(target, 12, 25, 13, 2));
+        Assert.Equal(CoverageState.Unknown, map.GetState(target, 12, 30, 13, 2));
 
         var onlyZero = Write("coverage-zero-span.xml", $"""
             <CoverageSession><Modules><Module><Files><File uid="1" fullPath="{System.Security.SecurityElement.Escape(target)}"/></Files>
@@ -126,6 +126,10 @@ public sealed class SafetyRegressionTests : IDisposable
             """);
         Assert.Equal(CoverageState.Uncovered,
             CoverageMap.Load(onlyZero, _directory)!.GetState(target, 21, 8, 21, 12));
+
+        var lineOnly = Write("coverage-line-only.xml", OpenCover(target, 30, 0));
+        Assert.Equal(CoverageState.Unknown,
+            CoverageMap.Load(lineOnly, _directory)!.GetState(target, 30, 2, 30, 8));
     }
 
     [Fact]

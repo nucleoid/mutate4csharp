@@ -229,7 +229,9 @@ public sealed class StrictCheckIntegrationTests : IDisposable
             Assert.True(targeted.Report.DiagnosticPartial);
             Assert.Contains(targeted.Report.IncompleteConditions,
                 reason => reason.Code == MutationSelection.TargetedDiagnosticCode);
-            Assert.Contains(targeted.Report.Evidence, item => item.Kind == "EXACT_ID_REQUEST");
+            var exactEvidence = Assert.Single(targeted.Report.Evidence,
+                item => item.Kind == "EXACT_ID_REQUEST");
+            Assert.DoesNotContain("Executed", exactEvidence.Summary, StringComparison.Ordinal);
 
             var stale = await coordinator.RunAsync(new(false, "HEAD", [], staleReport,
                 "stale-targeted-plan", MutationIds: [mutation],

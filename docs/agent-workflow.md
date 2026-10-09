@@ -132,9 +132,12 @@ symbolic repository boundaries, identity drift, non-commit baselines, existing/s
 changed target `HEAD` fail before a result is accepted.
 The current gate accepts a tool result only when a newly created regular report parses, its `exitCode` equals the
 process exit, and it says `INCOMPLETE` / `4`. A supported run must contain `FINALIZATION_PENDING` and a bounded
-nonnegative `counts.enumerated`. A project outside the current semantic envelope may instead contain only an
-explicitly allowlisted semantic `ENUMERATION_*` condition or known scope/selection blocker and must keep
-`counts.enumerated` null. Retired placeholder, SDK/reference-pack, fingerprint, unknown, and integrity-related codes
+nonnegative `counts.enumerated`. Dependency preparation intentionally precedes semantic enumeration because the
+resolved SDK and frozen package graph are part of the candidate-plan identity. A project that cannot establish
+those inputs may instead report only `DEPENDENCY_INPUT_UNAVAILABLE` or `EXECUTION_ENVIRONMENT_UNAVAILABLE`;
+both are nonpassing, keep `counts.enumerated` null, and are explicitly allowlisted by the gate. A project outside
+the current semantic envelope may similarly contain only an explicitly allowlisted semantic `ENUMERATION_*`
+condition or known scope/selection blocker. Retired placeholder, SDK/reference-pack, fingerprint, unknown, and integrity-related codes
 are not accepted merely because they share an `ENUMERATION_` prefix. User-facing nullable/symbol assertions,
 compile-inventory mismatches, and named unsupported semantic contexts are allowlisted limitations (exit `4`). The
 tool's own configuration-root mismatch, snapshot divergence, stale scope/source/span, duplicate/colliding

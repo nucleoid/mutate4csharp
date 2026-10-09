@@ -235,9 +235,13 @@ try:
         "UNSUPPORTED_SYNTAX", "NO_SUPPORTED_DECLARATION", "UNSUPPORTED_CHANGED_INPUT",
         "EXACT_ID_RERUN_UNAVAILABLE", "TARGET_SELECTION_INVALID",
     }
+    environment_refusal_codes = {
+        "DEPENDENCY_INPUT_UNAVAILABLE", "EXECUTION_ENVIRONMENT_UNAVAILABLE",
+    }
     execution_valid = execution_pending and all(item["code"] in execution_codes for item in conditions)
     enumeration_refusal = not execution_pending and all(
-        item["code"] in enumeration_codes or item["code"] in scope_refusal_codes
+        item["code"] in enumeration_codes or item["code"] in scope_refusal_codes or
+        item["code"] in environment_refusal_codes
         for item in conditions
     )
     if not execution_valid and not enumeration_refusal:
