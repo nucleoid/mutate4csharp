@@ -100,6 +100,38 @@ public sealed class CompilerEvidenceTests
         Assert.Contains("CS0019", evidence.Diagnostics[0]);
     }
 
+    [Theory]
+    [InlineData(@"C:\Users\RUNNER~1\AppData\Local\Temp\mutate\root\src\Subject.cs",
+        @"C:\Users\runneradmin\AppData\Local\Temp\mutate\root\src\Subject.cs")]
+    [InlineData(@"C:\Users\runneradmin\AppData\Local\Temp\mutate\root\src\Subject.cs",
+        @"C:\Users\RUNNER~1\AppData\Local\Temp\mutate\root\src\Subject.cs")]
+    public void WindowsShortAndLongNamesRetainExactTargetAttribution(string diagnosticPath,
+        string targetPath)
+    {
+        var control = Run(0, string.Empty, true, true);
+        var mutated = Run(1, $"{diagnosticPath}(4,12,4,20): error CS0019: bad operator");
+
+        var evidence = CompilerEvidence.Evaluate(mutated, control, targetPath,
+            @"C:\Users\runneradmin", ExpandRunnerProfile);
+
+        Assert.True(evidence.IsCompileInvalid);
+        Assert.Single(evidence.Diagnostics);
+    }
+
+    [Fact]
+    public void WindowsShortNameExpansionDoesNotAttributeSiblingPath()
+    {
+        var control = Run(0, string.Empty, true, true);
+        var wrongSibling = Run(1,
+            @"C:\Users\RUNNER~1\AppData\Local\Temp\mutate\root\other\Subject.cs(4,12,4,20): error CS0019: bad operator");
+
+        var evidence = CompilerEvidence.Evaluate(wrongSibling, control,
+            @"C:\Users\runneradmin\AppData\Local\Temp\mutate\root\src\Subject.cs",
+            @"C:\Users\runneradmin", ExpandRunnerProfile);
+
+        Assert.False(evidence.IsCompileInvalid);
+    }
+
     [Fact]
     public void SuccessfulMutantCannotBeCompileInvalidFromConsoleText()
     {
@@ -112,4 +144,7 @@ public sealed class CompilerEvidenceTests
 
     private static TestRunResult Run(int exit, string output, bool discovered = false, bool valid = false) =>
         new(exit, TimeSpan.Zero, false, discovered, false, valid, output, string.Empty, []);
+
+    private static string ExpandRunnerProfile(string path) => path.Replace(
+        @"C:/Users/RUNNER~1/", @"C:/Users/runneradmin/", StringComparison.OrdinalIgnoreCase);
 }
