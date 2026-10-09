@@ -271,8 +271,13 @@ public sealed class ReportContractTests : IDisposable
 
     private static async Task<int> RunCheck(string path)
     {
+        using var repository = new SnapshotTestRepository();
+        repository.WriteText("src/A.cs", "class A { }\n");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "fixture");
         var start = new System.Diagnostics.ProcessStartInfo(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
         {
+            WorkingDirectory = repository.Root,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false

@@ -236,6 +236,10 @@ public sealed class StrictCheckIntegrationTests : IDisposable
     [Fact]
     public async Task RefusedReportWritePrintsCurrentRunIdAndCannotBeMistakenForStaleReport()
     {
+        using var repository = new SnapshotTestRepository();
+        repository.WriteText("src/A.cs", "class A { }\n");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "fixture");
         var reportPath = Path.Combine(_directory, "stale.json");
         ReportWriter.Write(reportPath,
             EvaluationReport.CreateSynthetic(EvaluationOutcome.Incomplete, "stale-run", "TEST_FIXTURE"));
@@ -243,10 +247,16 @@ public sealed class StrictCheckIntegrationTests : IDisposable
             FileAccess.Write, FileShare.None);
         var oldError = Console.Error;
         var error = new StringWriter();
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
         Console.SetError(error);
         int code;
         try { code = await Program.Main(["check", "--base", "HEAD", "--report", reportPath]); }
-        finally { Console.SetError(oldError); }
+        finally
+        {
+            Console.SetError(oldError);
+            Environment.CurrentDirectory = previous;
+        }
 
         Assert.Equal(4, code);
         var marker = "Run ID: ";
