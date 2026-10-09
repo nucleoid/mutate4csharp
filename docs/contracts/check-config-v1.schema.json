@@ -20,6 +20,12 @@
           "targetFramework": { "$ref": "#/$defs/net10Framework" },
           "parseContext": { "type": "string", "minLength": 1, "maxLength": 256,
             "pattern": "^(?![\\s\\uFEFF])(?![\\s\\S]*[\\s\\uFEFF]$)[^\\u0000-\\u001F\\u007F-\\u009F]+$" },
+          "languageVersion": { "const": "14.0" },
+          "nullable": { "enum": ["enable", "disable", "annotations", "warnings"] },
+          "defineConstants": {
+            "type": "array", "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$" }
+          },
           "sources": { "$ref": "#/$defs/nonEmptyPaths" },
           "testSuites": { "$ref": "#/$defs/nonEmptyIds" }
         }

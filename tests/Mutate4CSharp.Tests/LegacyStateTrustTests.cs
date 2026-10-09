@@ -75,7 +75,8 @@ public sealed class LegacyStateTrustTests : IDisposable
                 new(false, "HEAD", [], report, "legacy-state-red"), CancellationToken.None);
 
             Assert.Equal(4, result.Report.ExitCode);
-            Assert.Contains(result.Report.Reasons, reason => reason.Code == "ENUMERATION_NOT_IMPLEMENTED");
+            Assert.Contains(result.Report.Reasons,
+                reason => reason.Code == "ENUMERATION_CONFIGURATION_REQUIRED");
         }
         finally { Environment.CurrentDirectory = previous; }
 
@@ -102,7 +103,8 @@ public sealed class LegacyStateTrustTests : IDisposable
                 new(false, "HEAD", [], report, "no-cache-read"), CancellationToken.None);
 
             Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
-            Assert.Contains(result.Report.Reasons, reason => reason.Code == "ENUMERATION_NOT_IMPLEMENTED");
+            Assert.Contains(result.Report.Reasons,
+                reason => reason.Code == "ENUMERATION_CONFIGURATION_REQUIRED");
         }
         finally { Environment.CurrentDirectory = previous; }
 
@@ -156,7 +158,7 @@ public sealed class LegacyStateTrustTests : IDisposable
 
     [Theory]
     [InlineData(true, false, "PLAN_ONLY")]
-    [InlineData(false, true, "ENUMERATION_NOT_IMPLEMENTED")]
+    [InlineData(false, true, "ENUMERATION_CONFIGURATION_REQUIRED")]
     public async Task FingerprintIdentityResolutionCannotAffectPlanOrNoState(
         bool plan, bool noState, string expectedReason)
     {
@@ -199,7 +201,7 @@ public sealed class LegacyStateTrustTests : IDisposable
             Assert.Contains(result.Report.IncompleteConditions,
                 reason => reason.Code == "SIDECAR_WRITE_FAILED");
             Assert.Contains(result.Report.Reasons,
-                reason => reason.Code == "ENUMERATION_NOT_IMPLEMENTED");
+                reason => reason.Code == "ENUMERATION_CONFIGURATION_REQUIRED");
         }
         finally
         {

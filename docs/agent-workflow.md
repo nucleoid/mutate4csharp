@@ -77,10 +77,12 @@ ordinary dependencies to nuget.org. Use that example configuration only after ex
 checkout, the root and nested files are multiple applicable NuGet.Config files, which strict dependency
 preparation intentionally refuses rather than merging.
 
-The current public strict check **can never produce `PASS` or `FAIL` until canonical enumeration is connected**.
-When capture succeeds, `check` returns exit `4` with `INCOMPLETE` and the `ENUMERATION_NOT_IMPLEMENTED` incomplete
-condition. Usage rejection, snapshot refusal, and exception paths differ: they may stop before enumeration and may
-not publish a report. The PASS/FAIL handling below defines the stable contract for the future connection.
+The current public strict check **can never produce `PASS` or `FAIL` until mutation execution is connected**.
+For a supported Git-backed configuration-v1 context, `check` returns exit `4` with `INCOMPLETE` and the
+`EXECUTION_NOT_IMPLEMENTED` incomplete condition after publishing a bounded canonical mutation plan. Unsupported
+semantic contexts fail closed with a specific enumeration refusal and an unknown total. Usage rejection, snapshot
+refusal, and exception paths may stop earlier and may not publish a report. The PASS/FAIL handling below defines
+the stable contract for the future execution connection.
 
 ## Agent loop
 
@@ -120,7 +122,8 @@ Missing or malformed receipt fields, duplicate or unknown keys, host/SDK mismatc
 symbolic repository boundaries, identity drift, non-commit baselines, existing/symlinked/internal report paths, or
 changed target `HEAD` fail before a result is accepted.
 The current gate accepts a tool result only when a newly created regular report parses, its `exitCode` equals the
-process exit, and it says `INCOMPLETE` / `4` with `ENUMERATION_NOT_IMPLEMENTED`. A crash that merely exits 4 is refused.
+process exit, it says `INCOMPLETE` / `4` with `EXECUTION_NOT_IMPLEMENTED`, and `counts.enumerated` is a bounded
+nonnegative integer. A crash that merely exits 4 or an unsupported/unknown enumeration is refused.
 All orchestration refusals use exit `73`, distinct from tool usage exit `1` and strict incomplete exit `4`.
 The preflight and post-run checks reject existing and symbolic report targets, while the tool publishes atomically
 under an adjacent lock. Hash and identity checks before and after execution narrow but do not eliminate TOCTOU: a
@@ -172,19 +175,19 @@ being confused with tool usage or a validated strict incomplete result. An accep
   "outcome": "INCOMPLETE",
   "exitCode": 4,
   "incompleteConditions": [
-    { "code": "ENUMERATION_NOT_IMPLEMENTED" }
+    { "code": "EXECUTION_NOT_IMPLEMENTED" }
   ],
   "reasons": [
-    { "code": "ENUMERATION_NOT_IMPLEMENTED" },
+    { "code": "EXECUTION_NOT_IMPLEMENTED" },
     { "code": "BASELINE_UNKNOWN" },
-    { "code": "ENUMERATION_INCOMPLETE" }
+    { "code": "UNIT_OMITTED" }
   ],
-  "counts": { "enumerated": null, "executed": 0 }
+  "counts": { "enumerated": 1, "selected": 1, "executed": 0, "omitted": 1 }
 }
 ```
 
 `incompleteConditions[]` records the intrinsic blocker. `reasons[]` retains that blocker and the
-reducer-derived `BASELINE_UNKNOWN` and `ENUMERATION_INCOMPLETE` codes; do not require the two arrays to be identical.
+reducer-derived `BASELINE_UNKNOWN` and per-unit omission codes; do not require the two arrays to be identical.
 
 Handle outcomes as follows:
 
@@ -194,9 +197,9 @@ Handle outcomes as follows:
   or infrastructure prevented reusable success. Unknown enumeration is not zero mutations. Exit `1` is outside
   strict outcome mapping because usage rejection may not produce a report; exception exit `4` may likewise have
   no report.
-- `NOT_APPLICABLE` / exit `5`: there are no effective valid candidates. A future validated `allowNotApplicable: true`
-  configuration may map this to exit `0`, while JSON still says `NOT_APPLICABLE`; that
-  path is not currently reachable from public `check`, and it is never `PASS`.
+- `NOT_APPLICABLE` / exit `5`: there are no effective valid candidates after complete execution. A validated
+  `allowNotApplicable: true` configuration may map this to exit `0`, while JSON still says `NOT_APPLICABLE`; it is
+  never `PASS`. The current enumeration-only boundary reports `INCOMPLETE` even when the known candidate count is zero.
 
 `INCOMPLETE` takes precedence over a known failure while retaining all reasons in JSON. Treat every nonzero exit
 as a blocked gate and inspect the report rather than flattening all failures into one message.

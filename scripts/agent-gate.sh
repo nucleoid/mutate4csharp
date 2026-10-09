@@ -196,10 +196,14 @@ try:
         raise ValueError("current gate requires exit 4 with outcome INCOMPLETE")
     conditions = report.get("incompleteConditions")
     if not isinstance(conditions, list) or not any(
-        isinstance(item, dict) and item.get("code") == "ENUMERATION_NOT_IMPLEMENTED"
+        isinstance(item, dict) and item.get("code") == "EXECUTION_NOT_IMPLEMENTED"
         for item in conditions
     ):
-        raise ValueError("report lacks ENUMERATION_NOT_IMPLEMENTED incomplete condition")
+        raise ValueError("report lacks EXECUTION_NOT_IMPLEMENTED incomplete condition")
+    counts = report.get("counts")
+    if not isinstance(counts, dict) or not isinstance(counts.get("enumerated"), int) or \
+            isinstance(counts.get("enumerated"), bool) or counts["enumerated"] < 0:
+        raise ValueError("report lacks a bounded nonnegative enumeration count")
     if any(isinstance(item, dict) and item.get("code") == "SIDECAR_WRITE_FAILED" for item in conditions):
         raise ValueError("report contains SIDECAR_WRITE_FAILED")
     evidence = report.get("evidence", [])

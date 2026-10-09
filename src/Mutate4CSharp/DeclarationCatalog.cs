@@ -2,6 +2,7 @@ using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 
 namespace Mutate4CSharp;
 
@@ -14,7 +15,7 @@ internal sealed record DeclarationComparison(
 internal static class DeclarationCatalog
 {
     private sealed record Entry(string Id, string Kind, string DisplayName, int StartLine, int EndLine,
-        string Hash, bool Partial);
+        string Hash, bool Partial, TextSpan Span);
     private sealed record Catalog(IReadOnlyDictionary<string, Entry> Entries, string Skeleton,
         bool HasErrors);
 
@@ -75,6 +76,23 @@ internal static class DeclarationCatalog
             StringComparer.Ordinal).ToArray());
     }
 
+    internal static IReadOnlyList<TextSpan> ResolveSelectionSpans(string path, string source,
+        IReadOnlyList<string> declarationIds)
+    {
+        ArgumentNullException.ThrowIfNull(declarationIds);
+        var catalog = Create(path, source);
+        if (catalog.HasErrors)
+            throw new EvaluationContractException($"Declaration selection for {path} contains parse errors.");
+        var requested = declarationIds.Distinct(StringComparer.Ordinal).ToArray();
+        if (requested.Length != declarationIds.Count)
+            throw new EvaluationContractException($"Declaration selection for {path} contains duplicate IDs.");
+        var missing = requested.FirstOrDefault(id => !catalog.Entries.ContainsKey(id));
+        if (missing is not null)
+            throw new EvaluationContractException(
+                $"Declaration selection for {path} is stale or unsupported: {missing}.");
+        return requested.Select(id => catalog.Entries[id].Span).OrderBy(span => span.Start).ToArray();
+    }
+
     private static Catalog Create(string path, string source)
     {
         var tree = CSharpSyntaxTree.ParseText(source, path: path);
@@ -93,7 +111,7 @@ internal static class DeclarationCatalog
             var hashText = HashText(node);
             entries[id] = new(id, node.Kind().ToString(), display,
                 span.StartLinePosition.Line + 1, span.EndLinePosition.Line + 1,
-                SourceAnalyzer.Hash(hashText), IsInsidePartialType(node));
+                SourceAnalyzer.Hash(hashText), IsInsidePartialType(node), node.Span);
         }
         var skeleton = source;
         foreach (var node in nodes.Where(node => !node.Ancestors().Any(IsCatalogNode))

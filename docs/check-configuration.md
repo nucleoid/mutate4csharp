@@ -8,10 +8,14 @@ Strict repository execution is described by `mutate4csharp.json` at the captured
 machine-readable contract is [`contracts/check-config-v1.schema.json`](contracts/check-config-v1.schema.json),
 and the repository root contains a working example. Unknown properties, duplicate JSON properties or IDs,
 unsupported versions/runners, empty mappings, rooted or escaping paths, duplicate mappings, conflicting suite
-aliases, and ambiguous source membership are rejected before any test process is launched.
+aliases, and accidental ambiguous source membership are rejected before any test process is launched. A linked
+source may intentionally belong to multiple project contexts only when every owner declares the same explicit
+source glob; different overlapping globs remain ambiguous.
 
 Each production project declares a stable ID, repository-relative `.csproj`, target framework, parse-context
-identity, source globs, and one or more test-suite IDs. Each suite declares a repository-relative project or
+identity, source globs, and one or more test-suite IDs. Optional `languageVersion`, `nullable`, and
+`defineConstants` fields make the strict semantic context explicit; v1 defaults to C# `14.0`, nullable `enable`,
+and no user symbols. Each suite declares a repository-relative project or
 solution, runner, framework, configuration, and the expected test-assembly members that must be visible in TRX.
 Expected-member names are unique case-insensitively at runtime (JSON Schema `uniqueItems` additionally catches exact
 duplicates). Alias paths are execution-equivalent after converting backslashes to forward slashes and applying invariant
@@ -60,6 +64,9 @@ Configured `exclusions` are applied during strict scope planning before project 
 matching exclusion is published as `CONFIGURED_EXCLUSION` with its required reason; the canonical scope plan binds
 that path and reason into report and evaluation fingerprints.
 
-The public command currently validates and fingerprints this configuration but still ends at
-`ENUMERATION_NOT_IMPLEMENTED`, because canonical mutation enumeration is intentionally integrated later. No
-baseline is launched before that prerequisite exists.
+The public command now uses this captured configuration to enumerate canonical mutation and evaluation-unit IDs
+for supported, self-contained net10.0 projects. Version 1 refuses conditional project evaluation,
+`ProjectReference`/`PackageReference` resolution, Compile Remove/Update transforms, unresolved semantic diagnostics,
+and non-Git explicit-input enumeration rather than silently borrowing ambient MSBuild state. Supported checks end
+at `EXECUTION_NOT_IMPLEMENTED` until baseline and mutant execution is connected by issue #3; no test process is
+launched at this boundary.

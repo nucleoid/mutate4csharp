@@ -90,7 +90,23 @@ public sealed class ProjectOwnershipTests : IDisposable
             """);
         configuration = ScopeConfiguration.Load(_directory);
         var overlap = ProjectOwnershipResolver.Resolve(configuration, ["shared/models/Linked.cs"]);
-        Assert.Equal("AMBIGUOUS_PROJECT_OWNERSHIP", Assert.Single(overlap.Reasons).Code);
+        Assert.Equal(2, overlap.Units.Count);
+        Assert.Empty(overlap.Reasons);
+
+        Write("mutate4csharp.json", """
+            {
+              "version": 1,
+              "projects": [
+                { "project": "src/A/A.csproj", "tests": ["tests/A.Tests.csproj"],
+                  "sources": ["shared/**/*.cs"] },
+                { "project": "src/B/B.csproj", "tests": ["tests/B.Tests.csproj"],
+                  "sources": ["**/*.cs"] }
+              ]
+            }
+            """);
+        configuration = ScopeConfiguration.Load(_directory);
+        var ambiguous = ProjectOwnershipResolver.Resolve(configuration, ["shared/models/Linked.cs"]);
+        Assert.Equal("AMBIGUOUS_PROJECT_OWNERSHIP", Assert.Single(ambiguous.Reasons).Code);
     }
 
     [Fact]

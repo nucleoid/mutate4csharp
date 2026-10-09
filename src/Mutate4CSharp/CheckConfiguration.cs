@@ -10,7 +10,9 @@ internal sealed class CheckConfigurationException(string message, Exception? inn
     ArgumentException(message, inner);
 
 internal sealed record CheckProject(string Id, string Project, string TargetFramework,
-    string ParseContext, IReadOnlyList<string> Sources, IReadOnlyList<string> TestSuites);
+    string ParseContext, string LanguageVersion, string Nullable,
+    IReadOnlyList<string> DefineConstants, IReadOnlyList<string> Sources,
+    IReadOnlyList<string> TestSuites);
 
 internal sealed record CheckTestSuite(string Id, string Path, string Runner, string Framework,
     string Configuration, IReadOnlyList<string> ExpectedMembers);
@@ -35,12 +37,16 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     private static readonly Regex ConfigurationName = new("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+    private static readonly Regex PreprocessorSymbol = new("^[A-Za-z_][A-Za-z0-9_]{0,127}$",
+        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     private sealed record Document(int Version = 0, List<ProjectDocument>? Projects = null,
         List<SuiteDocument>? TestSuites = null, List<ExclusionDocument>? Exclusions = null,
         PolicyDocument? Policy = null);
     private sealed record ProjectDocument(string? Id = null, string? Project = null,
-        string? TargetFramework = null, string? ParseContext = null, List<string>? Sources = null,
+        string? TargetFramework = null, string? ParseContext = null,
+        string? LanguageVersion = null, string? Nullable = null,
+        List<string>? DefineConstants = null, List<string>? Sources = null,
         List<string>? TestSuites = null);
     private sealed record SuiteDocument(string? Id = null, string? Path = null, string? Runner = null,
         string? Framework = null, string? Configuration = null, List<string>? ExpectedMembers = null);
@@ -121,12 +127,6 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
                 throw new ArgumentException($"Production project {project.Id} maps unknown test suite {missing}.");
         }
 
-        var ambiguousSource = projects.SelectMany(project => project.Sources.Select(source => (project.Id, Source: source)))
-            .GroupBy(item => item.Source, StringComparer.Ordinal)
-            .FirstOrDefault(group => group.Select(item => item.Id).Distinct(StringComparer.Ordinal).Count() > 1);
-        if (ambiguousSource is not null)
-            throw new ArgumentException($"Configured source membership is ambiguous for {ambiguousSource.Key}.");
-
         if (document.Exclusions?.Any(item => item is null) == true)
             throw new CheckConfigurationException("Configured exclusions cannot contain null members.");
         var exclusions = (document.Exclusions ?? []).Select((item, index) => new CheckExclusion(
@@ -179,9 +179,26 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
         if (!Net10Framework.IsMatch(framework))
             throw new ArgumentException($"Production project {id} targetFramework must use the version-1 net10.0 contract.");
         var parseContext = Required(item.ParseContext, $"projects[{index}].parseContext", 256);
+        var languageVersion = item.LanguageVersion is null ? "14.0" :
+            Required(item.LanguageVersion, $"projects[{index}].languageVersion", 32);
+        if (languageVersion != "14.0")
+            throw new ArgumentException(
+                $"Production project {id} languageVersion must use the version-1 C# 14.0 contract.");
+        var nullable = item.Nullable is null ? "enable" :
+            Required(item.Nullable, $"projects[{index}].nullable", 32);
+        if (nullable is not ("enable" or "disable" or "annotations" or "warnings"))
+            throw new ArgumentException(
+                $"Production project {id} nullable must be enable, disable, annotations, or warnings.");
+        var defineConstants = DistinctValues(item.DefineConstants ?? [], $"projects[{index}].defineConstants",
+            requireNonEmpty: false);
+        var invalidSymbol = defineConstants.FirstOrDefault(symbol => !PreprocessorSymbol.IsMatch(symbol));
+        if (invalidSymbol is not null)
+            throw new ArgumentException(
+                $"Production project {id} has an invalid preprocessor symbol: {invalidSymbol}.");
         var sources = NormalizeDistinct(item.Sources, $"projects[{index}].sources", requireNonEmpty: true);
         var suites = DistinctValues(item.TestSuites, $"projects[{index}].testSuites", requireNonEmpty: true);
-        return new(id, project, framework, parseContext, sources, suites);
+        return new(id, project, framework, parseContext, languageVersion, nullable,
+            defineConstants, sources, suites);
     }
 
     private static CheckTestSuite ParseSuite(SuiteDocument item, int index)

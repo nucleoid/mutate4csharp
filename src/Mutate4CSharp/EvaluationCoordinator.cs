@@ -41,6 +41,9 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         EvaluationFingerprintMaterial? fingerprintMaterial = null;
         Exception? fingerprintMaterialFailure = null;
         CheckConfiguration? checkConfiguration = null;
+        int? enumerationCount = null;
+        IReadOnlyList<EvaluationUnitResult> reportUnits = [];
+        IReadOnlyList<EvaluationReason> enumerationReasons = [];
         EvaluationReason reason;
         var evidence = new List<EvaluationEvidence>();
         try
@@ -91,17 +94,83 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 evidence.Add(new("EXPLICIT_INPUT_CAPTURE",
                     $"Captured {scopePlan.Files.Count + scopePlan.Exclusions.Count} explicit non-Git input(s)."));
             }
-            reason = options.Plan
-                ? new("PLAN_ONLY", "Plan mode produces scope audit data and runs no tests.")
-                : exactIdRequest
-                    ? new("EXACT_ID_RERUN_UNAVAILABLE",
-                        "Exact-ID reruns are diagnostic-only until mutation enumeration is available.")
-                : new("ENUMERATION_NOT_IMPLEMENTED",
-                    "Scope planning completed, but mutation enumeration/orchestration belongs to later issues.");
-            if (exactIdRequest)
-                evidence.Add(new("EXACT_ID_REQUEST",
-                    $"Refused diagnostic exact-ID execution for {exactMutationIds.Count} requested mutation(s).",
-                    exactMutationIds.Take(100).Concat(["planFingerprint=" + options.PlanFingerprint]).ToArray()));
+            if (options.Plan)
+            {
+                reason = new("PLAN_ONLY", "Plan mode produces scope audit data and runs no tests.");
+            }
+            else if (snapshot is null)
+            {
+                reason = new("ENUMERATION_REQUIRES_GIT_SNAPSHOT",
+                    "Strict semantic enumeration v1 requires one immutable Git-backed project snapshot.");
+            }
+            else if (checkConfiguration is null)
+            {
+                reason = new("ENUMERATION_CONFIGURATION_REQUIRED",
+                    "Strict semantic enumeration requires validated mutate4csharp.json test-suite configuration.");
+            }
+            else if (!scopePlan.IsComplete)
+            {
+                reason = new("ENUMERATION_SCOPE_INCOMPLETE",
+                    "Strict semantic enumeration requires one complete scope plan.");
+            }
+            else
+            {
+                fingerprintMaterial = await BuildEvaluationFingerprintMaterialAsync(snapshot,
+                    snapshotId!, scopePlan, checkConfiguration.Policy, cancellationToken);
+                var enumeration = StrictMutationEnumerator.Enumerate(snapshot, checkConfiguration,
+                    scopePlan, cancellationToken);
+                if (!enumeration.IsComplete)
+                {
+                    enumerationReasons = enumeration.Reasons;
+                    reason = enumeration.Reasons.FirstOrDefault() ?? new("ENUMERATION_CONTEXT_UNSUPPORTED",
+                        "Strict semantic enumeration could not prove one complete candidate set.");
+                    evidence.Add(new("MUTATION_ENUMERATION_REFUSAL", reason.Message,
+                        enumeration.Reasons.Select(item => BoundDiagnostic(
+                            $"{item.Code}: {item.Message}")).Take(20).ToArray()));
+                }
+                else
+                {
+                    var bound = MutationSelection.Bind(enumeration.Candidates, fingerprintMaterial);
+                    MutationSelectionPlan mutationPlan;
+                    try
+                    {
+                        mutationPlan = exactIdRequest
+                            ? MutationSelection.PlanTargeted(bound, exactMutationIds,
+                                options.PlanFingerprint ?? string.Empty, fingerprintMaterial)
+                            : MutationSelection.Plan(bound, fingerprintMaterial);
+                    }
+                    catch (EvaluationContractException ex)
+                    {
+                        enumerationReasons =
+                            [new("TARGET_SELECTION_INVALID", Bound(ex.Message))];
+                        reason = enumerationReasons[0];
+                        evidence.Add(new("MUTATION_SELECTION_REFUSAL", reason.Message));
+                        goto ScopeEvidence;
+                    }
+                    var issued = mutationPlan.CreatePendingLedger();
+                    enumerationReasons = mutationPlan.IncompleteConditions;
+                    reportUnits = issued.Select(unit => unit.Disposition == UnitDisposition.Pending
+                        ? unit.Complete(UnitDisposition.Omitted,
+                            [new("EXECUTION_NOT_IMPLEMENTED",
+                                "Canonical mutation enumeration completed, but strict mutant execution is not integrated.")])
+                        : unit).ToArray();
+                    enumerationCount = issued.Count;
+                    reason = new("EXECUTION_NOT_IMPLEMENTED",
+                        "Canonical mutation enumeration completed, but strict baseline and mutant execution belongs to issue #3.");
+                    evidence.Add(new("MUTATION_PLAN",
+                        $"Bound {enumeration.Candidates.Count} evaluation unit(s); " +
+                        $"selected {mutationPlan.Selected.Count} and omitted {mutationPlan.Omitted.Count}.",
+                        [$"evaluationFingerprint={bound.EvaluationFingerprint}",
+                         $"planFingerprint={bound.PlanFingerprint}",
+                         $"selectionFingerprint={mutationPlan.PlanFingerprint}"]));
+                    if (exactIdRequest)
+                        evidence.Add(new("EXACT_ID_REQUEST",
+                            $"Freshly bound {exactMutationIds.Count} requested mutation ID(s) for diagnostic execution.",
+                            exactMutationIds.Take(100).Concat([
+                                "planFingerprint=" + bound.PlanFingerprint]).ToArray()));
+                }
+            }
+ScopeEvidence:
             evidence.Add(new("SCOPE_PLAN",
                 $"Scope plan v{scopePlan.SchemaVersion}: {scopePlan.Files.Count} file(s), " +
                 $"{scopePlan.ProjectUnits.Count} project unit(s), {scopePlan.Exclusions.Count} exclusion(s).",
@@ -153,6 +222,9 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN");
                     evidence.Add(new(SnapshotEvidenceKind(ex), Bound(ex.Message)));
                     snapshotId = null;
+                    enumerationCount = null;
+                    reportUnits = [];
+                    enumerationReasons = [];
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot divergence."));
                 }
@@ -163,6 +235,9 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     evidence.Add(new("SNAPSHOT_CANCELLATION",
                         "Cancellation was observed before report publication."));
                     snapshotId = null;
+                    enumerationCount = null;
+                    reportUnits = [];
+                    enumerationReasons = [];
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot cancellation."));
                 }
@@ -174,6 +249,9 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     evidence.Add(new("SNAPSHOT_VALIDATION_FAILURE",
                         Bound($"{ex.GetType().Name}: {ex.Message}")));
                     snapshotId = null;
+                    enumerationCount = null;
+                    reportUnits = [];
+                    enumerationReasons = [];
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot validation failure."));
                 }
@@ -184,7 +262,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 {
                     try
                     {
-                        fingerprintMaterial = await BuildEvaluationFingerprintMaterialAsync(
+                        fingerprintMaterial ??= await BuildEvaluationFingerprintMaterialAsync(
                             snapshot, snapshotId, scopePlan, checkConfiguration?.Policy ?? EvaluationReport.DefaultPolicy,
                             cancellationToken);
                         evidence.Add(new("TOOL_INTERNAL_SDK",
@@ -204,15 +282,20 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN");
                     evidence.Add(new("SNAPSHOT_CLEANUP", Bound(ex.Message)));
                     snapshotId = null;
+                    enumerationCount = null;
+                    reportUnits = [];
+                    enumerationReasons = [];
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot cleanup failure."));
                 }
                 snapshot = null;
             }
             var incompleteConditions = new List<EvaluationReason> { reason };
+            incompleteConditions.AddRange(enumerationReasons);
             incompleteConditions.AddRange(scopePlan.Reasons.Concat(scopePlan.Files.SelectMany(file => file.Reasons))
                 .Where(item => ScopePlanner.IsBlockingCode(item.Code)));
-            var facts = new EvaluationFacts(BaselineStatus.Unknown, null, [], false,
+            var facts = new EvaluationFacts(BaselineStatus.Unknown, enumerationCount, reportUnits,
+                checkConfiguration?.Policy.AllowNotApplicable ?? false,
                 incompleteConditions.Distinct().ToArray());
             var decision = EvaluationReducer.Reduce(facts);
             var reportEvidence = decision.Evidence.Concat(evidence).ToArray();

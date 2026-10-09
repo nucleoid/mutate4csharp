@@ -30,18 +30,18 @@ public sealed class AgentWorkflowIntegrationTests
         Assert.Contains("<clear />", localNuget, StringComparison.Ordinal);
 
         Assert.DoesNotContain("always exits `4`", combined, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("when capture succeeds", readme, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("when capture succeeds", workflow, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("when capture succeeds", Cli.HelpText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("supported capture", readme, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("supported Git-backed", workflow, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("supported Git/configuration contexts", Cli.HelpText, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("usage", Cli.HelpText, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("snapshot refusal", Cli.HelpText, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("`INCOMPLETE`", workflow, StringComparison.Ordinal);
-        Assert.Contains("`ENUMERATION_NOT_IMPLEMENTED`", workflow, StringComparison.Ordinal);
-        Assert.Contains("until canonical enumeration is connected", workflow, StringComparison.Ordinal);
+        Assert.Contains("`EXECUTION_NOT_IMPLEMENTED`", workflow, StringComparison.Ordinal);
+        Assert.Contains("until mutation execution is connected", workflow, StringComparison.Ordinal);
         Assert.Contains("\"schemaVersion\": \"1\"", workflow, StringComparison.Ordinal);
         Assert.Contains("\"incompleteConditions\"", workflow, StringComparison.Ordinal);
         Assert.Contains("\"code\": \"BASELINE_UNKNOWN\"", workflow, StringComparison.Ordinal);
-        Assert.Contains("\"code\": \"ENUMERATION_INCOMPLETE\"", workflow, StringComparison.Ordinal);
+        Assert.Contains("\"code\": \"UNIT_OMITTED\"", workflow, StringComparison.Ordinal);
         Assert.Contains("reducer-derived", workflow, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("exit `1` is a usage error", workflow, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("may not write a report", workflow, StringComparison.Ordinal);
@@ -66,7 +66,7 @@ public sealed class AgentWorkflowIntegrationTests
         Assert.Contains("OpenCover", matrix, StringComparison.Ordinal);
         Assert.Contains("packaged strict", matrix, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("legacy", matrix, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("does not execute VSTest", matrix, StringComparison.Ordinal);
+        Assert.Contains("does not run VSTest", matrix, StringComparison.Ordinal);
         Assert.DoesNotContain("SLA", matrix, StringComparison.Ordinal);
 
         Assert.Contains("5 not applicable", Cli.HelpText, StringComparison.OrdinalIgnoreCase);

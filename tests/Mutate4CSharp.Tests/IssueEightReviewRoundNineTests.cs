@@ -67,12 +67,12 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
     }
 
     [Theory]
-    [InlineData("mismatched-exit", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":3,\"incompleteConditions\":[{\"code\":\"ENUMERATION_NOT_IMPLEMENTED\"}]}", 4, "exitCode does not match")]
-    [InlineData("wrong-outcome", "{\"outcome\":\"COMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"ENUMERATION_NOT_IMPLEMENTED\"}]}", 4, "requires exit 4 with outcome INCOMPLETE")]
-    [InlineData("missing-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[]}", 4, "lacks ENUMERATION_NOT_IMPLEMENTED")]
+    [InlineData("mismatched-exit", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":3,\"incompleteConditions\":[{\"code\":\"EXECUTION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":0}}", 4, "exitCode does not match")]
+    [InlineData("wrong-outcome", "{\"outcome\":\"COMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"EXECUTION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":0}}", 4, "requires exit 4 with outcome INCOMPLETE")]
+    [InlineData("missing-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[],\"counts\":{\"enumerated\":0}}", 4, "lacks EXECUTION_NOT_IMPLEMENTED")]
     [InlineData("malformed", "{", 4, "report validation failed")]
     [InlineData("non-object", "[]", 4, "report root must be an object")]
-    [InlineData("zero-with-report", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":0,\"incompleteConditions\":[{\"code\":\"ENUMERATION_NOT_IMPLEMENTED\"}]}", 0, "requires exit 4 with outcome INCOMPLETE")]
+    [InlineData("zero-with-report", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":0,\"incompleteConditions\":[{\"code\":\"EXECUTION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":0}}", 0, "requires exit 4 with outcome INCOMPLETE")]
     public async Task GateReportBindingNegativesRefuseExactly(string name, string json, int processExit, string diagnostic)
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "The shipped workflow is a Bash integration.");
@@ -145,7 +145,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
         await CreateRepositoryAsync(target);
         var head = (await RunAsync(target, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
         var fixture = await CreateToolFixtureAsync(
-            "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"ENUMERATION_NOT_IMPLEMENTED\"}]}", 4);
+            "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"EXECUTION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":0}}", 4);
 
         var result = await RunAsync(target, "bash", Path.Combine(RepositoryRoot, "scripts", "agent-gate.sh"),
             "gate", target, fixture.Receipt, fixture.PackageSha, fixture.PayloadSha, fixture.ToolCommit,

@@ -65,7 +65,7 @@ public sealed class CheckConfigurationTests : IDisposable
     }
 
     [Fact]
-    public void RejectsDuplicateIdsAndAmbiguousSourceMembership()
+    public void RejectsDuplicateIdsAndAllowsExplicitSharedSourceMembership()
     {
         var duplicate = ValidConfiguration.Replace("\"projects\": [", "\"projects\": [" + Project + ",", StringComparison.Ordinal);
         Assert.Contains("Duplicate", Assert.Throws<ArgumentException>(() => Load(duplicate)).Message,
@@ -74,8 +74,9 @@ public sealed class CheckConfigurationTests : IDisposable
         var ambiguous = ValidConfiguration.Replace("\"projects\": [", "\"projects\": [" +
             Project.Replace("\"id\": \"app\"", "\"id\": \"other\"", StringComparison.Ordinal)
                 .Replace("src/App/App.csproj", "src/Other/Other.csproj", StringComparison.Ordinal) + ",", StringComparison.Ordinal);
-        Assert.Contains("ambiguous", Assert.Throws<ArgumentException>(() => Load(ambiguous)).Message,
-            StringComparison.OrdinalIgnoreCase);
+        var shared = Load(ambiguous);
+        Assert.Equal(2, shared.Projects.Count(project =>
+            project.Sources.Contains("src/App/**/*.cs", StringComparer.Ordinal)));
     }
 
     [Fact]

@@ -51,6 +51,10 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         Assert.Contains($"Run ID: {runId}", output.ToString(), StringComparison.Ordinal);
         Assert.Equal("INCOMPLETE", report.RootElement.GetProperty("outcome").GetString());
         Assert.Contains(report.RootElement.GetProperty("reasons").EnumerateArray(),
+            reason => reason.GetProperty("code").GetString() is
+                "ENUMERATION_SCOPE_INCOMPLETE" or "ENUMERATION_CONTEXT_UNSUPPORTED" or
+                "EXECUTION_NOT_IMPLEMENTED");
+        Assert.DoesNotContain(report.RootElement.GetProperty("reasons").EnumerateArray(),
             reason => reason.GetProperty("code").GetString() == "ENUMERATION_NOT_IMPLEMENTED");
         var snapshot = report.RootElement.GetProperty("evidence").EnumerateArray()
             .Single(item => item.GetProperty("kind").GetString() == "INPUT_SNAPSHOT");
@@ -81,7 +85,10 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
         Assert.Equal(1, result.Report.Counts.Enumerated);
         var unit = Assert.Single(result.Report.Units);
-        Assert.Equal(UnitDisposition.Error, unit.Disposition);
+        Assert.Equal(UnitDisposition.Omitted, unit.Disposition);
+        Assert.Equal(0, result.Report.Counts.Executed);
+        Assert.Equal(0, result.Report.Counts.Errors);
+        Assert.Equal(1, result.Report.Counts.Omitted);
         Assert.True(MutationIdentity.IsMutationId(unit.UnitId));
         Assert.True(EvaluationUnitIdentity.IsEvaluationUnitId(unit.EvaluationUnitId));
         Assert.Contains(result.Report.Reasons, reason => reason.Code == "EXECUTION_NOT_IMPLEMENTED");
@@ -113,6 +120,39 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         Assert.Empty(result.Report.Units);
         Assert.Contains(result.Report.Reasons, reason => reason.Code == "EXECUTION_NOT_IMPLEMENTED");
         Assert.DoesNotContain(result.Report.Reasons, reason => reason.Code == "ENUMERATION_INCOMPLETE");
+    }
+
+    [Fact]
+    public async Task ExactIdRequestFreshlyRebindsTheCurrentPlanAsDiagnosticOnly()
+    {
+        using var repository = StrictEnumerationRepository("public int Value() => 0;");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "baseline");
+        repository.WriteText("src/App/Flag.cs", "public sealed class Flag { public int Value() => 1; }\n");
+        var firstReport = Path.Combine(_directory, "full-plan.json");
+        var targetedReport = Path.Combine(_directory, "targeted-plan.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
+        try
+        {
+            var coordinator = new EvaluationCoordinator();
+            var full = await coordinator.RunAsync(
+                new(false, "HEAD", [], firstReport, "full-plan"), CancellationToken.None);
+            var mutation = Assert.Single(full.Report.Units).UnitId;
+            var planFingerprint = Assert.Single(full.Report.Evidence,
+                    item => item.Kind == "MUTATION_PLAN").Diagnostics!
+                .Single(value => value.StartsWith("planFingerprint=", StringComparison.Ordinal))[16..];
+
+            var targeted = await coordinator.RunAsync(new(false, "HEAD", [], targetedReport,
+                "targeted-plan", MutationIds: [mutation], PlanFingerprint: planFingerprint),
+                CancellationToken.None);
+
+            Assert.True(targeted.Report.DiagnosticPartial);
+            Assert.Contains(targeted.Report.IncompleteConditions,
+                reason => reason.Code == MutationSelection.TargetedDiagnosticCode);
+            Assert.Contains(targeted.Report.Evidence, item => item.Kind == "EXACT_ID_REQUEST");
+        }
+        finally { Environment.CurrentDirectory = previous; }
     }
 
     [Fact]

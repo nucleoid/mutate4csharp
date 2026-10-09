@@ -155,7 +155,9 @@ public sealed class ToolPackagingIntegrationTests : IDisposable
         using var parsed = JsonDocument.Parse(File.ReadAllBytes(report));
         Assert.Equal("INCOMPLETE", parsed.RootElement.GetProperty("outcome").GetString());
         Assert.Contains(parsed.RootElement.GetProperty("reasons").EnumerateArray(),
-            reason => reason.GetProperty("code").GetString() == "ENUMERATION_NOT_IMPLEMENTED");
+            reason => reason.GetProperty("code").GetString() == "EXECUTION_NOT_IMPLEMENTED");
+        Assert.Equal(JsonValueKind.Number,
+            parsed.RootElement.GetProperty("counts").GetProperty("enumerated").ValueKind);
         Assert.Equal(sourceBefore, File.ReadAllBytes(source));
         Assert.Equal(indexBefore, (await RunAsync(consumer, "git", "diff", "--cached", "--binary")).StandardOutput);
         Assert.Equal(statusBefore, (await RunAsync(consumer, "git", "status", "--short", "--untracked-files=all")).StandardOutput);
