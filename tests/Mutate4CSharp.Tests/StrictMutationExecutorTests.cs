@@ -33,6 +33,10 @@ public sealed class StrictMutationExecutorTests : IDisposable
             cancellationToken: cancellationToken);
         var root = tree.GetRoot(cancellationToken);
         var token = root.DescendantTokens().Single(item => item.ValueText == "true");
+        var lineSpan = tree.GetLineSpan(token.Span);
+        Assert.Equal(CoverageState.Unknown, baseline.CoverageMap!.GetState("src/App/Flag.cs",
+            lineSpan.StartLinePosition.Line + 1, lineSpan.StartLinePosition.Character + 1,
+            lineSpan.EndLinePosition.Line + 1, lineSpan.EndLinePosition.Character + 1));
         var mutation = MutationIdentity.Create("src/App/Flag.cs", root, token.Span,
             "literal.boolean", MutationIdentity.OperatorContractVersion, "false");
         var evaluationId = EvaluationUnitIdentity.Compute(new(mutation.MutationId,
@@ -129,6 +133,10 @@ public sealed class StrictMutationExecutorTests : IDisposable
         Assert.Same(completed, mapped["one"]);
         Assert.False(mapped.ContainsKey("two"));
     }
+
+    [Fact]
+    public void StrictExecutionRemainsSerialUntilParallelIsolationIsVerified() =>
+        Assert.Equal(1, StrictExecutionPipeline.MaxStrictWorkers);
 
     [Fact(Timeout = 420_000)]
     public async Task CoordinatorRunsFreshBaselineCoverageAndMutantBeforeFinalizationGate()

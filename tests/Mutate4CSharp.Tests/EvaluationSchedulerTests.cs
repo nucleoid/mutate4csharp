@@ -3,6 +3,19 @@ namespace Mutate4CSharp.Tests;
 public sealed class EvaluationSchedulerTests
 {
     [Fact]
+    public async Task SnapshotIntegrityFailuresEscapeUnitClassification()
+    {
+        var executor = new DelegateMutationExecutor((_, _, _) =>
+            throw new SnapshotDivergedException("frozen input changed"));
+        var scheduler = new EvaluationScheduler(executor, TimeProvider.System);
+
+        await Assert.ThrowsAsync<SnapshotDivergedException>(() => scheduler.RunAsync(
+            [new ScheduledMutation("mutation:v1:" + new string('1', 64),
+                "evaluation:v1:" + new string('2', 64), ["unit"])],
+            1, TimeSpan.FromSeconds(10), DateTimeOffset.UtcNow.AddMinutes(1),
+            CancellationToken.None));
+    }
+    [Fact]
     public async Task SchedulerNeverExceedsWorkerBoundAndReturnsCanonicalOrder()
     {
         var active = 0;

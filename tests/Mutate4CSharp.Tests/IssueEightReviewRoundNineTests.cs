@@ -124,6 +124,31 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
         Assert.DoesNotContain("agent-gate:", result.Diagnostic, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("OVERALL_DEADLINE_EXCEEDED")]
+    [InlineData("EXECUTION_CANCELLED")]
+    [InlineData("BASELINE_TIMEOUT")]
+    [InlineData("BASELINE_INCONCLUSIVE")]
+    [InlineData("COVERAGE_MISSING")]
+    [InlineData("SUITE_MEMBERS_MISSING")]
+    [InlineData("MUTATION_ATTEMPT_OMITTED")]
+    public async Task GateAcceptsValidatedExecutionIncompletenessWithoutAcceptingIntegrityFailures(string code)
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "The shipped workflow is a Bash integration.");
+        var target = Path.Combine(_root, "execution-incomplete-target-" + code);
+        await CreateRepositoryAsync(target);
+        var head = (await RunAsync(target, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
+        var fixture = await CreateToolFixtureAsync(
+            $"{{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{{\"code\":\"FINALIZATION_PENDING\"}},{{\"code\":\"{code}\"}}],\"counts\":{{\"enumerated\":1}},\"evidence\":[]}}", 4);
+
+        var result = await RunAsync(target, "bash", Path.Combine(RepositoryRoot, "scripts", "agent-gate.sh"),
+            "gate", target, fixture.Receipt, fixture.PackageSha, fixture.PayloadSha, fixture.ToolCommit,
+            head, head, Path.Combine(_root, "execution-incomplete-" + code + ".json"), "no-state");
+
+        Assert.Equal(4, result.ExitCode);
+        Assert.DoesNotContain("agent-gate:", result.Diagnostic, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task GateRejectsSymlinkReportWithStableRefusal()
     {

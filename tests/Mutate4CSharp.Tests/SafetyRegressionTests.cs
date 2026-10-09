@@ -130,6 +130,16 @@ public sealed class SafetyRegressionTests : IDisposable
         var lineOnly = Write("coverage-line-only.xml", OpenCover(target, 30, 0));
         Assert.Equal(CoverageState.Unknown,
             CoverageMap.Load(lineOnly, _directory)!.GetState(target, 30, 2, 30, 8));
+
+        var placeholder = Write("coverage-placeholder.xml", $"""
+            <CoverageSession><Modules><Module><Files><File uid="1" fullPath="{System.Security.SecurityElement.Escape(target)}"/></Files>
+            <Classes><Class><Methods><Method><FileRef uid="1"/><SequencePoints>
+            <SequencePoint vc="0" sl="40" sc="1" el="40" ec="2"/>
+            </SequencePoints></Method></Methods></Class></Classes>
+            </Module></Modules></CoverageSession>
+            """);
+        Assert.Equal(CoverageState.Unknown,
+            CoverageMap.Load(placeholder, _directory)!.GetState(target, 40, 1, 40, 2));
     }
 
     [Fact]
