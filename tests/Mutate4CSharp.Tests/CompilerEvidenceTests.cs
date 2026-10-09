@@ -101,6 +101,34 @@ public sealed class CompilerEvidenceTests
     }
 
     [Theory]
+    [InlineData("1>C:\\repo\\src\\Subject.cs(4,12,4,20): error CS0019: bad operator")]
+    [InlineData("C:\\repo\\src\\Subject.cs(4,12,4,20) : error CS0019: bad operator")]
+    [InlineData("\u001b[31mC:\\repo\\src\\Subject.cs(4,12,4,20): error CS0019: bad operator\u001b[0m")]
+    public void WindowsMsBuildDecorationsRetainExactTargetAttribution(string output)
+    {
+        var control = Run(0, string.Empty, true, true);
+
+        var evidence = CompilerEvidence.Evaluate(Run(1, output), control,
+            @"C:\repo\src\Subject.cs", @"C:\repo");
+
+        Assert.True(evidence.IsCompileInvalid);
+        Assert.Single(evidence.Diagnostics);
+    }
+
+    [Theory]
+    [InlineData("1>C:\\repo\\other\\Subject.cs(4,12,4,20): error CS0019: bad operator")]
+    [InlineData("\u001b[31mC:\\repo\\other\\Subject.cs(4,12,4,20): error CS0019: bad operator\u001b[0m")]
+    public void WindowsMsBuildDecorationsDoNotAttributeSiblingPath(string output)
+    {
+        var control = Run(0, string.Empty, true, true);
+
+        var evidence = CompilerEvidence.Evaluate(Run(1, output), control,
+            @"C:\repo\src\Subject.cs", @"C:\repo");
+
+        Assert.False(evidence.IsCompileInvalid);
+    }
+
+    [Theory]
     [InlineData(@"C:\Users\RUNNER~1\AppData\Local\Temp\mutate\root\src\Subject.cs",
         @"C:\Users\runneradmin\AppData\Local\Temp\mutate\root\src\Subject.cs")]
     [InlineData(@"C:\Users\runneradmin\AppData\Local\Temp\mutate\root\src\Subject.cs",
