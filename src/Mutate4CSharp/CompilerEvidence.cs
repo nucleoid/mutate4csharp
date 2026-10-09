@@ -51,7 +51,7 @@ internal static partial class CompilerEvidence
     private static string Sanitize(string value) => string.Join(' ', value.Split((char[]?)null,
         StringSplitOptions.RemoveEmptyEntries));
 
-    [GeneratedRegex(@"(?m)^(?<path>(?:[A-Za-z]:)?[^\r\n(]+)\(\d+,\d+\):\s*error\s+CS\d{4}\s*:[^\r\n]*$",
+    [GeneratedRegex(@"(?m)^(?<path>(?:[A-Za-z]:)?[^\r\n(]+)\(\d+,\d+(?:,\d+,\d+)?\):\s*error\s+CS\d{4}\s*:[^\r\n]*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex DiagnosticPattern();
 
