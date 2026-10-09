@@ -71,18 +71,20 @@ accept platform-qualified TFMs for planning compatibility, but semantic enumerat
 additional compiler symbols and reference contracts are modelled. Version 1 uses an allowlist for project properties/items and refuses
 unmodelled project semantics, conditional project evaluation,
 `ProjectReference`/`PackageReference` resolution, explicit imports, inherited `Directory.Build.props`/`.targets`,
+captured `Directory.Build.rsp`/`MSBuild.rsp`,
 build controls above the repository root, non-plain SDKs, Compile Remove/Update transforms, unresolved semantic
 diagnostics, and non-Git explicit-input
 enumeration rather than silently borrowing ambient MSBuild state. SDK semantics supply the upper-case configuration
 symbol (`DEBUG`, `RELEASE`, or the configured equivalent) unless `DisableImplicitConfigurationDefines` is true;
 `TRACE` is inherited unless a bare `DefineConstants` value replaces it or `DisableDiagnosticTracing` is true.
-User symbols must be listed in
-`defineConstants`, and the project must either declare them literally or append them through an exact
+User symbols are derived from captured project bytes; when the optional `defineConstants` assertion is supplied,
+it must match the project symbols, which must be declared literally or appended through an exact
 `$(DefineConstants);...` prefix. Files with preprocessor directives expand to full-project scope so declaration
 planning and semantic enumeration cannot disagree about inactive text. Plain SDK library, console/WinExe, and
 deterministic implicit-using contexts are supported against the exact reference pack declared by the SDK resolved
 inside the frozen consumer snapshot; the SDK, pack version, and pack content identity are bound into the evaluation
-fingerprint. Strict child execution clears
+fingerprint. Every project and source read is checked against the snapshot manifest length and SHA-256 before
+semantic analysis, so later capture-directory mutation cannot be bound as the original snapshot. Strict child execution clears
 the semantic MSBuild property environment named by this contract. Supported checks end
 at `EXECUTION_NOT_IMPLEMENTED` until baseline and mutant execution is connected by issue #3; no test process is
 launched at this boundary.

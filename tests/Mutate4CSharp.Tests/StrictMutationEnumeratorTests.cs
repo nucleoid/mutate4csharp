@@ -704,6 +704,90 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
             reason => reason.Code == "ENUMERATION_INHERITED_BUILD_UNSUPPORTED");
     }
 
+    [Theory]
+    [InlineData("Directory.Build.rsp")]
+    [InlineData("MSBuild.rsp")]
+    public async Task SnapshotBoundaryRefusesCapturedMsbuildResponseFiles(string responseFile)
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText(responseFile, "-p:DefineConstants=HIDDEN\n");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        Commit();
+        if (responseFile == "Directory.Build.rsp")
+        {
+            var error = await Assert.ThrowsAsync<SnapshotCaptureException>(() =>
+                SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+                    SnapshotCaptureOptions.Default, CancellationToken.None));
+            Assert.Contains(responseFile, error.Message, StringComparison.OrdinalIgnoreCase);
+            return;
+        }
+
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+        Assert.False(result.IsComplete);
+        Assert.Contains(result.Reasons,
+            reason => reason.Code == "ENUMERATION_INHERITED_BUILD_UNSUPPORTED");
+    }
+
+    [Fact]
+    public async Task ProjectSymbolsUseCompilerSeparatorsWhenConfigurationOmitsAssertion()
+    {
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><DefineConstants>$(DefineConstants);ALPHA,BETA GAMMA</DefineConstants></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs", """
+            #if ALPHA && BETA && GAMMA
+            public sealed class Flag { public bool Value() => true; }
+            #endif
+            """);
+        WriteConfiguration([
+            new
+            {
+                id = "app", project = "src/App/App.csproj", targetFramework = "net10.0",
+                parseContext = "net10-csharp14", sources = new[] { "src/App/**/*.cs" },
+                testSuites = new[] { "unit" }
+            }
+        ]);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Single(result.Candidates);
+    }
+
+    [Fact]
+    public async Task RefusesCaptureBytesChangedAfterSnapshotIdentityWasEstablished()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        File.WriteAllText(Path.Combine(snapshot.CaptureRoot, "src", "App", "Flag.cs"),
+            "public sealed class Flag { public bool Value() => false; }\n");
+
+        var error = Assert.Throws<SnapshotDivergedException>(() =>
+            StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+                FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None));
+
+        Assert.Contains("Frozen capture bytes changed", error.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task MarkerTextInsideAStringDoesNotMakeProductionSourceGenerated()
     {

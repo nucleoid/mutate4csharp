@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
@@ -169,6 +170,7 @@ internal static class StrictMutationEnumerator
             return new(ordered, [], true, contextIdentity);
         }
         catch (OperationCanceledException) { throw; }
+        catch (SnapshotCaptureException) { throw; }
         catch (EnumerationContextException ex)
         {
             return Refused(ex.Code, ex.Message);
@@ -222,7 +224,14 @@ internal static class StrictMutationEnumerator
             trees.Add(implicitPath, CSharpSyntaxTree.ParseText(ImplicitUsingsSource, parseOptions,
                 implicitPath, Encoding.UTF8, cancellationToken));
         }
-        var referenceSet = PlatformReferences(sdkVersion);
+        ReferenceSet referenceSet;
+        try { referenceSet = PlatformReferences(sdkVersion); }
+        catch (EnumerationContextException) { throw; }
+        catch (Exception ex) when (!IsFatal(ex))
+        {
+            throw new EnumerationContextException("ENUMERATION_REFERENCE_PACK_UNAVAILABLE",
+                "The resolved SDK targeting pack could not be loaded for semantic enumeration.", ex);
+        }
         var compilation = CSharpCompilation.Create(
             "StrictEnumeration_" + project.Id,
             trees.Values,
@@ -267,13 +276,12 @@ internal static class StrictMutationEnumerator
         IReadOnlyDictionary<string, SnapshotFile> captured, CheckProject project,
         IReadOnlyList<string> configuredSourcePaths, string buildConfiguration)
     {
-        var path = CapturedPath(snapshot, project.Project);
         XDocument document;
-        try { document = XDocument.Load(path, LoadOptions.SetLineInfo); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Xml.XmlException)
+        try { document = XDocument.Parse(ReadCapturedText(snapshot, project.Project), LoadOptions.SetLineInfo); }
+        catch (System.Xml.XmlException ex)
         {
-            throw new EvaluationContractException(
-                $"Configured project XML could not be read: {project.Project}.", ex);
+            throw new EnumerationContextException("ENUMERATION_PROJECT_UNSUPPORTED",
+                $"Configured project XML is malformed: {project.Project}.", ex);
         }
         var root = document.Root;
         if (root?.Name.LocalName != "Project")
@@ -423,10 +431,13 @@ internal static class StrictMutationEnumerator
         var directory = RepositoryDirectory(projectPath);
         while (true)
         {
-            foreach (var name in new[] { "Directory.Build.props", "Directory.Build.targets" })
+            foreach (var name in new[]
+                     {
+                         "Directory.Build.props", "Directory.Build.targets", "Directory.Build.rsp", "MSBuild.rsp"
+                     })
             {
                 var path = directory.Length == 0 ? name : directory + "/" + name;
-                if (captured.ContainsKey(path))
+                if (captured.Keys.Any(candidate => candidate.Equals(path, HostPathComparison)))
                     throw new EnumerationContextException("ENUMERATION_INHERITED_BUILD_UNSUPPORTED",
                         $"Captured inherited build configuration is unsupported in enumeration v1: {path}.");
             }
@@ -499,8 +510,16 @@ internal static class StrictMutationEnumerator
             .Distinct(StringComparer.Ordinal).OrderBy(value => value,
                 StringComparer.Ordinal).ToArray();
 
-        static string[] SplitSymbols(string value) => value.Split(';',
-            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        static string[] SplitSymbols(string value)
+        {
+            var symbols = value.Split([';', ',', ' ', '\t', '\r', '\n'],
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var invalid = symbols.FirstOrDefault(symbol => !SyntaxFacts.IsValidIdentifier(symbol));
+            if (invalid is not null)
+                throw new EnumerationContextException("ENUMERATION_SYMBOL_UNSUPPORTED",
+                    $"DefineConstants contains an invalid C# symbol: {invalid}.");
+            return symbols;
+        }
     }
 
     private static string ResolveStaticCompilePath(InputSnapshot snapshot, string projectPath, string include)
@@ -564,8 +583,14 @@ internal static class StrictMutationEnumerator
     {
         var key = sdkVersion ?? "runtime:" + Path.GetFileName(Path.TrimEndingDirectorySeparator(
             System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory()));
-        return ReferenceSetCache.GetOrAdd(key, _ => new(() => CreatePlatformReferences(sdkVersion),
-            LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+        var lazy = ReferenceSetCache.GetOrAdd(key, _ => new(() => CreatePlatformReferences(sdkVersion),
+            LazyThreadSafetyMode.ExecutionAndPublication));
+        try { return lazy.Value; }
+        catch
+        {
+            ReferenceSetCache.TryRemove(new KeyValuePair<string, Lazy<ReferenceSet>>(key, lazy));
+            throw;
+        }
     }
 
     private static ReferenceSet CreatePlatformReferences(string? sdkVersion)
@@ -661,8 +686,15 @@ internal static class StrictMutationEnumerator
 
     private static string ReadCapturedText(InputSnapshot snapshot, string path)
     {
-        using var stream = new FileStream(CapturedPath(snapshot, path), FileMode.Open, FileAccess.Read,
-            FileShare.Read, 64 * 1024, FileOptions.SequentialScan);
+        var expected = snapshot.Files.SingleOrDefault(file => file.Exists &&
+            file.RelativePath.Equals(path, StringComparison.Ordinal)) ??
+            throw new SnapshotDivergedException($"Frozen capture manifest no longer contains {path}.");
+        var bytes = File.ReadAllBytes(CapturedPath(snapshot, path));
+        var digest = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        if (bytes.LongLength != expected.Length || !digest.Equals(expected.Sha256, StringComparison.Ordinal))
+            throw new SnapshotDivergedException(
+                $"Frozen capture bytes changed after identity was established: {path}.");
+        using var stream = new MemoryStream(bytes, writable: false);
         using var reader = new StreamReader(stream, new UTF8Encoding(false, true), true);
         return reader.ReadToEnd();
     }

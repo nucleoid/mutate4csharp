@@ -204,16 +204,34 @@ try:
         isinstance(item, dict) and item.get("code") == "EXECUTION_NOT_IMPLEMENTED"
         for item in conditions
     )
+    execution_codes = {"EXECUTION_NOT_IMPLEMENTED", "TARGETED_DIAGNOSTIC"}
+    enumeration_codes = {
+        "ENUMERATION_ANCESTOR_BUILD_UNSUPPORTED",
+        "ENUMERATION_COMPILE_INVENTORY_MISMATCH", "ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
+        "ENUMERATION_COMPILE_TRANSFORM_UNSUPPORTED", "ENUMERATION_CONDITION_UNSUPPORTED",
+        "ENUMERATION_CONFIGURATION_REQUIRED", "ENUMERATION_CONFIGURATION_UNSUPPORTED",
+        "ENUMERATION_FRAMEWORK_UNSUPPORTED", "ENUMERATION_IMPLICIT_USINGS_UNSUPPORTED",
+        "ENUMERATION_IMPORT_UNSUPPORTED", "ENUMERATION_INHERITED_BUILD_UNSUPPORTED",
+        "ENUMERATION_ITEM_UNSUPPORTED", "ENUMERATION_LANGUAGE_UNSUPPORTED",
+        "ENUMERATION_NULLABLE_MISMATCH", "ENUMERATION_OUTPUT_TYPE_UNSUPPORTED",
+        "ENUMERATION_PARSE_INVALID", "ENUMERATION_PROJECT_ELEMENT_UNSUPPORTED",
+        "ENUMERATION_PROJECT_UNMAPPED", "ENUMERATION_PROJECT_UNSUPPORTED",
+        "ENUMERATION_PROPERTY_UNSUPPORTED", "ENUMERATION_REFERENCE_UNSUPPORTED",
+        "ENUMERATION_REQUIRES_GIT_SNAPSHOT", "ENUMERATION_SCOPE_INCOMPLETE",
+        "ENUMERATION_SDK_UNSUPPORTED", "ENUMERATION_SEMANTIC_INVALID",
+        "ENUMERATION_SYMBOL_MISMATCH", "ENUMERATION_SYMBOL_UNSUPPORTED",
+    }
     scope_refusal_codes = {
         "AMBIGUOUS_PROJECT_OWNERSHIP", "UNMAPPED_PROJECT", "CONFIGURED_PATH_MISSING",
         "UNSUPPORTED_SYNTAX", "NO_SUPPORTED_DECLARATION", "UNSUPPORTED_CHANGED_INPUT",
         "EXACT_ID_RERUN_UNAVAILABLE", "TARGET_SELECTION_INVALID",
     }
+    execution_valid = execution_pending and all(item["code"] in execution_codes for item in conditions)
     enumeration_refusal = not execution_pending and all(
-        item["code"].startswith("ENUMERATION_") or item["code"] in scope_refusal_codes
+        item["code"] in enumeration_codes or item["code"] in scope_refusal_codes
         for item in conditions
     )
-    if not execution_pending and not enumeration_refusal:
+    if not execution_valid and not enumeration_refusal:
         raise ValueError("report lacks an accepted execution or enumeration incomplete condition")
     counts = report.get("counts")
     if not isinstance(counts, dict):

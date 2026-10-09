@@ -73,6 +73,9 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
     [InlineData("malformed", "{", 4, "report validation failed")]
     [InlineData("non-object", "[]", 4, "report root must be an object")]
     [InlineData("unknown-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"NOT_A_GATE_CONDITION\"}],\"counts\":{\"enumerated\":null}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
+    [InlineData("retired-enumeration", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"ENUMERATION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":null}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
+    [InlineData("sdk-unavailable", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"ENUMERATION_SDK_UNAVAILABLE\"}],\"counts\":{\"enumerated\":null}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
+    [InlineData("execution-with-foreign-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"EXECUTION_NOT_IMPLEMENTED\"},{\"code\":\"SNAPSHOT_DIVERGED\"}],\"counts\":{\"enumerated\":1}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
     [InlineData("zero-with-report", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":0,\"incompleteConditions\":[{\"code\":\"EXECUTION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":0}}", 0, "requires exit 4 with outcome INCOMPLETE")]
     public async Task GateReportBindingNegativesRefuseExactly(string name, string json, int processExit, string diagnostic)
     {

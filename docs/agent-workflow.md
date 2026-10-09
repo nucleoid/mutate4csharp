@@ -132,8 +132,10 @@ symbolic repository boundaries, identity drift, non-commit baselines, existing/s
 changed target `HEAD` fail before a result is accepted.
 The current gate accepts a tool result only when a newly created regular report parses, its `exitCode` equals the
 process exit, and it says `INCOMPLETE` / `4`. A supported plan must contain `EXECUTION_NOT_IMPLEMENTED` and a bounded
-nonnegative `counts.enumerated`. A project outside the current semantic envelope may instead contain only validated
-`ENUMERATION_*` incomplete conditions or known scope/selection blockers and must keep `counts.enumerated` null.
+nonnegative `counts.enumerated`. A project outside the current semantic envelope may instead contain only an
+explicitly allowlisted semantic `ENUMERATION_*` condition or known scope/selection blocker and must keep
+`counts.enumerated` null. Retired placeholder, SDK/reference-pack, fingerprint, unknown, and integrity-related codes
+are not accepted merely because they share an `ENUMERATION_` prefix.
 Both are nonpassing results. A crash
 that merely exits 4, a malformed condition, or a contradictory count is refused as orchestration exit `73`.
 All orchestration refusals use exit `73`, distinct from tool usage exit `1` and strict incomplete exit `4`.
