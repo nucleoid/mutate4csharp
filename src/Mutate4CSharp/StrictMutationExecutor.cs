@@ -146,10 +146,14 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
         else if (run.ExitCode != 0 && run.HasFailedTests) disposition = SuiteRunDisposition.Killed;
         else if (run.ExitCode == 0 && !run.HasFailedTests) disposition = SuiteRunDisposition.Survived;
         else disposition = SuiteRunDisposition.Error;
-        var diagnostics = compile.IsCompileInvalid
-            ? compile.Diagnostics
-            : (run.Diagnostics ?? []).Concat(disposition == SuiteRunDisposition.Error
-                ? [Bound(run.StandardError + " " + run.StandardOutput)] : []).Take(20).ToArray();
+        var diagnostics = (compile.IsCompileInvalid ? compile.Diagnostics : run.Diagnostics ?? [])
+            .Concat(compile.ClassificationDiagnostics)
+            .Concat(disposition == SuiteRunDisposition.Error
+                ? [$"process-exit={run.ExitCode}", $"trx-valid={run.TrxValid.ToString().ToLowerInvariant()}",
+                    $"tests-discovered={run.TestsDiscovered.ToString().ToLowerInvariant()}",
+                    $"run-errors={run.HasRunErrors.ToString().ToLowerInvariant()}"]
+                : [])
+            .Take(20).ToArray();
         return new(suiteId, disposition, run.FailedTestIds ?? [], diagnostics,
             compile.IsCompileInvalid);
     }
@@ -158,10 +162,4 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
         new(mutation.EvaluationUnitId, UnitDisposition.Error,
             [new("MUTANT_TIMEOUT", $"The isolated mutant exhausted its bounded timeout before suite {suiteId}.")]);
 
-    private static string Bound(string value)
-    {
-        var sanitized = string.Join(' ', value.Split((char[]?)null,
-            StringSplitOptions.RemoveEmptyEntries));
-        return EvaluationTextBounds.Suffix(sanitized, EvaluationEvidence.MaxDiagnosticLength);
-    }
 }

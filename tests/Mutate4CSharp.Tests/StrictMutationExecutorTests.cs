@@ -116,11 +116,15 @@ public sealed class StrictMutationExecutorTests : IDisposable
             $"{item.Kind}[{string.Join(",", (item.Diagnostics ?? []).Where(value =>
                 value.StartsWith("failed-count=", StringComparison.Ordinal) ||
                 value.StartsWith("diagnostic-count=", StringComparison.Ordinal) ||
-                value.StartsWith("compile-invalid=", StringComparison.Ordinal)))}]"));
+                value.StartsWith("compile-invalid=", StringComparison.Ordinal) ||
+                value.StartsWith("classifier-", StringComparison.Ordinal)))}]"));
         Assert.True(invalidResult.Disposition == UnitDisposition.CompileInvalid,
             $"Expected CompileInvalid but received {invalidResult.Disposition}. Safe evidence: {safeClassificationEvidence}");
         Assert.Contains(invalidResult.Evidence, item => item.Kind == "SUITE_MUTANT_RESULT" &&
             item.Diagnostics?.Any(value => value == "compile-invalid=true") == true);
+        Assert.DoesNotContain(invalidResult.Evidence.SelectMany(item => item.Diagnostics ?? []),
+            value => value.Contains(Path.GetTempPath(),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
         Assert.Equal(source, File.ReadAllText(Path.Combine(_repository.Root, "src/App/Flag.cs")));
     }
 

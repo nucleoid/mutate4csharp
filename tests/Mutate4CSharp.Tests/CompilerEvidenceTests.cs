@@ -98,6 +98,27 @@ public sealed class CompilerEvidenceTests
         Assert.True(evidence.IsCompileInvalid);
         Assert.Single(evidence.Diagnostics);
         Assert.Contains("CS0019", evidence.Diagnostics[0]);
+        Assert.DoesNotContain(@"C:\repo", evidence.Diagnostics[0], StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("bad operator", evidence.Diagnostics[0], StringComparison.Ordinal);
+        Assert.Contains("classifier-exact-path-matches=1", evidence.ClassificationDiagnostics);
+    }
+
+    [Fact]
+    public void UnsupportedCompilerLocationPublishesOnlySafeClassifierStages()
+    {
+        var control = Run(0, string.Empty, true, true);
+        var output = @"C:\private\runner\src\Subject.cs(4): error CS0019: private message";
+
+        var evidence = CompilerEvidence.Evaluate(Run(1, output), control,
+            @"C:\private\runner\src\Subject.cs", @"C:\private\runner");
+
+        Assert.False(evidence.IsCompileInvalid);
+        Assert.Empty(evidence.Diagnostics);
+        Assert.Contains("classifier-compiler-lines=1", evidence.ClassificationDiagnostics);
+        Assert.Contains("classifier-location-matches=0", evidence.ClassificationDiagnostics);
+        Assert.DoesNotContain(evidence.ClassificationDiagnostics,
+            value => value.Contains("private", StringComparison.OrdinalIgnoreCase) ||
+                     value.Contains("Subject.cs", StringComparison.OrdinalIgnoreCase));
     }
 
     [Theory]
