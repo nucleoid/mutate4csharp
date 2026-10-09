@@ -53,7 +53,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         Assert.Contains(report.RootElement.GetProperty("reasons").EnumerateArray(),
             reason => reason.GetProperty("code").GetString() is
                 "ENUMERATION_SCOPE_INCOMPLETE" or "ENUMERATION_CONTEXT_UNSUPPORTED" or
-                "EXECUTION_NOT_IMPLEMENTED");
+                "ENUMERATION_PROJECT_ELEMENT_UNSUPPORTED" or "FINALIZATION_PENDING");
         Assert.DoesNotContain(report.RootElement.GetProperty("reasons").EnumerateArray(),
             reason => reason.GetProperty("code").GetString() == "ENUMERATION_NOT_IMPLEMENTED");
         var snapshot = report.RootElement.GetProperty("evidence").EnumerateArray()
@@ -64,7 +64,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task SupportedCapturedScopePublishesBoundEnumerationBeforeExecutionIntegration()
+    public async Task SupportedCapturedScopePublishesBoundEnumerationAndBaselineEvidence()
     {
         using var repository = StrictEnumerationRepository("public int Value() => 0;");
         repository.Git("add", ".");
@@ -91,7 +91,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         Assert.Equal(1, result.Report.Counts.Omitted);
         Assert.True(MutationIdentity.IsMutationId(unit.UnitId));
         Assert.True(EvaluationUnitIdentity.IsEvaluationUnitId(unit.EvaluationUnitId));
-        Assert.Contains(result.Report.Reasons, reason => reason.Code == "EXECUTION_NOT_IMPLEMENTED");
+        Assert.Contains(result.Report.Reasons, reason => reason.Code == "FINALIZATION_PENDING");
         Assert.DoesNotContain(result.Report.Reasons, reason => reason.Code == "ENUMERATION_NOT_IMPLEMENTED");
         Assert.Contains(result.Report.Evidence, item => item.Kind == "MUTATION_PLAN" &&
             item.Diagnostics?.Any(value => value.StartsWith("planFingerprint=sha256:",
@@ -186,7 +186,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
 
         Assert.Equal(0, result.Report.Counts.Enumerated);
         Assert.Empty(result.Report.Units);
-        Assert.Contains(result.Report.Reasons, reason => reason.Code == "EXECUTION_NOT_IMPLEMENTED");
+        Assert.Contains(result.Report.Reasons, reason => reason.Code == "FINALIZATION_PENDING");
         Assert.DoesNotContain(result.Report.Reasons, reason => reason.Code == "ENUMERATION_INCOMPLETE");
     }
 
@@ -807,6 +807,9 @@ public sealed class StrictCheckIntegrationTests : IDisposable
                 "expectedMembers": ["App.Tests.dll"]
               }]
             }
+            """);
+        repository.WriteText("NuGet.Config", """
+            <configuration><packageSources><clear /></packageSources></configuration>
             """);
         return repository;
     }

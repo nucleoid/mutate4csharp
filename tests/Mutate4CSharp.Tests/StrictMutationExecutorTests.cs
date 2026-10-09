@@ -55,6 +55,55 @@ public sealed class StrictMutationExecutorTests : IDisposable
         Assert.False(Directory.Exists(Path.Combine(_repository.Root, "bin")));
     }
 
+    [Fact(Timeout = 420_000)]
+    public async Task CoordinatorRunsFreshBaselineCoverageAndMutantBeforeFinalizationGate()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        WriteFixture();
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag { public static bool Value() => false; }
+            """);
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "baseline");
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag { public static bool Value() => true; }
+            """);
+        var original = File.ReadAllBytes(Path.Combine(_repository.Root, "src/App/Flag.cs"));
+        var reportPath = Path.Combine(Path.GetTempPath(), $"strict-execution-{Guid.NewGuid():N}.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = _repository.Root;
+        try
+        {
+            var result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], reportPath, "strict-execution", NoState: true),
+                cancellationToken);
+
+            Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+            Assert.Equal(BaselineStatus.Green, result.Report.Baseline);
+            Assert.NotNull(result.Report.Counts.Enumerated);
+            Assert.True(result.Report.Counts.Executed > 0);
+            Assert.True(result.Report.Counts.Killed > 0);
+            Assert.Contains(result.Report.Units, item => item.Disposition == UnitDisposition.Killed);
+            Assert.Contains(result.Report.IncompleteConditions,
+                item => item.Code == "FINALIZATION_PENDING");
+            Assert.DoesNotContain(result.Report.IncompleteConditions,
+                item => item.Code == "EXECUTION_NOT_IMPLEMENTED");
+            Assert.Single(result.Report.Suites);
+            Assert.Equal(BaselineStatus.Green, result.Report.Suites[0].Baseline);
+            Assert.Equal(original, File.ReadAllBytes(Path.Combine(_repository.Root, "src/App/Flag.cs")));
+            Assert.False(Directory.Exists(Path.Combine(_repository.Root, "obj")));
+            Assert.False(Directory.Exists(Path.Combine(_repository.Root, "bin")));
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            try { File.Delete(reportPath); } catch { }
+            try { File.Delete(ReportWriter.LockPath(reportPath)); } catch { }
+        }
+    }
+
     public void Dispose() => _repository.Dispose();
 
     private void WriteFixture()
@@ -90,6 +139,39 @@ public sealed class StrictMutationExecutorTests : IDisposable
             """);
         _repository.WriteText("NuGet.Config", """
             <configuration><packageSources><clear /><add key="fixture" value="local-packages" /></packageSources></configuration>
+            """);
+        _repository.WriteText("mutate4csharp.json", """
+            {
+              "version": 1,
+              "projects": [{
+                "id": "app",
+                "project": "src/App/App.csproj",
+                "targetFramework": "net10.0",
+                "parseContext": "net10-csharp14",
+                "languageVersion": "14.0",
+                "nullable": "enable",
+                "defineConstants": [],
+                "sources": ["src/App/**/*.cs"],
+                "testSuites": ["unit"]
+              }],
+              "testSuites": [{
+                "id": "unit",
+                "path": "tests/App.Tests/App.Tests.csproj",
+                "runner": "vstest",
+                "framework": "net10.0",
+                "configuration": "Release",
+                "expectedMembers": ["App.Tests.dll"]
+              }],
+              "policy": {
+                "maxWorkers": 1,
+                "mutationCap": 100,
+                "baselineTimeoutSeconds": 120,
+                "mutantTimeoutSeconds": 120,
+                "overallDeadlineSeconds": 300,
+                "allowNotApplicable": false,
+                "stabilityRepetitions": 1
+              }
+            }
             """);
         CopyRestoredTestPackages(Path.Combine(_repository.Root, "local-packages"));
     }
