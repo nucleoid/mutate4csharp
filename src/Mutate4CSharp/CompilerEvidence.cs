@@ -14,6 +14,12 @@ internal static partial class CompilerEvidence
     {
         var controlHealthy = !control.TimedOut && control.ExitCode == 0 && control.TrxValid &&
             control.TestsDiscovered && !control.HasFailedTests && !control.HasRunErrors;
+        return Evaluate(mutated, controlHealthy, targetPath, workingDirectory);
+    }
+
+    internal static CompileEvidence Evaluate(TestRunResult mutated, bool controlHealthy, string targetPath,
+        string workingDirectory)
+    {
         if (!controlHealthy) return new(false, []);
         var mutantFailedToBuild = !mutated.TimedOut && mutated.ExitCode != 0 && !mutated.TrxValid &&
             !mutated.TestsDiscovered && !mutated.HasFailedTests;

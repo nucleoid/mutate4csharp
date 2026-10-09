@@ -49,7 +49,8 @@ internal static class AsyncDisposal
 }
 
 internal sealed record SuiteMutationEvidence(string SuiteId, SuiteRunDisposition Disposition,
-    IReadOnlyList<string> FailedTestIds, IReadOnlyList<string> Diagnostics);
+    IReadOnlyList<string> FailedTestIds, IReadOnlyList<string> Diagnostics,
+    bool CompileInvalid = false);
 
 internal sealed record AggregatedMutation(UnitDisposition Disposition,
     IReadOnlyList<EvaluationEvidence> Evidence);
@@ -215,10 +216,13 @@ internal sealed class SuiteCoordinator
                     $"omitted={orderedEvidence.Length - retained.Count}"]));
         }
 
+        var compileInvalid = validEvidence.Any(item => item.CompileInvalid);
         var incomplete = validEvidence.Any(item => item.Disposition is SuiteRunDisposition.Cancelled or
             SuiteRunDisposition.TimedOut or SuiteRunDisposition.Error or SuiteRunDisposition.Empty or
             SuiteRunDisposition.Failed);
-        var disposition = incomplete ? UnitDisposition.Error
+        var disposition = incomplete || compileInvalid && validEvidence.Any(item => !item.CompileInvalid)
+            ? UnitDisposition.Error
+            : compileInvalid ? UnitDisposition.CompileInvalid
             : validEvidence.Any(item => item.Disposition == SuiteRunDisposition.Killed) ? UnitDisposition.Killed
             : validEvidence.All(item => item.Disposition is SuiteRunDisposition.Survived or SuiteRunDisposition.Passed)
                 ? UnitDisposition.Survived
@@ -228,7 +232,8 @@ internal sealed class SuiteCoordinator
         static EvaluationEvidence ToEvidence(SuiteMutationEvidence item) =>
             new("SUITE_MUTANT_RESULT",
                 $"Suite {Bound(item.SuiteId, 128)} classified the mutant as {item.Disposition.ToString().ToUpperInvariant()}.",
-                new[] { $"failed-count={item.FailedTestIds.Count}", $"diagnostic-count={item.Diagnostics.Count}" }
+                new[] { $"failed-count={item.FailedTestIds.Count}", $"diagnostic-count={item.Diagnostics.Count}",
+                        $"compile-invalid={item.CompileInvalid.ToString().ToLowerInvariant()}" }
                     .Concat(item.FailedTestIds.Take(MaxFailedTests).Select(value => "failed=" + Bound(value, 256)))
                     .Concat(item.Diagnostics.Take(MaxDiagnostics).Select(value => "diagnostic=" + Bound(value, 512)))
                     .ToArray());
