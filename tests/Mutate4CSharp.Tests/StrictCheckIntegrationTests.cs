@@ -293,12 +293,18 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         var refusalReasons = EvaluationCoordinator.PreservedFailureReasons(
             cleanupReason, [], wrappedRefusal);
         var refusalEvidence = EvaluationCoordinator.PreservedFailureEvidence(wrappedRefusal);
+        var cancelledReasons = EvaluationCoordinator.PreservedFailureReasons(
+            cleanupReason, [boundary], new OperationCanceledException("cancelled"));
+        var unexpectedReasons = EvaluationCoordinator.PreservedFailureReasons(
+            cleanupReason, [boundary], new UnauthorizedAccessException("permissions changed"));
 
         Assert.Contains(retained, item => item.Code == "EXECUTION_BOUNDARY_INTEGRITY");
         Assert.Contains(retained, item => item.Code == "SNAPSHOT_DIVERGED");
         Assert.Contains(refusalReasons, item => item.Code == "BASELINE_ACCOUNTING_INCOMPLETE");
         Assert.Contains(refusalEvidence, item => item.Kind == "STRICT_EXECUTION_REFUSAL" &&
             item.Diagnostics!.Contains("BASELINE_ACCOUNTING_INCOMPLETE: baseline accounting failed"));
+        Assert.Contains(cancelledReasons, item => item.Code == "EXECUTION_BOUNDARY_INTEGRITY");
+        Assert.Contains(unexpectedReasons, item => item.Code == "EXECUTION_BOUNDARY_INTEGRITY");
     }
 
     [Fact]
