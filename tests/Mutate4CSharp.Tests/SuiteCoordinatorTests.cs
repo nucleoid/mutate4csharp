@@ -20,6 +20,20 @@ public sealed class SuiteCoordinatorTests
     }
 
     [Fact]
+    public async Task OwnedDisposalPreservesPrimaryIntegrityFailureWhenCleanupAlsoFails()
+    {
+        var integrity = new ExecutionBoundaryIntegrityException("private package root changed");
+        var cleanup = new IOException("owned cleanup failed");
+
+        var combined = await Assert.ThrowsAsync<SnapshotCleanupException>(async () =>
+            await AsyncDisposal.DisposeAllPreservingFailureAsync(
+                [new ThrowingOwner(cleanup)], integrity));
+
+        Assert.Same(integrity, combined.OriginalFailure);
+        Assert.Same(cleanup, combined.CleanupFailure);
+    }
+
+    [Fact]
     public async Task SharedSuiteAliasesRunOneFreshBaselineForTheSnapshot()
     {
         var calls = 0;
@@ -205,5 +219,10 @@ public sealed class SuiteCoordinatorTests
             ObservedTimeouts.Add(timeout);
             return _run(suite, timeout, cancellationToken);
         }
+    }
+
+    private sealed class ThrowingOwner(Exception failure) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync() => ValueTask.FromException(failure);
     }
 }

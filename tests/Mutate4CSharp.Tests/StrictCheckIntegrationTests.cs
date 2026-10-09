@@ -504,11 +504,15 @@ public sealed class StrictCheckIntegrationTests : IDisposable
             Assert.Equal("cleanup-current-run", report.RootElement.GetProperty("runId").GetString());
             Assert.Contains(report.RootElement.GetProperty("reasons").EnumerateArray(),
                 reason => reason.GetProperty("code").GetString() == "SNAPSHOT_CLEANUP_FAILED");
+            Assert.Contains(report.RootElement.GetProperty("incompleteConditions").EnumerateArray(),
+                reason => reason.GetProperty("code").GetString() == "SNAPSHOT_DIVERGED");
             Assert.False(report.RootElement.GetProperty("scopePlan").GetProperty("isComplete").GetBoolean());
             Assert.Contains(report.RootElement.GetProperty("scopePlan").GetProperty("reasons").EnumerateArray(),
                 reason => reason.GetProperty("code").GetString() == "SCOPE_UNAVAILABLE");
             var cleanup = report.RootElement.GetProperty("evidence").EnumerateArray()
                 .Single(item => item.GetProperty("kind").GetString() == "SNAPSHOT_CLEANUP");
+            Assert.Contains(report.RootElement.GetProperty("evidence").EnumerateArray(),
+                item => item.GetProperty("kind").GetString() == "SNAPSHOT_DIVERGENCE");
             var summary = cleanup.GetProperty("summary").GetString();
             Assert.Contains("primary validation failure", summary, StringComparison.Ordinal);
             Assert.Contains("ownership marker", summary, StringComparison.OrdinalIgnoreCase);
