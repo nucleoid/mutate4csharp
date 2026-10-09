@@ -60,6 +60,7 @@ internal sealed class EvaluationScheduler
                     return;
                 }
                 var mutation = ordered[index];
+                var deadlineClamped = remaining < configuredTimeout;
                 var timeout = remaining < configuredTimeout ? remaining : configuredTimeout;
                 var started = _timeProvider.GetUtcNow();
                 using var timeoutSource = new CancellationTokenSource(timeout, _timeProvider);
@@ -70,7 +71,12 @@ internal sealed class EvaluationScheduler
                     var result = await _executor.ExecuteAsync(mutation, timeout, linked.Token);
                     if (_timeProvider.GetUtcNow() - started >= timeout)
                     {
-                        results[index] = Timeout(mutation, timeout);
+                        if (deadlineClamped)
+                        {
+                            Interlocked.Exchange(ref deadlineExceeded, 1);
+                            results[index] = DeadlineOmitted(mutation);
+                        }
+                        else results[index] = Timeout(mutation, timeout);
                         continue;
                     }
                     if (!string.Equals(result.EvaluationUnitId, mutation.EvaluationUnitId, StringComparison.Ordinal) ||
@@ -83,13 +89,27 @@ internal sealed class EvaluationScheduler
                 catch (OperationCanceledException) when (timeoutSource.IsCancellationRequested &&
                                                          !cancellationToken.IsCancellationRequested)
                 {
-                    results[index] = Timeout(mutation, timeout);
+                    if (deadlineClamped)
+                    {
+                        Interlocked.Exchange(ref deadlineExceeded, 1);
+                        results[index] = DeadlineOmitted(mutation);
+                    }
+                    else results[index] = Timeout(mutation, timeout);
                 }
                 catch (OperationCanceledException)
                 {
                     Interlocked.Exchange(ref cancelled, 1);
-                    results[index] = Error(mutation, "Execution was cancelled after assignment.");
+                    results[index] = CancelledOmitted(mutation);
                     return;
+                }
+                catch (TimeoutException)
+                {
+                    if (deadlineClamped)
+                    {
+                        Interlocked.Exchange(ref deadlineExceeded, 1);
+                        results[index] = DeadlineOmitted(mutation);
+                    }
+                    else results[index] = Timeout(mutation, timeout);
                 }
                 catch (Exception ex) when (ex is SnapshotDivergedException or
                                            ExecutionBoundaryIntegrityException or
@@ -150,11 +170,31 @@ internal sealed class EvaluationScheduler
         new(mutation.EvaluationUnitId, UnitDisposition.Error,
             [new("MUTANT_TIMEOUT", $"The isolated mutant exceeded its {timeout.TotalSeconds:g}-second timeout.")]);
 
-    private static ScheduledMutationResult Bound(ScheduledMutationResult result) => result with
+    private static ScheduledMutationResult DeadlineOmitted(ScheduledMutation mutation) =>
+        new(mutation.EvaluationUnitId, UnitDisposition.Omitted,
+            [new("OVERALL_DEADLINE_DURING_EXECUTION",
+                "The overall deadline ended this assigned attempt before conclusive evidence was available.")]);
+
+    private static ScheduledMutationResult CancelledOmitted(ScheduledMutation mutation) =>
+        new(mutation.EvaluationUnitId, UnitDisposition.Omitted,
+            [new("CANCELLED_DURING_EXECUTION",
+                "Cancellation ended this assigned attempt before conclusive evidence was available.")]);
+
+    private static ScheduledMutationResult Bound(ScheduledMutationResult result)
     {
-        Evidence = result.Evidence.Take(100).Select(item => new EvaluationEvidence(Bound(item.Kind, 128),
-            Bound(item.Summary, 512), BoundDiagnostics(item.Diagnostics))).ToArray()
-    };
+        const int maximum = 20;
+        var source = result.Evidence.Count <= maximum
+            ? result.Evidence
+            : result.Evidence.Take(maximum - 1).Append(new EvaluationEvidence("EVIDENCE_TRUNCATED",
+                $"Retained {maximum - 1} of {result.Evidence.Count} executor evidence entries.",
+                [$"retained={maximum - 1}", $"omitted={result.Evidence.Count - (maximum - 1)}"]))
+                .ToArray();
+        return result with
+        {
+            Evidence = source.Select(item => new EvaluationEvidence(Bound(item.Kind, 128),
+                Bound(item.Summary, 512), BoundDiagnostics(item.Diagnostics))).ToArray()
+        };
+    }
 
     private static IReadOnlyList<string>? BoundDiagnostics(IReadOnlyList<string>? diagnostics)
     {

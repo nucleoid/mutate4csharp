@@ -696,7 +696,8 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
         }
         ExecutionEnvironment.ValidateResolvedPackageRoots(worker.Root, packages.Root, config);
         if (!string.Equals(PackageFingerprint, ExecutionEnvironment.FingerprintPackages(packages.Root), StringComparison.Ordinal))
-            throw new SnapshotDivergedException("Worker restore changed the frozen package cache.");
+            throw new ExecutionBoundaryIntegrityException(
+                "Worker restore changed its private frozen package-cache copy.");
     }
 
     public ValueTask DisposeAsync() => owner.DisposeAsync();

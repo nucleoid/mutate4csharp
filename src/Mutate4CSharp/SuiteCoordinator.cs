@@ -39,6 +39,16 @@ internal sealed record SuiteBaselineResult(BaselineStatus Status,
 
 internal static class AsyncDisposal
 {
+    public static Exception CombineFailure(Exception? primaryFailure, Exception cleanupFailure)
+    {
+        ArgumentNullException.ThrowIfNull(cleanupFailure);
+        if (primaryFailure is not null)
+            return new SnapshotCleanupException(primaryFailure, cleanupFailure);
+        return cleanupFailure is SnapshotCleanupException
+            ? cleanupFailure
+            : new SnapshotCleanupException(cleanupFailure);
+    }
+
     public static async ValueTask DisposeAllAsync(IEnumerable<IAsyncDisposable?> owners)
     {
         List<Exception>? failures = null;
@@ -48,7 +58,9 @@ internal static class AsyncDisposal
             try { await owner.DisposeAsync(); }
             catch (Exception ex) { (failures ??= []).Add(ex); }
         }
-        if (failures is not null) throw new AggregateException("One or more owned-resource cleanups failed.", failures);
+        if (failures is not null)
+            throw new SnapshotCleanupException(
+                new AggregateException("One or more owned-resource cleanups failed.", failures));
     }
 }
 
@@ -122,9 +134,9 @@ internal sealed class SuiteCoordinator
                     throw new EvaluationContractException("Suite executor returned no baseline result.");
                 result = Bound(unboundedResult);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException ex)
             {
-                if (unboundedResult is not null) await DisposeFailedResultAsync(unboundedResult);
+                if (unboundedResult is not null) await DisposeFailedResultAsync(unboundedResult, ex);
                 AddCondition(conditions, "EXECUTION_CANCELLED", "Baseline execution was cancelled.");
                 break;
             }
@@ -132,7 +144,7 @@ internal sealed class SuiteCoordinator
                                        ExecutionBoundaryIntegrityException or
                                        SnapshotCleanupException or SnapshotLimitException)
             {
-                if (unboundedResult is not null) await DisposeFailedResultAsync(unboundedResult);
+                if (unboundedResult is not null) await DisposeFailedResultAsync(unboundedResult, ex);
                 throw;
             }
             catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
@@ -140,7 +152,10 @@ internal sealed class SuiteCoordinator
                 if (unboundedResult is not null)
                 {
                     try { await unboundedResult.DisposeAsync(); }
-                    catch (Exception cleanupFailure) { ex = new SnapshotCleanupException(ex, cleanupFailure); }
+                    catch (Exception cleanupFailure)
+                    {
+                        throw AsyncDisposal.CombineFailure(ex, cleanupFailure);
+                    }
                 }
                 result = new(SuiteRunDisposition.Error, TimeSpan.Zero, [], [], [Bound(ex.Message, 512)], []);
             }
@@ -318,10 +333,13 @@ internal sealed class SuiteCoordinator
             throw new EvaluationContractException($"Suite executor returned an invalid {member} collection.");
     }
 
-    private static async Task DisposeFailedResultAsync(SuiteRunResult result)
+    private static async Task DisposeFailedResultAsync(SuiteRunResult result, Exception primaryFailure)
     {
         try { await result.DisposeAsync(); }
-        catch { }
+        catch (Exception cleanupFailure)
+        {
+            throw AsyncDisposal.CombineFailure(primaryFailure, cleanupFailure);
+        }
     }
 
     private static string ExecutionKey(string snapshotId, SuiteExecution suite)

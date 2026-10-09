@@ -475,6 +475,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             "The immutable capture could not be cleaned up safely."),
         SnapshotEnvironmentException => new("SNAPSHOT_ENVIRONMENT",
             "Immutable capture could not create or write its private staging environment."),
+        ExecutionBoundaryIntegrityException => new("EXECUTION_BOUNDARY_INTEGRITY",
+            "Execution escaped or changed a frozen private workspace or dependency boundary."),
         SnapshotDivergedException => new("SNAPSHOT_DIVERGED", "Inputs diverged during or after immutable capture."),
         SnapshotLimitException => new("SNAPSHOT_LIMIT", "Immutable capture exceeded a configured safety bound."),
         _ => new("SNAPSHOT_REFUSED", "Immutable capture refused an unsupported or unsafe input.")
@@ -484,6 +486,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
     {
         SnapshotCleanupException => "SNAPSHOT_CLEANUP",
         SnapshotEnvironmentException => "SNAPSHOT_ENVIRONMENT",
+        ExecutionBoundaryIntegrityException => "EXECUTION_BOUNDARY_INTEGRITY",
         _ => "SNAPSHOT_REFUSAL"
     };
 

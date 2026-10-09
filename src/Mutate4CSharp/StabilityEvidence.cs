@@ -63,8 +63,9 @@ internal static class StabilityEvidence
         return new(mutationId, evaluationUnitId, disposition, evidence);
     }
 
-    private static List<EvaluationEvidence> BoundTotal(IReadOnlyList<EvaluationEvidence> evidence, int maximum)
+    internal static List<EvaluationEvidence> BoundTotal(IReadOnlyList<EvaluationEvidence> evidence, int maximum)
     {
+        if (maximum < 1) throw new ArgumentOutOfRangeException(nameof(maximum));
         if (evidence.Count <= maximum) return evidence.ToList();
         var retained = maximum - 1;
         var first = retained / 2;

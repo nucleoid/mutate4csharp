@@ -3,6 +3,23 @@ namespace Mutate4CSharp.Tests;
 public sealed class SuiteCoordinatorTests
 {
     [Fact]
+    public void CleanupCombinationPreservesIntegrityFailureAndTypesCleanupOnlyFailure()
+    {
+        var integrity = new SnapshotDivergedException("frozen input changed");
+        var cleanup = new IOException("owned cleanup failed");
+
+        var combined = Assert.IsType<SnapshotCleanupException>(
+            AsyncDisposal.CombineFailure(integrity, cleanup));
+        var cleanupOnly = Assert.IsType<SnapshotCleanupException>(
+            AsyncDisposal.CombineFailure(null, cleanup));
+
+        Assert.Same(integrity, combined.OriginalFailure);
+        Assert.Same(cleanup, combined.CleanupFailure);
+        Assert.Null(cleanupOnly.OriginalFailure);
+        Assert.Same(cleanup, cleanupOnly.CleanupFailure);
+    }
+
+    [Fact]
     public async Task SharedSuiteAliasesRunOneFreshBaselineForTheSnapshot()
     {
         var calls = 0;

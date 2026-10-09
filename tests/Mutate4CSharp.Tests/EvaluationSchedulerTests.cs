@@ -84,8 +84,10 @@ public sealed class EvaluationSchedulerTests
         Assert.Contains(result.IncompleteConditions, item => item.Code == "EXECUTION_CANCELLED");
     }
 
-    [Fact]
-    public async Task DeadlineClampedFinalRepetitionIsOmittedInsteadOfUnstable()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task DeadlineClampedFinalRepetitionIsOmittedInsteadOfUnstable(int repetitions)
     {
         var time = new AdjustableTimeProvider(DateTimeOffset.UtcNow);
         var calls = 0;
@@ -93,16 +95,17 @@ public sealed class EvaluationSchedulerTests
             "evaluation:v1:" + new string('9', 64), ["unit"]);
         var executor = new DelegateMutationExecutor((work, _, _) =>
         {
-            if (++calls == 2) time.Advance(TimeSpan.FromSeconds(6));
+            if (++calls == repetitions) time.Advance(TimeSpan.FromSeconds(6));
             return Task.FromResult(new ScheduledMutationResult(work.EvaluationUnitId,
                 UnitDisposition.Killed, [new("KILLED", "fixture")]));
         });
 
         var result = await StrictExecutionPipeline.RunContiguousAttemptsAsync(executor,
-            [mutation], 2, TimeSpan.FromSeconds(10), time.GetUtcNow().AddSeconds(5), time,
+            [mutation], repetitions, TimeSpan.FromSeconds(10), time.GetUtcNow().AddSeconds(5), time,
             CancellationToken.None);
 
-        Assert.Equal([UnitDisposition.Killed, UnitDisposition.Omitted],
+        Assert.Equal(Enumerable.Repeat(UnitDisposition.Killed, repetitions - 1)
+                .Append(UnitDisposition.Omitted),
             result.Attempts[mutation.EvaluationUnitId].Select(item => item.Disposition));
         Assert.Contains(result.IncompleteConditions, item => item.Code == "OVERALL_DEADLINE_EXCEEDED");
     }

@@ -185,14 +185,8 @@ internal static class StrictExecutionPipeline
                 var results = batch.Attempts[mutation.EvaluationUnitId];
                 if (results.Any(item => item.Disposition == UnitDisposition.Omitted))
                 {
-                    var partialEvidence = results.SelectMany(item => item.Evidence).Append(
-                        new EvaluationEvidence("PARTIAL_STABILITY_EVIDENCE",
-                            "The unit retained every completed stability attempt before execution stopped.",
-                            results.Select((item, index) =>
-                                $"attempt={index + 1};disposition={item.Disposition}").ToArray()))
-                        .ToArray();
                     completed.Add(plan.CompleteWithoutExecution(pending[mutation.EvaluationUnitId],
-                        UnitDisposition.Omitted, partialEvidence));
+                        UnitDisposition.Omitted, BuildPartialEvidence(results)));
                     conditions.Add(new("MUTATION_ATTEMPT_OMITTED",
                         "At least one configured stability attempt was not assigned."));
                     continue;
@@ -211,6 +205,23 @@ internal static class StrictExecutionPipeline
             plan.OrderResults(completed), baselines.Status, suiteEvidence,
             conditions.Distinct().ToArray(), finalization, evidence);
         }
+    }
+
+    internal static IReadOnlyList<EvaluationEvidence> BuildPartialEvidence(
+        IReadOnlyList<ScheduledMutationResult> results)
+    {
+        ArgumentNullException.ThrowIfNull(results);
+        if (results.Count == 0 || results.Any(item => item.Evidence is null) ||
+            results.All(item => item.Disposition != UnitDisposition.Omitted))
+            throw new EvaluationContractException(
+                "Partial stability evidence requires at least one omitted attempt with evidence.");
+        var bounded = StabilityEvidence.BoundTotal(results.SelectMany(item => item.Evidence).ToArray(),
+            StabilityEvidence.MaxUnitEvidence - 1);
+        bounded.Add(new("PARTIAL_STABILITY_EVIDENCE",
+            "The unit retained every completed stability attempt before execution stopped.",
+            results.Select((item, index) =>
+                $"attempt={index + 1};disposition={item.Disposition}").Take(100).ToArray()));
+        return bounded;
     }
 
     internal static async Task<ContiguousAttemptBatch> RunContiguousAttemptsAsync(

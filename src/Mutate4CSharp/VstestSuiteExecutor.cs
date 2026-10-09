@@ -60,7 +60,8 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                     requireExecutionBoundary: true, framework: suite.Framework, configuration: suite.Configuration);
                 if (!string.Equals(environment.PackageFingerprint,
                         ExecutionEnvironment.FingerprintPackages(packages.Root), StringComparison.Ordinal))
-                    throw new SnapshotDivergedException("Baseline execution changed the frozen package cache.");
+                    throw new ExecutionBoundaryIntegrityException(
+                        "Baseline execution changed its private frozen package-cache copy.");
                 var disposition = ClassifyBaseline(run);
                 var rawCoverage = TestRunner.FindCoverage(results);
                 var coverageMap = disposition == SuiteRunDisposition.Passed
@@ -87,7 +88,7 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
             try { await AsyncDisposal.DisposeAllAsync([packages, worker]); }
             catch (Exception cleanupFailure)
             {
-                failure = failure is null ? cleanupFailure : new SnapshotCleanupException(failure, cleanupFailure);
+                failure = AsyncDisposal.CombineFailure(failure, cleanupFailure);
             }
 
             if (failure is not null)
@@ -97,7 +98,7 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                     try { await coverage.DisposeAsync(); }
                     catch (Exception cleanupFailure)
                     {
-                        failure = new SnapshotCleanupException(failure, cleanupFailure);
+                        failure = AsyncDisposal.CombineFailure(failure, cleanupFailure);
                     }
                 }
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();

@@ -17,6 +17,12 @@ internal sealed class ExecutionBoundaryIntegrityException(string message, Except
     SnapshotCaptureException(message, inner);
 internal sealed class SnapshotCleanupException : SnapshotCaptureException
 {
+    public SnapshotCleanupException(Exception cleanupFailure)
+        : base($"Snapshot cleanup failed: {cleanupFailure.Message}", cleanupFailure)
+    {
+        CleanupFailure = cleanupFailure;
+    }
+
     public SnapshotCleanupException(Exception originalFailure, Exception cleanupFailure)
         : base($"Snapshot cleanup failed after {Describe(originalFailure)}; cleanup failure: {cleanupFailure.Message}",
             new AggregateException(originalFailure, cleanupFailure))
@@ -25,7 +31,7 @@ internal sealed class SnapshotCleanupException : SnapshotCaptureException
         CleanupFailure = cleanupFailure;
     }
 
-    public Exception OriginalFailure { get; }
+    public Exception? OriginalFailure { get; }
     public Exception CleanupFailure { get; }
 
     private static string Describe(Exception exception) =>

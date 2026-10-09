@@ -42,61 +42,85 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
             throw new EvaluationContractException("Scheduled mutation requires distinct mapped suite identities.");
 
         var started = _timeProvider.GetUtcNow();
-        await using var worker = await SnapshotWorkspace.CreateCloneAsync(_snapshot,
-            "strict-mutant-" + candidate.EvaluationUnitId[^12..], cancellationToken);
-        await using var packages = await _environment.CreateWorkerPackageCacheAsync(
-            "strict-mutant-" + candidate.EvaluationUnitId[^12..], cancellationToken);
-        ValidateOriginalSpan(worker, candidate);
-        worker.WriteTextMutation(candidate.Material.RepositoryPath, candidate.SourceStart,
-            candidate.SourceLength, candidate.Material.Replacement);
-
-        var evidence = new List<SuiteMutationEvidence>();
-        for (var index = 0; index < mapped.Length; index++)
+        SnapshotClone? worker = null;
+        OwnedPackageCache? packages = null;
+        ScheduledMutationResult? completed = null;
+        Exception? failure = null;
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var suite = mapped[index];
-            var remaining = timeout - (_timeProvider.GetUtcNow() - started);
-            if (remaining <= TimeSpan.Zero)
-                return Timeout(mutation, suite.Identity);
-            await _environment.RestoreWorkerAsync(worker, suite.Path, packages, remaining,
-                cancellationToken, suite.Framework, suite.Configuration);
-            remaining = timeout - (_timeProvider.GetUtcNow() - started);
-            if (remaining <= TimeSpan.Zero)
-                return Timeout(mutation, suite.Identity);
-            var results = Path.Combine(worker.OwnedRoot, $"mutant-results-{index:D4}");
-            var testPath = Path.Combine(worker.Root,
-                suite.Path.Replace('/', Path.DirectorySeparatorChar));
-            var run = await TestRunner.RunAsync(worker.Root, testPath, results, remaining,
-                collectCoverage: false, cancellationToken,
-                ExecutionEnvironment.ProcessEnvironment(packages.Root), noRestore: true,
-                requireExecutionBoundary: true, framework: suite.Framework,
-                configuration: suite.Configuration);
-            if (!string.Equals(_environment.PackageFingerprint,
-                    ExecutionEnvironment.FingerprintPackages(packages.Root), StringComparison.Ordinal))
-                throw new SnapshotDivergedException("Mutant execution changed the frozen package cache.");
-            var compile = CompilerEvidence.Evaluate(run,
-                _healthyControls.TryGetValue(suite.Identity, out var healthy) && healthy,
-                Path.Combine(worker.Root, candidate.Material.RepositoryPath.Replace('/',
-                    Path.DirectorySeparatorChar)), worker.Root);
-            if (compile.IsCompileInvalid)
-            {
-                evidence.Add(ToSuiteEvidence(suite.Identity, run, compile));
-                continue;
-            }
-            var accounted = VstestSuiteExecutor.AccountedMembers(run.TrxPaths);
-            var missing = suite.ExpectedMembers.Except(accounted,
-                StringComparer.OrdinalIgnoreCase).ToArray();
-            if (missing.Length > 0)
-            {
-                evidence.Add(new(suite.Identity, SuiteRunDisposition.Error, [],
-                    [$"Mutant TRX omitted expected member(s): {string.Join(", ", missing.Take(20))}."]));
-                continue;
-            }
-            evidence.Add(ToSuiteEvidence(suite.Identity, run, compile));
+            worker = await SnapshotWorkspace.CreateCloneAsync(_snapshot,
+                "strict-mutant-" + candidate.EvaluationUnitId[^12..], cancellationToken);
+            packages = await _environment.CreateWorkerPackageCacheAsync(
+                "strict-mutant-" + candidate.EvaluationUnitId[^12..], cancellationToken);
+            completed = await ExecuteInOwnedResourcesAsync(worker, packages);
         }
-        var aggregate = SuiteCoordinator.AggregateMutant(candidate.MutationId,
-            mapped.Select(item => item.Identity).ToArray(), evidence);
-        return new(candidate.EvaluationUnitId, aggregate.Disposition, aggregate.Evidence);
+        catch (Exception ex) { failure = ex; }
+
+        try { await AsyncDisposal.DisposeAllAsync([packages, worker]); }
+        catch (Exception cleanupFailure)
+        {
+            failure = AsyncDisposal.CombineFailure(failure, cleanupFailure);
+        }
+        if (failure is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+        return completed ?? throw new EvaluationContractException("Mutant execution produced no result.");
+
+        async Task<ScheduledMutationResult> ExecuteInOwnedResourcesAsync(
+            SnapshotClone ownedWorker, OwnedPackageCache ownedPackages)
+        {
+            ValidateOriginalSpan(ownedWorker, candidate);
+            ownedWorker.WriteTextMutation(candidate.Material.RepositoryPath, candidate.SourceStart,
+                candidate.SourceLength, candidate.Material.Replacement);
+
+            var evidence = new List<SuiteMutationEvidence>();
+            for (var index = 0; index < mapped.Length; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var suite = mapped[index];
+                var remaining = timeout - (_timeProvider.GetUtcNow() - started);
+                if (remaining <= TimeSpan.Zero)
+                    return Timeout(mutation, suite.Identity);
+                await _environment.RestoreWorkerAsync(ownedWorker, suite.Path, ownedPackages, remaining,
+                    cancellationToken, suite.Framework, suite.Configuration);
+                remaining = timeout - (_timeProvider.GetUtcNow() - started);
+                if (remaining <= TimeSpan.Zero)
+                    return Timeout(mutation, suite.Identity);
+                var results = Path.Combine(ownedWorker.OwnedRoot, $"mutant-results-{index:D4}");
+                var testPath = Path.Combine(ownedWorker.Root,
+                    suite.Path.Replace('/', Path.DirectorySeparatorChar));
+                var run = await TestRunner.RunAsync(ownedWorker.Root, testPath, results, remaining,
+                    collectCoverage: false, cancellationToken,
+                    ExecutionEnvironment.ProcessEnvironment(ownedPackages.Root), noRestore: true,
+                    requireExecutionBoundary: true, framework: suite.Framework,
+                    configuration: suite.Configuration);
+                if (!string.Equals(_environment.PackageFingerprint,
+                        ExecutionEnvironment.FingerprintPackages(ownedPackages.Root), StringComparison.Ordinal))
+                    throw new ExecutionBoundaryIntegrityException(
+                        "Mutant execution changed its private frozen package-cache copy.");
+                var compile = CompilerEvidence.Evaluate(run,
+                    _healthyControls.TryGetValue(suite.Identity, out var healthy) && healthy,
+                    Path.Combine(ownedWorker.Root, candidate.Material.RepositoryPath.Replace('/',
+                        Path.DirectorySeparatorChar)), ownedWorker.Root);
+                if (compile.IsCompileInvalid)
+                {
+                    evidence.Add(ToSuiteEvidence(suite.Identity, run, compile));
+                    continue;
+                }
+                var accounted = VstestSuiteExecutor.AccountedMembers(run.TrxPaths);
+                var missing = suite.ExpectedMembers.Except(accounted,
+                    StringComparer.OrdinalIgnoreCase).ToArray();
+                if (missing.Length > 0)
+                {
+                    evidence.Add(new(suite.Identity, SuiteRunDisposition.Error, [],
+                        [$"Mutant TRX omitted expected member(s): {string.Join(", ", missing.Take(20))}."]));
+                    continue;
+                }
+                evidence.Add(ToSuiteEvidence(suite.Identity, run, compile));
+            }
+            var aggregate = SuiteCoordinator.AggregateMutant(candidate.MutationId,
+                mapped.Select(item => item.Identity).ToArray(), evidence);
+            return new(candidate.EvaluationUnitId, aggregate.Disposition, aggregate.Evidence);
+        }
     }
 
     private static void ValidateOriginalSpan(SnapshotClone worker, MutationCandidate candidate)
