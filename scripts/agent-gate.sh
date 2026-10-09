@@ -420,6 +420,24 @@ prepare() {
   printf 'RECEIPT=%s\nPACKAGE_SHA256=%s\nPAYLOAD_SHA256=%s\nTOOL_SOURCE_COMMIT=%s\nSDK_VERSION=%s\nDOTNET_HOST=%s\n' "$receipt" "$(sha256_file "$package")" "$(payload_sha256 "$payload")" "$source_commit" "$orchestration_sdk_version" "$TRUSTED_DOTNET"
 }
 
+require_supported_example_enumeration() {
+  local report=$1
+  if (cd "$SDK_DIRECTORY" && python3 -I - "$report") <<'PY'
+import json, sys
+with open(sys.argv[1], "rb") as stream:
+    report = json.load(stream)
+codes = [item.get("code") for item in report.get("incompleteConditions", [])
+         if isinstance(item, dict)]
+enumerated = report.get("counts", {}).get("enumerated")
+if codes != ["EXECUTION_NOT_IMPLEMENTED"] or not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated <= 0:
+    raise SystemExit(1)
+PY
+  then
+    return 0
+  fi
+  fail "strict example did not publish one supported nonzero enumeration plan"
+}
+
 gate() {
   [[ $# -eq 9 ]] ||
     fail "gate requires TARGET_REPOSITORY RECEIPT EXPECTED_PACKAGE_SHA256 EXPECTED_PAYLOAD_SHA256 EXPECTED_TOOL_SOURCE_COMMIT TASK_START EXPECTED_TARGET_HEAD REPORT (no-state|default-state)"
@@ -583,6 +601,8 @@ PY
   TOOL_SDK_RECEIPT=
   [[ "$no_state_exit" -eq 4 ]] || fail "strict no-state example did not return expected incomplete exit 4"
   [[ "$default_state_exit" -eq 4 ]] || fail "strict default-state example did not return expected incomplete exit 4"
+  require_supported_example_enumeration "$report_directory/no-state.json"
+  require_supported_example_enumeration "$report_directory/default-state.json"
 }
 
 case "${1:-}" in

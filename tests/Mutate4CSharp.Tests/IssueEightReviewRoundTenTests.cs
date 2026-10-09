@@ -146,7 +146,7 @@ public sealed class IssueEightReviewRoundTenTests : IDisposable
     public void PythonImportsAreIsolatedAndSdkChecksUseOneNeutralDirectory()
     {
         var script = Read("scripts/agent-gate.sh");
-        Assert.Equal(3, Count(script, "python3 -I -"));
+        Assert.Equal(4, Count(script, "python3 -I -"));
         Assert.DoesNotContain("python3 - ", script, StringComparison.Ordinal);
         Assert.Contains("neutral SDK directory", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("trusted_sdk_version", script, StringComparison.Ordinal);

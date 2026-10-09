@@ -227,6 +227,7 @@ internal static class StrictMutationEnumerator
         if (!captured.ContainsKey(project.Project))
             throw new EnumerationContextException("ENUMERATION_PROJECT_UNMAPPED",
                 $"Configured project is not captured: {project.Project}.");
+        RefuseCapturePolicyCompileOmissions(snapshot, project);
         var sourcePaths = captured.Keys.Where(path => path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) &&
                 project.Sources.Any(pattern => ProjectOwnershipResolver.GlobMatches(path, pattern)))
             .OrderBy(path => path, StringComparer.Ordinal).ToArray();
@@ -238,10 +239,8 @@ internal static class StrictMutationEnumerator
             buildConfiguration);
         var excluded = sourcePaths.Where(path => configuration.Exclusions.Any(exclusion =>
             ProjectOwnershipResolver.GlobMatches(path, exclusion.Path))).ToHashSet(StringComparer.Ordinal);
-        var mappedTestPaths = configuration.TestSuites.Where(suite =>
-                project.TestSuites.Contains(suite.Id, StringComparer.Ordinal))
-            .Select(suite => suite.Path).ToArray();
-        excluded.UnionWith(sourcePaths.Where(path => ScopePlanner.IsTestSource(path, mappedTestPaths)));
+        var allTestPaths = configuration.TestSuites.Select(suite => suite.Path).ToArray();
+        excluded.UnionWith(sourcePaths.Where(path => ScopePlanner.IsTestSource(path, allTestPaths)));
         var parseOptions = new CSharpParseOptions(LanguageVersion.CSharp14,
             preprocessorSymbols: projectSemantics.PreprocessorSymbols);
         var trees = new Dictionary<string, SyntaxTree>(StringComparer.Ordinal);
@@ -503,6 +502,39 @@ internal static class StrictMutationEnumerator
             if (directory.Length == 0) break;
             directory = RepositoryDirectory(directory);
         }
+    }
+
+    private static void RefuseCapturePolicyCompileOmissions(InputSnapshot snapshot, CheckProject project)
+    {
+        var projectDirectory = RepositoryDirectory(project.Project);
+        foreach (var path in snapshot.ExcludedEntries.Where(path =>
+                     path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) &&
+                     project.Sources.Any(pattern => ProjectOwnershipResolver.GlobMatches(path, pattern))))
+        {
+            if (IsSdkDefaultExcludedPath(path, projectDirectory)) continue;
+            throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
+                $"Capture policy omitted a possible compile input for {project.Project}: {path}.");
+        }
+        foreach (var entry in snapshot.IgnoredEntries.Where(entry =>
+                     IsUnderDirectory(entry.RelativePath, projectDirectory) &&
+                     !IsSdkDefaultExcludedPath(entry.RelativePath, projectDirectory)))
+        {
+            if (!entry.IsDirectory && (!entry.RelativePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ||
+                    !project.Sources.Any(pattern => ProjectOwnershipResolver.GlobMatches(
+                        entry.RelativePath, pattern)))) continue;
+            throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
+                $"Ignored input could hide compile semantics for {project.Project}: {entry.RelativePath}.");
+        }
+    }
+
+    private static bool IsSdkDefaultExcludedPath(string path, string projectDirectory)
+    {
+        if (!IsUnderDirectory(path, projectDirectory)) return false;
+        var relative = projectDirectory.Length == 0 ? path : path[(projectDirectory.Length + 1)..];
+        var parts = relative.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Any(part => part.StartsWith(".", StringComparison.Ordinal)) ||
+               parts.FirstOrDefault()?.Equals("bin", StringComparison.OrdinalIgnoreCase) == true ||
+               parts.FirstOrDefault()?.Equals("obj", StringComparison.OrdinalIgnoreCase) == true;
     }
 
     private static void RefuseHostAncestorBuildFiles(string repositoryRoot)

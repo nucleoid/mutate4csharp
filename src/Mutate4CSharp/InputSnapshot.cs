@@ -53,6 +53,8 @@ internal sealed class InputSnapshot : IAsyncDisposable
     public SnapshotIdentity Identity { get; }
     public IReadOnlyList<SnapshotFile> Files { get; }
     internal SnapshotCaptureOptions Options => _options;
+    internal IReadOnlyList<string> ExcludedEntries => _inventory.ExcludedEntries;
+    internal IReadOnlyList<SnapshotCapture.IgnoredEntry> IgnoredEntries => _inventory.IgnoredEntries;
 
     public async Task ValidateOriginalAsync(CancellationToken cancellationToken)
     {

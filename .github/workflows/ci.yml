@@ -57,6 +57,7 @@ jobs:
           TASK_START=$(git -C "$CONSUMER" rev-parse HEAD)
           EXPECTED_TARGET_HEAD=$TASK_START
           sed -i 's/configured && true/configured || false/' "$CONSUMER/src/Example/Flag.cs"
+          grep -Fq 'configured || false' "$CONSUMER/src/Example/Flag.cs"
           scripts/agent-gate.sh verify-example "$CONSUMER" "$RECEIPT" "$PACKAGE_SHA256" "$PAYLOAD_SHA256" "$TOOL_SOURCE_COMMIT" "$TASK_START" "$EXPECTED_TARGET_HEAD" "${WORKSPACE}.reports"
           set +e
           scripts/agent-gate.sh gate "$CONSUMER" "$RECEIPT" "$PACKAGE_SHA256" "$PAYLOAD_SHA256" "$TOOL_SOURCE_COMMIT" "$TASK_START" "$EXPECTED_TARGET_HEAD" "${WORKSPACE}.direct.json" no-state

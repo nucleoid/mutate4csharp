@@ -159,7 +159,7 @@ public sealed class LegacyStateTrustTests : IDisposable
     [Theory]
     [InlineData(true, false, "PLAN_ONLY")]
     [InlineData(false, true, "ENUMERATION_CONFIGURATION_REQUIRED")]
-    public async Task FingerprintIdentityResolutionCannotAffectPlanOrNoState(
+    public async Task PlanAndUnconfiguredNoStateDoNotResolveSdkIdentity(
         bool plan, bool noState, string expectedReason)
     {
         using var repository = CreateRepository();
@@ -176,6 +176,57 @@ public sealed class LegacyStateTrustTests : IDisposable
             Assert.Contains(result.Report.Reasons, reason => reason.Code == expectedReason);
             Assert.DoesNotContain(result.Report.IncompleteConditions,
                 reason => reason.Code == "SIDECAR_WRITE_FAILED");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DOTNET_HOST_PATH", previousHost);
+            Environment.CurrentDirectory = previousDirectory;
+        }
+    }
+
+    [Fact]
+    public async Task ConfiguredNoStateReportsMissingSdkAsAnExplicitIntegrityRefusal()
+    {
+        using var repository = CreateRepository();
+        repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup></Project>
+            """);
+        repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup></Project>
+            """);
+        repository.WriteText("mutate4csharp.json", """
+            {
+              "version": 1,
+              "projects": [{
+                "id": "app", "project": "src/App/App.csproj", "targetFramework": "net10.0",
+                "parseContext": "net10-csharp14", "sources": ["src/App/**/*.cs"], "testSuites": ["unit"]
+              }],
+              "testSuites": [{
+                "id": "unit", "path": "tests/App.Tests/App.Tests.csproj", "runner": "vstest",
+                "framework": "net10.0", "configuration": "Release", "expectedMembers": ["App.Tests.dll"]
+              }]
+            }
+            """);
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "configured fixture");
+        repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => false; }\n");
+        var report = Path.Combine(_directory, "configured-no-state-missing-sdk.json");
+        var previousDirectory = Environment.CurrentDirectory;
+        var previousHost = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH");
+        Environment.CurrentDirectory = repository.Root;
+        Environment.SetEnvironmentVariable("DOTNET_HOST_PATH", Path.Combine(_directory, "missing-dotnet"));
+        try
+        {
+            var result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], report, "configured-no-state-missing-sdk", NoState: true),
+                CancellationToken.None);
+
+            Assert.Null(result.Report.Counts.Enumerated);
+            Assert.Contains(result.Report.IncompleteConditions,
+                reason => reason.Code == "ENUMERATION_SDK_UNAVAILABLE");
         }
         finally
         {

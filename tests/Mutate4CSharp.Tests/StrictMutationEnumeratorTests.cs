@@ -95,6 +95,63 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
     }
 
     [Fact]
+    public async Task FullProjectUsesAllConfiguredSuitePathsForTestSourceClassification()
+    {
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup></Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/specs/Spec.cs",
+            "public sealed class Spec { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/specs/SpecSuite.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup></Project>
+            """);
+        _repository.WriteText("src/Other/Other.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup></Project>
+            """);
+        _repository.WriteText("src/Other/Other.cs", "public sealed class Other { }\n");
+        _repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup></Project>
+            """);
+        WriteConfiguration([
+            new
+            {
+                id = "app", project = "src/App/App.csproj", targetFramework = "net10.0",
+                parseContext = "net10-csharp14", languageVersion = "14.0", nullable = "enable",
+                defineConstants = Array.Empty<string>(), sources = new[] { "src/App/**/*.cs" },
+                sharedSources = Array.Empty<string>(), testSuites = new[] { "unit" }
+            },
+            new
+            {
+                id = "other", project = "src/Other/Other.csproj", targetFramework = "net10.0",
+                parseContext = "net10-csharp14", languageVersion = "14.0", nullable = "enable",
+                defineConstants = Array.Empty<string>(), sources = new[] { "src/Other/**/*.cs" },
+                sharedSources = Array.Empty<string>(), testSuites = new[] { "foreign" }
+            }
+        ], testSuites: [
+            new { id = "unit", path = "tests/App.Tests/App.Tests.csproj", runner = "vstest",
+                framework = "net10.0", configuration = "Release", expectedMembers = new[] { "App.Tests.dll" } },
+            new { id = "foreign", path = "src/App/specs/SpecSuite.csproj", runner = "vstest",
+                framework = "net10.0", configuration = "Release", expectedMembers = new[] { "SpecSuite.dll" } }
+        ]);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [new("src/App/App.csproj", ["tests/App.Tests/App.Tests.csproj"], ["src/App/Flag.cs"], "FULL_PROJECT")],
+            [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot), scope,
+            CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Contains(result.Candidates, candidate => candidate.Material.RepositoryPath == "src/App/Flag.cs");
+        Assert.DoesNotContain(result.Candidates,
+            candidate => candidate.Material.RepositoryPath == "src/App/specs/Spec.cs");
+    }
+
+    [Fact]
     public async Task UsesOneSemanticContextForStringNumericNullableAndConditionalSites()
     {
         WriteProject("src/App", "src/App/**/*.cs", defineConstants: ["FEATURE"]);
@@ -740,6 +797,28 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
     }
 
     [Fact]
+    public async Task CapturePolicyCannotHideACompileInputFromSemanticEnumeration()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/TestResults/HiddenPartial.cs",
+            "public partial class Flag { public bool Hidden() => false; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason =>
+            reason.Code == "ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED" &&
+            reason.Message.Contains("TestResults", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task ProjectSymbolsUseCompilerSeparatorsWhenConfigurationOmitsAssertion()
     {
         _repository.WriteText("src/App/App.csproj", """
@@ -1228,17 +1307,21 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
     };
 
     private void WriteConfiguration(IReadOnlyList<object> projects,
-        string suiteConfiguration = "Release", string framework = "net10.0") => _repository.WriteText(
+        string suiteConfiguration = "Release", string framework = "net10.0",
+        IReadOnlyList<object>? testSuites = null) => _repository.WriteText(
         "mutate4csharp.json", System.Text.Json.JsonSerializer.Serialize(new
         {
             version = 1,
             projects,
-            testSuites = new[]
-            {
-                new { id = "unit", path = "tests/App.Tests/App.Tests.csproj", runner = "vstest",
+            testSuites = testSuites ??
+            [
+                (object)new
+                {
+                    id = "unit", path = "tests/App.Tests/App.Tests.csproj", runner = "vstest",
                     framework, configuration = suiteConfiguration,
-                    expectedMembers = new[] { "App.Tests.dll" } }
-            }
+                    expectedMembers = new[] { "App.Tests.dll" }
+                }
+            ]
         }));
 
     private void Commit()

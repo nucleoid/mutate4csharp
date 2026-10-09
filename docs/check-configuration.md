@@ -80,7 +80,9 @@ SDK casing; case variants are refused rather than risk modelling different seman
 Enumeration is bounded at 10,000 evaluation units; exceeding it is an explicit incomplete refusal with an unknown
 count, not a truncated plan. Production compile inputs classified as tests by the same path and mapped-project
 rules used in scope planning remain compilation inputs but are never mutation targets. Non-UTF-8 source text and
-duplicate explicit/default Compile inputs are explicit incomplete limitations. SDK semantics supply the upper-case configuration
+duplicate explicit/default Compile inputs are explicit incomplete limitations. Capture-policy or ignored inputs
+that could fall into a production Compile inventory are likewise refused unless they are one of that project's
+own SDK-default hidden/bin/obj exclusions. SDK semantics supply the upper-case configuration
 symbol (`DEBUG`, `RELEASE`, or the configured equivalent) unless `DisableImplicitConfigurationDefines` is true;
 `TRACE` is inherited unless a bare `DefineConstants` value replaces it or `DisableDiagnosticTracing` is true.
 User symbols are derived from captured project bytes; when the optional `defineConstants` assertion is supplied,
