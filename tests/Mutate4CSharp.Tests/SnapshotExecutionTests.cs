@@ -37,11 +37,23 @@ public sealed class SnapshotExecutionTests : IDisposable
     [Fact]
     public void PassingTrxWithoutStorageReportsTheMembershipFailure()
     {
-        var trx = Path.Combine(_repository.Root, "missing-storage.trx");
+        var results = Path.Combine(_repository.Root, "missing-storage-results");
+        Directory.CreateDirectory(results);
+        var trx = Path.Combine(results, "missing-storage.trx");
         File.WriteAllText(trx, """
-            <TestRun><TestDefinitions><UnitTest name="Suite.Passes" /></TestDefinitions></TestRun>
+            <TestRun>
+              <Results><UnitTestResult testName="Suite.Passes" outcome="Passed" /></Results>
+              <TestDefinitions><UnitTest name="Suite.Passes" /></TestDefinitions>
+              <ResultSummary outcome="Passed">
+                <Counters total="1" executed="1" passed="1" failed="0" />
+              </ResultSummary>
+            </TestRun>
             """);
 
+        var analyzed = TestRunner.AnalyzeTrx(results);
+        Assert.True(analyzed.Valid);
+        Assert.True(analyzed.TestsExecuted);
+        Assert.False(analyzed.HasFailedTests);
         var failure = Assert.Throws<TrxAccountingException>(() =>
             VstestSuiteExecutor.AccountedMembers([trx]));
 
