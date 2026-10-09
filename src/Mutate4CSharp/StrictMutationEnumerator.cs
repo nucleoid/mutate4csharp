@@ -227,7 +227,6 @@ internal static class StrictMutationEnumerator
         if (!captured.ContainsKey(project.Project))
             throw new EnumerationContextException("ENUMERATION_PROJECT_UNMAPPED",
                 $"Configured project is not captured: {project.Project}.");
-        RefuseCapturePolicyCompileOmissions(snapshot, project);
         var sourcePaths = captured.Keys.Where(path => path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) &&
                 project.Sources.Any(pattern => ProjectOwnershipResolver.GlobMatches(path, pattern)))
             .OrderBy(path => path, StringComparer.Ordinal).ToArray();
@@ -303,7 +302,7 @@ internal static class StrictMutationEnumerator
                 ("references", referenceSet.Identity),
                 ("symbols", string.Join(";", projectSemantics.PreprocessorSymbols)),
                 ("ancestor-build-controls", "none-observed"),
-                ("semantic-environment", "cleared-v1")
+                ("execution-environment", "not-integrated-v1")
             ]);
         return new(sourcePaths, excluded, sources, trees, compilation, identity);
     }
@@ -424,8 +423,11 @@ internal static class StrictMutationEnumerator
         if (defaultCompile is not null && !bool.TryParse(defaultCompile, out _))
             throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
                 $"EnableDefaultCompileItems must be true or false: {project.Project}.");
-        if (!string.Equals(defaultItems, "false", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(defaultCompile, "false", StringComparison.OrdinalIgnoreCase))
+        var defaultCompileItemsEnabled =
+            !string.Equals(defaultItems, "false", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(defaultCompile, "false", StringComparison.OrdinalIgnoreCase);
+        RefuseCapturePolicyCompileOmissions(snapshot, project, defaultCompileItemsEnabled);
+        if (defaultCompileItemsEnabled)
         {
             var projectDirectory = RepositoryDirectory(project.Project);
             foreach (var source in captured.Keys.Where(path =>
@@ -504,12 +506,15 @@ internal static class StrictMutationEnumerator
         }
     }
 
-    private static void RefuseCapturePolicyCompileOmissions(InputSnapshot snapshot, CheckProject project)
+    private static void RefuseCapturePolicyCompileOmissions(InputSnapshot snapshot, CheckProject project,
+        bool defaultCompileItemsEnabled)
     {
         var projectDirectory = RepositoryDirectory(project.Project);
         foreach (var path in snapshot.ExcludedEntries.Where(path =>
                      path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) &&
-                     project.Sources.Any(pattern => ProjectOwnershipResolver.GlobMatches(path, pattern))))
+                     IsUnderDirectory(path, projectDirectory) &&
+                     (defaultCompileItemsEnabled || project.Sources.Any(pattern =>
+                         ProjectOwnershipResolver.GlobMatches(path, pattern)))))
         {
             if (IsSdkDefaultExcludedPath(path, projectDirectory)) continue;
             throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
@@ -520,8 +525,8 @@ internal static class StrictMutationEnumerator
                      !IsSdkDefaultExcludedPath(entry.RelativePath, projectDirectory)))
         {
             if (!entry.IsDirectory && (!entry.RelativePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ||
-                    !project.Sources.Any(pattern => ProjectOwnershipResolver.GlobMatches(
-                        entry.RelativePath, pattern)))) continue;
+                    (!defaultCompileItemsEnabled && !project.Sources.Any(pattern =>
+                        ProjectOwnershipResolver.GlobMatches(entry.RelativePath, pattern))))) continue;
             throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
                 $"Ignored input could hide compile semantics for {project.Project}: {entry.RelativePath}.");
         }
@@ -532,7 +537,7 @@ internal static class StrictMutationEnumerator
         if (!IsUnderDirectory(path, projectDirectory)) return false;
         var relative = projectDirectory.Length == 0 ? path : path[(projectDirectory.Length + 1)..];
         var parts = relative.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        return parts.Any(part => part.StartsWith(".", StringComparison.Ordinal)) ||
+        return parts.SkipLast(1).Any(part => part.StartsWith(".", StringComparison.Ordinal)) ||
                parts.FirstOrDefault()?.Equals("bin", StringComparison.OrdinalIgnoreCase) == true ||
                parts.FirstOrDefault()?.Equals("obj", StringComparison.OrdinalIgnoreCase) == true;
     }

@@ -819,6 +819,50 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
     }
 
     [Fact]
+    public async Task CapturePolicyCannotHideDefaultCompileInputOutsideConfiguredRecursiveScope()
+    {
+        WriteProject("src/App", "src/App/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/TestResults/HiddenPartial.cs",
+            "public partial class Flag { public bool Hidden() => false; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason =>
+            reason.Code == "ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED" &&
+            reason.Message.Contains("TestResults", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CapturePolicyCannotTreatDotPrefixedFileAsSdkExcludedDirectory()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/.env.cs",
+            "public partial class Flag { public bool Hidden() => false; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason =>
+            reason.Code == "ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED" &&
+            reason.Message.Contains(".env.cs", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task ProjectSymbolsUseCompilerSeparatorsWhenConfigurationOmitsAssertion()
     {
         _repository.WriteText("src/App/App.csproj", """

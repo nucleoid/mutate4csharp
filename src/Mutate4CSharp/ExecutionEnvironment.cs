@@ -719,7 +719,7 @@ internal static class ExecutionEnvironment
         "TargetFramework", "TargetFrameworks", "Configuration", "Nullable", "LangVersion", "DefineConstants",
         "ImplicitUsings", "OutputType", "EnableDefaultItems", "EnableDefaultCompileItems",
         "DefaultItemExcludes", "DisableImplicitFrameworkDefines", "DisableImplicitConfigurationDefines",
-        "DisableDiagnosticTracing"
+        "DisableDiagnosticTracing", "CheckForOverflowUnderflow", "AllowUnsafeBlocks"
     ];
 
     internal static async Task CreateExecutionBoundaryAsync(string ownedRoot, string sdkWorkingDirectory,
