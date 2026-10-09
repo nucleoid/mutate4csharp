@@ -424,6 +424,87 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
     }
 
     [Fact]
+    public async Task DotPrefixedSourceFileRemainsInTheDefaultCompileInventory()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/.Shim.cs",
+            "public sealed class Shim { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/.Shim.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Single(result.Candidates,
+            candidate => candidate.Material.RepositoryPath == "src/App/.Shim.cs");
+    }
+
+    [Fact]
+    public async Task PlatformFrameworkIsLoadedButRefusedBySemanticEnumeration()
+    {
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        WriteConfiguration([
+            new
+            {
+                id = "app", project = "src/App/App.csproj", targetFramework = "net10.0-windows",
+                parseContext = "net10-csharp14", languageVersion = "14.0", nullable = "enable",
+                defineConstants = Array.Empty<string>(), sources = new[] { "src/App/**/*.cs" },
+                testSuites = new[] { "unit" }
+            }
+        ], framework: "net10.0-windows");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons,
+            reason => reason.Code == "ENUMERATION_FRAMEWORK_UNSUPPORTED");
+    }
+
+    [Fact]
+    public async Task DuplicateChangedFilePlansReturnSpecificRefusal()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var declaration = new DeclarationScope("Flag.method:Value`0()", "MethodDeclaration",
+            "method Value", 1, 1, "DECLARATION_CHANGED");
+        var file = new ScopeFilePlan("src/App/Flag.cs", null, ChangeKind.Modified,
+            [declaration], [], false, []);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit,
+            [file, file], [], [new("src/App/App.csproj", ["tests/App.Tests/App.Tests.csproj"],
+                ["src/App/Flag.cs"], "CHANGED_DECLARATIONS")], [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot), scope,
+            CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason => reason.Code == "ENUMERATION_SCOPE_STALE" &&
+            reason.Message.Contains("duplicate", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task RefusesOutputPathPropertiesThatCanChangeDefaultCompileExclusions()
     {
         WriteProject("src/App", "src/App/**/*.cs");
@@ -757,7 +838,7 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
     };
 
     private void WriteConfiguration(IReadOnlyList<object> projects,
-        string suiteConfiguration = "Release") => _repository.WriteText(
+        string suiteConfiguration = "Release", string framework = "net10.0") => _repository.WriteText(
         "mutate4csharp.json", System.Text.Json.JsonSerializer.Serialize(new
         {
             version = 1,
@@ -765,7 +846,7 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
             testSuites = new[]
             {
                 new { id = "unit", path = "tests/App.Tests/App.Tests.csproj", runner = "vstest",
-                    framework = "net10.0", configuration = suiteConfiguration,
+                    framework, configuration = suiteConfiguration,
                     expectedMembers = new[] { "App.Tests.dll" } }
             }
         }));

@@ -67,7 +67,8 @@ matching exclusion is published as `CONFIGURED_EXCLUSION` with its required reas
 that path and reason into report and evaluation fingerprints.
 
 The public command now uses this captured configuration to enumerate canonical mutation and evaluation-unit IDs
-for supported, self-contained projects targeting exact `net10.0`. Platform-qualified TFMs are refused until their
+for supported, self-contained projects targeting exact `net10.0`. The version-1 configuration schema continues to
+accept platform-qualified TFMs for planning compatibility, but semantic enumeration refuses them until their
 additional compiler symbols and reference contracts are modelled. Version 1 uses an allowlist for project properties/items and refuses
 unmodelled project semantics, conditional project evaluation,
 `ProjectReference`/`PackageReference` resolution, explicit imports, inherited `Directory.Build.props`/`.targets`,
@@ -76,7 +77,7 @@ diagnostics, and non-Git explicit-input
 enumeration rather than silently borrowing ambient MSBuild state. SDK semantics supply the upper-case configuration
 symbol (`DEBUG`, `RELEASE`, or the configured equivalent) unless `DisableImplicitConfigurationDefines` is true;
 `TRACE` is inherited unless a bare `DefineConstants` value replaces it or `DisableDiagnosticTracing` is true.
-semantics unless the project replaces rather than extends `DefineConstants`; user symbols must be listed in
+User symbols must be listed in
 `defineConstants`, and the project must either declare them literally or append them through an exact
 `$(DefineConstants);...` prefix. Files with preprocessor directives expand to full-project scope so declaration
 planning and semantic enumeration cannot disagree about inactive text. Plain SDK library, console/WinExe, and

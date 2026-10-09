@@ -93,8 +93,12 @@ internal static class StrictMutationEnumerator
                     var sites = SourceAnalyzer.DiscoverStrictSites(tree, model);
                     if (unit.Expansion.Equals("CHANGED_DECLARATIONS", StringComparison.Ordinal))
                     {
-                        var file = scopePlan.Files.SingleOrDefault(item =>
-                            item.Path.Equals(path, StringComparison.Ordinal));
+                        var files = scopePlan.Files.Where(item =>
+                            item.Path.Equals(path, StringComparison.Ordinal)).Take(2).ToArray();
+                        if (files.Length > 1)
+                            return Refused("ENUMERATION_SCOPE_STALE",
+                                $"Changed-declaration source {path} has duplicate captured declaration plans.");
+                        var file = files.SingleOrDefault();
                         if (file is null)
                             return Refused("ENUMERATION_SCOPE_STALE",
                                 $"Changed-declaration source {path} has no captured declaration plan.");
@@ -170,7 +174,8 @@ internal static class StrictMutationEnumerator
             return Refused(ex.Code, ex.Message);
         }
         catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or
-                                   EvaluationContractException or System.Xml.XmlException or DecoderFallbackException)
+                                   EvaluationContractException or System.Xml.XmlException or DecoderFallbackException or
+                                   System.Text.RegularExpressions.RegexMatchTimeoutException)
         {
             return Refused("ENUMERATION_CONTEXT_UNSUPPORTED",
                 $"Strict semantic context could not be proven complete: {Bound(ex.Message)}");
@@ -279,6 +284,9 @@ internal static class StrictMutationEnumerator
         if (!string.Equals(sdk, "Microsoft.NET.Sdk", StringComparison.Ordinal))
             throw new EnumerationContextException("ENUMERATION_SDK_UNSUPPORTED",
                 $"Enumeration v1 supports only Microsoft.NET.Sdk projects: {project.Project}.");
+        if (!project.TargetFramework.Equals("net10.0", StringComparison.Ordinal))
+            throw new EnumerationContextException("ENUMERATION_FRAMEWORK_UNSUPPORTED",
+                $"Enumeration v1 supports only exact net10.0 project contexts: {project.Project}.");
         if (root.Descendants().Any(element => element.Name.LocalName is "Import" or "Sdk"))
             throw new EnumerationContextException("ENUMERATION_IMPORT_UNSUPPORTED",
                 $"Explicit MSBuild imports and nested SDK declarations are unsupported: {project.Project}.");
@@ -525,7 +533,8 @@ internal static class StrictMutationEnumerator
     private static bool HasHiddenSegment(string path, string projectDirectory)
     {
         var relative = projectDirectory.Length == 0 ? path : path[(projectDirectory.Length + 1)..];
-        return relative.Split('/').Any(segment => segment.Length > 0 && segment[0] == '.');
+        return relative.Split('/').SkipLast(1)
+            .Any(segment => segment.Length > 0 && segment[0] == '.');
     }
 
     private static string? SingleProperty(XElement root, string name)

@@ -55,19 +55,17 @@ public sealed class CheckConfigurationTests : IDisposable
     [Theory]
     [InlineData("net10.0-windows")]
     [InlineData("net10.0-linux")]
-    public void RejectsPlatformSpecificTargetFrameworksUntilTheirSymbolsAreModelled(string framework)
+    public void LoadsSchemaValidPlatformFrameworksForEnumerationTimeRefusal(string framework)
     {
         var project = ValidConfiguration.Replace(
             "\"targetFramework\": \"net10.0\"", $"\"targetFramework\": \"{framework}\"",
             StringComparison.Ordinal);
-        var projectError = Assert.Throws<ArgumentException>(() => Load(project));
-        Assert.Contains("exact net10.0", projectError.Message, StringComparison.Ordinal);
+        Assert.Equal(framework, Assert.Single(Load(project).Projects).TargetFramework);
 
         var suite = ValidConfiguration.Replace(
             "\"framework\": \"net10.0\"", $"\"framework\": \"{framework}\"",
             StringComparison.Ordinal);
-        var suiteError = Assert.Throws<ArgumentException>(() => Load(suite));
-        Assert.Contains("exact net10.0", suiteError.Message, StringComparison.Ordinal);
+        Assert.Equal(framework, Assert.Single(Load(suite).TestSuites).Framework);
     }
 
     [Theory]

@@ -84,6 +84,15 @@ semantic contexts fail closed with a specific enumeration refusal and an unknown
 refusal, and exception paths may stop earlier and may not publish a report. The PASS/FAIL handling below defines
 the stable contract for the future execution connection.
 
+The first enumeration envelope is deliberately narrow: an exact-`net10.0`, plain `Microsoft.NET.Sdk`,
+self-contained project with statically provable compile items and no project/package/framework references,
+conditions, explicit imports, inherited `Directory.Build.*`, source-generator dependency, or unmodelled project
+property/item. Nullable-enabled projects must explicitly declare `"nullable":"enable"` in configuration; omission
+means the plain SDK's disabled nullable context. Projects outside this envelope receive a project-context refusal,
+which the packaged wrapper reports as orchestration exit `73`; it is not an accepted mutation result and is not
+interchangeable with a receipt-integrity success. Package, wrapper, and consumer configuration therefore require a
+lockstep upgrade for this intentional fail-closed boundary.
+
 ## Agent loop
 
 At task start in the **consumer repository**, capture the direct commit that defines the comparison boundary.
