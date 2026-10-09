@@ -5,6 +5,22 @@ namespace Mutate4CSharp.Tests;
 
 public sealed class SnapshotExecutionTests : IDisposable
 {
+    [Fact]
+    public void DependencyFailureTailRetainsNewestBoundedOutput()
+    {
+        var tail = typeof(ExecutionEnvironment).GetMethod("Tail",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var output = string.Join('\n',
+            Enumerable.Range(1, 3).Select(index => $"old-{index}-" + new string('x', 400))
+                .Append("FINAL_NUGET_ERROR: package source unavailable"));
+
+        var bounded = Assert.IsType<string>(tail.Invoke(null, [new[] { output }]));
+
+        Assert.Contains("FINAL_NUGET_ERROR", bounded, StringComparison.Ordinal);
+        Assert.True(bounded.Length <= EvaluationReason.MaxMessageLength -
+            "Dependency preparation failed: ".Length);
+    }
+
     private readonly SnapshotTestRepository _repository = new();
 
     [Fact]

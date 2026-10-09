@@ -141,6 +141,19 @@ public sealed class ReportContractTests : IDisposable
     }
 
     [Fact]
+    public void GeneratedBoundsNeverSplitSurrogatePairs()
+    {
+        var reason = new EvaluationReason("TEST_REASON",
+            new string('x', EvaluationReason.MaxMessageLength - 1) + "😀tail");
+        var diagnostic = Assert.Single(EvaluationEvidence.BoundDiagnostics([
+            new string('x', EvaluationEvidence.MaxDiagnosticLength - 1) + "😀tail"
+        ]));
+
+        Assert.False(char.IsSurrogate(reason.Message[^1]));
+        Assert.False(char.IsSurrogate(diagnostic[^1]));
+    }
+
+    [Fact]
     public void ValidatorRejectsOutcomeThatContradictsFactsOrPlanMode()
     {
         var pass = EvaluationReport.CreateSynthetic(EvaluationOutcome.Pass, "pass", "TEST_FIXTURE");
