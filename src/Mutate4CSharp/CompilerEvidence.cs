@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace Mutate4CSharp;
@@ -11,23 +13,35 @@ internal static partial class CompilerEvidence
 
     public static CompileEvidence Evaluate(TestRunResult mutated, TestRunResult control, string targetPath,
         string workingDirectory)
+        => Evaluate(mutated, control, targetPath, workingDirectory, null);
+
+    internal static CompileEvidence Evaluate(TestRunResult mutated, TestRunResult control, string targetPath,
+        string workingDirectory, Func<string, string>? expandExistingWindowsPath)
     {
         var controlHealthy = !control.TimedOut && control.ExitCode == 0 && control.TrxValid &&
             control.TestsDiscovered && !control.HasFailedTests && !control.HasRunErrors;
-        return Evaluate(mutated, controlHealthy, targetPath, workingDirectory);
+        return Evaluate(mutated, controlHealthy, targetPath, workingDirectory, expandExistingWindowsPath);
     }
 
     internal static CompileEvidence Evaluate(TestRunResult mutated, bool controlHealthy, string targetPath,
-        string workingDirectory)
+        string workingDirectory) => Evaluate(mutated, controlHealthy, targetPath, workingDirectory, null);
+
+    internal static CompileEvidence Evaluate(TestRunResult mutated, bool controlHealthy, string targetPath,
+        string workingDirectory, Func<string, string>? expandExistingWindowsPath)
     {
         if (!controlHealthy) return new(false, []);
         var mutantFailedToBuild = !mutated.TimedOut && mutated.ExitCode != 0 && !mutated.TrxValid &&
             !mutated.TestsDiscovered && !mutated.HasFailedTests;
         if (!mutantFailedToBuild) return new(false, []);
 
-        var target = NormalizeFullPath(targetPath, workingDirectory);
+        var target = NormalizeFullPath(targetPath, workingDirectory, expandExistingWindowsPath);
         var diagnostics = DiagnosticPattern().Matches(mutated.StandardOutput + "\n" + mutated.StandardError)
-            .Select(match => new { Path = NormalizeFullPath(match.Groups["path"].Value, workingDirectory), Text = Sanitize(match.Value) })
+            .Select(match => new
+            {
+                Path = NormalizeFullPath(match.Groups["path"].Value, workingDirectory,
+                    expandExistingWindowsPath),
+                Text = Sanitize(match.Value)
+            })
             .Where(item => string.Equals(item.Path, target, PathComparison(target)))
             .Select(item => EvaluationTextBounds.Prefix(item.Text, MaxDiagnosticLength))
             .Distinct(StringComparer.Ordinal)
@@ -36,12 +50,40 @@ internal static partial class CompilerEvidence
         return new(diagnostics.Length > 0, diagnostics);
     }
 
-    private static string NormalizeFullPath(string value, string workingDirectory)
+    private static string NormalizeFullPath(string value, string workingDirectory,
+        Func<string, string>? expandExistingWindowsPath)
     {
         var normalized = value.Trim().Replace('\\', '/');
-        if (WindowsPathPattern().IsMatch(normalized))
-            return char.ToUpperInvariant(normalized[0]) + normalized[1..].TrimEnd('/');
-        return Path.GetFullPath(normalized, workingDirectory).Replace('\\', '/').TrimEnd('/');
+        if (!WindowsPathPattern().IsMatch(normalized))
+        {
+            normalized = Path.GetFullPath(normalized, workingDirectory).Replace('\\', '/').TrimEnd('/');
+            if (!WindowsPathPattern().IsMatch(normalized)) return normalized;
+        }
+        normalized = char.ToUpperInvariant(normalized[0]) + normalized[1..].TrimEnd('/');
+        var expanded = expandExistingWindowsPath is not null
+            ? expandExistingWindowsPath(normalized)
+            : ExpandExistingWindowsPath(normalized);
+        expanded = expanded.Trim().Replace('\\', '/').TrimEnd('/');
+        return WindowsPathPattern().IsMatch(expanded)
+            ? char.ToUpperInvariant(expanded[0]) + expanded[1..]
+            : normalized;
+    }
+
+    private static string ExpandExistingWindowsPath(string path)
+    {
+        if (!OperatingSystem.IsWindows()) return path;
+        var nativePath = path.Replace('/', '\\');
+        var capacity = 512;
+        while (capacity <= 32_768)
+        {
+            var buffer = new StringBuilder(capacity);
+            var length = GetLongPathName(nativePath, buffer, (uint)buffer.Capacity);
+            if (length == 0) return path;
+            if (length < buffer.Capacity) return buffer.ToString();
+            if (length >= 32_768) return path;
+            capacity = checked((int)length + 1);
+        }
+        return path;
     }
 
     private static StringComparison PathComparison(string path) =>
@@ -57,6 +99,10 @@ internal static partial class CompilerEvidence
 
     [GeneratedRegex(@"^[A-Za-z]:/", RegexOptions.CultureInvariant)]
     private static partial Regex WindowsPathPattern();
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetLongPathName(string shortPath, StringBuilder longPath,
+        uint bufferLength);
 }
 
 internal static class StrictTestEvidence

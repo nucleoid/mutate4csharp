@@ -112,7 +112,13 @@ public sealed class StrictMutationExecutorTests : IDisposable
             invalid.EvaluationUnitId, [suite.Identity]), TimeSpan.FromMinutes(2), cancellationToken);
 
         Assert.Equal(UnitDisposition.Survived, survivedResult.Disposition);
-        Assert.Equal(UnitDisposition.CompileInvalid, invalidResult.Disposition);
+        var safeClassificationEvidence = string.Join("; ", invalidResult.Evidence.Select(item =>
+            $"{item.Kind}[{string.Join(",", (item.Diagnostics ?? []).Where(value =>
+                value.StartsWith("failed-count=", StringComparison.Ordinal) ||
+                value.StartsWith("diagnostic-count=", StringComparison.Ordinal) ||
+                value.StartsWith("compile-invalid=", StringComparison.Ordinal)))}]"));
+        Assert.True(invalidResult.Disposition == UnitDisposition.CompileInvalid,
+            $"Expected CompileInvalid but received {invalidResult.Disposition}. Safe evidence: {safeClassificationEvidence}");
         Assert.Contains(invalidResult.Evidence, item => item.Kind == "SUITE_MUTANT_RESULT" &&
             item.Diagnostics?.Any(value => value == "compile-invalid=true") == true);
         Assert.Equal(source, File.ReadAllText(Path.Combine(_repository.Root, "src/App/Flag.cs")));
