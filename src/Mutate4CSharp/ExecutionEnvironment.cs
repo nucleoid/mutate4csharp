@@ -714,6 +714,12 @@ internal static class ExecutionEnvironment
         "DOTNET_MSBUILD_SDK_RESOLVER_SDKS_DIR", "DOTNET_MSBUILD_SDK_RESOLVER_SDKS_VER",
         "DOTNET_MSBUILD_SDK_RESOLVER_CLI_DIR", "MSBUILDADDITIONALSDKRESOLVERSFOLDER"
     ];
+    internal static IReadOnlyList<string> StrictSemanticPropertyEnvironmentVariableNames { get; } =
+    [
+        "TargetFramework", "TargetFrameworks", "Nullable", "LangVersion", "DefineConstants",
+        "ImplicitUsings", "OutputType", "EnableDefaultItems", "EnableDefaultCompileItems",
+        "DefaultItemExcludes", "DisableImplicitFrameworkDefines"
+    ];
 
     internal static async Task CreateExecutionBoundaryAsync(string ownedRoot, string sdkWorkingDirectory,
         CancellationToken cancellationToken)
@@ -1112,11 +1118,15 @@ internal static class ExecutionEnvironment
             SetEnvironmentOverride(environment, name, null);
         foreach (var name in StrictSdkResolverEnvironmentVariableNames)
             SetEnvironmentOverride(environment, name, null);
+        foreach (var name in StrictSemanticPropertyEnvironmentVariableNames)
+            SetEnvironmentOverride(environment, name, null);
     }
 
     private static bool IsStrictChildRedirectionVariable(string name) =>
         SnapshotCapture.IsRestoreOrImportRedirectionProperty(name) ||
         StrictSdkResolverEnvironmentVariableNames.Any(candidate =>
+            name.Equals(candidate, StringComparison.OrdinalIgnoreCase)) ||
+        StrictSemanticPropertyEnvironmentVariableNames.Any(candidate =>
             name.Equals(candidate, StringComparison.OrdinalIgnoreCase));
 
     private static void SetEnvironmentOverride(IDictionary<string, string?> environment, string name,

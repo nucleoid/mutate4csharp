@@ -123,6 +123,204 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
     }
 
     [Fact]
+    public async Task ChangedConditionalDeclarationEscalatesToConfiguredFullProjectContext()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Conditional.cs", """
+            public sealed class Conditional
+            {
+            #if TRACE
+                public bool Changed() => true;
+            #endif
+                public bool Unchanged() => true;
+            }
+            """);
+        Commit();
+        _repository.WriteText("src/App/Conditional.cs", """
+            public sealed class Conditional
+            {
+            #if TRACE
+                public bool Changed() => false;
+            #endif
+                public bool Unchanged() => true;
+            }
+            """);
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var scope = await ScopePlanner.PlanGitAsync(snapshot, CancellationToken.None);
+
+        Assert.Equal("FULL_PROJECT", Assert.Single(scope.ProjectUnits).Expansion);
+        Assert.Contains(Assert.Single(scope.Files).Reasons,
+            reason => reason.Code == "PREPROCESSOR_SCOPE_EXPANSION");
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot), scope,
+            CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Contains(result.Candidates,
+            item => item.Material.DeclarationIdentity.Contains("Changed", StringComparison.Ordinal));
+        Assert.Contains(result.Candidates,
+            item => item.Material.DeclarationIdentity.Contains("Unchanged", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task OmittedNullableUsesThePlainSdkDisabledDefault()
+    {
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs", """
+            public sealed class Flag
+            {
+                public string Same(string value) => value;
+                public bool Enabled() => true;
+            }
+            """);
+        WriteConfiguration([
+            new
+            {
+                id = "app", project = "src/App/App.csproj", targetFramework = "net10.0",
+                parseContext = "net10-csharp14", languageVersion = "14.0",
+                defineConstants = Array.Empty<string>(), sources = new[] { "src/App/**/*.cs" },
+                testSuites = new[] { "unit" }
+            }
+        ]);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Contains(result.Candidates, item => item.Material.OperatorId == "literal.boolean");
+        Assert.DoesNotContain(result.Candidates, item => item.Material.OperatorId == "rvalue.null");
+    }
+
+    [Fact]
+    public async Task BareDefineConstantsReplaceConfigurationSymbolsButKeepFrameworkSymbols()
+    {
+        WriteProject("src/App", "src/App/**/*.cs", ["FEATURE"], defineConstantsInherit: false);
+        _repository.WriteText("src/App/Conditional.cs", """
+            public sealed class Conditional
+            {
+            #if TRACE
+                public bool TraceOnly() => true;
+            #endif
+            #if FEATURE && NET10_0
+                public bool Feature() => true;
+            #endif
+            }
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Conditional.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        var candidate = Assert.Single(result.Candidates);
+        Assert.Contains("Feature", candidate.Material.DeclarationIdentity, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RefusesUnmodelledProjectPropertiesAndDisabledDefaultItems()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><UnmodelledSemantic>value</UnmodelledSemantic></PropertyGroup>
+            </Project>
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var unsupported = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(unsupported.IsComplete);
+        Assert.Contains(unsupported.Reasons,
+            reason => reason.Code == "ENUMERATION_PROPERTY_UNSUPPORTED");
+    }
+
+    [Fact]
+    public async Task EnableDefaultItemsFalseCannotSilentlyInventCompileInputs()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><EnableDefaultItems>false</EnableDefaultItems></PropertyGroup>
+            </Project>
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Contains(result.Reasons,
+            reason => reason.Code == "ENUMERATION_COMPILE_INVENTORY_MISMATCH");
+    }
+
+    [Fact]
+    public async Task SnapshotBoundaryRefusesBuildControlsAboveTheRepositoryRootBeforeEnumeration()
+    {
+        var parent = Path.Combine(Path.GetTempPath(), "mutate4csharp-ancestor-enumeration",
+            Guid.NewGuid().ToString("N"));
+        var repositoryPath = Path.Combine(parent, "repository");
+        Directory.CreateDirectory(parent);
+        File.WriteAllText(Path.Combine(parent, "Directory.Build.props"),
+            "<Project><PropertyGroup><DefineConstants>OUTSIDE</DefineConstants></PropertyGroup></Project>\n");
+        try
+        {
+            using var repository = new SnapshotTestRepository(repositoryPath);
+            repository.WriteText("src/App/App.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+                </Project>
+                """);
+            repository.WriteText("src/App/Flag.cs",
+                "public sealed class Flag { public bool Value() => true; }\n");
+            repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup></Project>
+                """);
+            repository.WriteText("mutate4csharp.json", System.Text.Json.JsonSerializer.Serialize(new
+            {
+                version = 1,
+                projects = new[] { Project("app", "src/App/App.csproj", "src/App/**/*.cs", []) },
+                testSuites = new[]
+                {
+                    new { id = "unit", path = "tests/App.Tests/App.Tests.csproj", runner = "vstest",
+                        framework = "net10.0", configuration = "Release",
+                        expectedMembers = new[] { "App.Tests.dll" } }
+                }
+            }));
+            repository.Git("add", ".");
+            repository.Git("commit", "-m", "fixture");
+            var error = await Assert.ThrowsAsync<SnapshotCaptureException>(() =>
+                SnapshotCapture.CaptureAsync(repository.Root, "HEAD", [],
+                    SnapshotCaptureOptions.Default, CancellationToken.None));
+
+            Assert.Contains("Inherited build input outside the snapshot root", error.Message,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            try { Directory.Delete(parent, true); } catch { }
+        }
+    }
+
+    [Fact]
     public async Task ReleaseConfigurationIncludesTraceButNotDebugBranches()
     {
         WriteProject("src/App", "src/App/**/*.cs");
@@ -430,11 +628,15 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
     }
 
     private void WriteProject(string directory, string sourceGlob,
-        IReadOnlyList<string>? defineConstants = null, string suiteConfiguration = "Release")
+        IReadOnlyList<string>? defineConstants = null, string suiteConfiguration = "Release",
+        bool defineConstantsInherit = true)
     {
-        _repository.WriteText($"{directory}/App.csproj", """
+        var constants = defineConstants is { Count: > 0 }
+            ? $"<DefineConstants>{(defineConstantsInherit ? "$(DefineConstants);" : string.Empty)}{string.Join(';', defineConstants)}</DefineConstants>"
+            : string.Empty;
+        _repository.WriteText($"{directory}/App.csproj", $"""
             <Project Sdk="Microsoft.NET.Sdk">
-              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable>{constants}</PropertyGroup>
             </Project>
             """);
         _repository.WriteText("tests/App.Tests/App.Tests.csproj", """

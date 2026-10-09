@@ -90,6 +90,11 @@ public sealed class SnapshotExecutionTests : IDisposable
         Assert.Null(environment["DOTNET_MSBUILD_SDK_RESOLVER_SDKS_VER"]);
         Assert.Null(environment["DOTNET_MSBUILD_SDK_RESOLVER_CLI_DIR"]);
         Assert.Null(environment["MSBUILDADDITIONALSDKRESOLVERSFOLDER"]);
+        foreach (var name in ExecutionEnvironment.StrictSemanticPropertyEnvironmentVariableNames)
+        {
+            Assert.True(environment.ContainsKey(name));
+            Assert.Null(environment[name]);
+        }
     }
 
     [Fact]

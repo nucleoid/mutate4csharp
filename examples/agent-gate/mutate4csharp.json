@@ -6,6 +6,7 @@
       "project": "src/Example/Example.csproj",
       "targetFramework": "net10.0",
       "parseContext": "net10-csharp14",
+      "nullable": "enable",
       "sources": ["src/Example/**/*.cs"],
       "testSuites": ["example-tests"]
     }

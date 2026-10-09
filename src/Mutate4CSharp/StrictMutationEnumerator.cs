@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
@@ -15,8 +16,26 @@ internal sealed record StrictMutationEnumerationResult(
 internal static class StrictMutationEnumerator
 {
     private const int MaxDiagnostics = 100;
-    private static readonly Lazy<ReferenceSet> ReferenceSetCache = new(CreatePlatformReferences,
-        LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly ConcurrentDictionary<string, Lazy<ReferenceSet>> ReferenceSetCache =
+        new(StringComparer.Ordinal);
+    private static readonly HashSet<string> SupportedProjectProperties = new(
+    [
+        "TargetFramework", "Nullable", "LangVersion", "DefineConstants",
+        "EnableDefaultItems", "EnableDefaultCompileItems", "DefaultItemExcludes",
+        "DisableImplicitFrameworkDefines", "ImplicitUsings", "OutputType",
+        "RootNamespace", "AssemblyName", "Configurations", "Platforms", "PlatformTarget",
+        "IsPackable", "IsPublishable", "GenerateDocumentationFile", "NoWarn",
+        "TreatWarningsAsErrors", "WarningsAsErrors", "WarningsNotAsErrors", "WarningLevel",
+        "AnalysisLevel", "AnalysisMode", "EnforceCodeStyleInBuild", "Deterministic", "DebugType",
+        "DebugSymbols", "Optimize", "CheckForOverflowUnderflow", "AllowUnsafeBlocks",
+        "RestorePackagesWithLockFile", "RestoreLockedMode", "ContinuousIntegrationBuild",
+        "GenerateAssemblyInfo", "AppendTargetFrameworkToOutputPath", "BaseOutputPath",
+        "BaseIntermediateOutputPath", "Version", "VersionPrefix", "VersionSuffix", "PackageId",
+        "Authors", "Company", "Description", "Copyright", "RepositoryUrl", "RepositoryType",
+        "PackageTags", "PackageLicenseExpression", "PackageReadmeFile", "PublishRepositoryUrl",
+        "IncludeSymbols", "SymbolPackageFormat", "GeneratePackageOnBuild", "IsTestProject",
+        "InvariantGlobalization"
+    ], StringComparer.OrdinalIgnoreCase);
     private const string ImplicitUsingsSource = """
         global using global::System;
         global using global::System.Collections.Generic;
@@ -28,7 +47,8 @@ internal static class StrictMutationEnumerator
         """;
 
     public static StrictMutationEnumerationResult Enumerate(InputSnapshot snapshot,
-        CheckConfiguration configuration, ScopePlan scopePlan, CancellationToken cancellationToken)
+        CheckConfiguration configuration, ScopePlan scopePlan, CancellationToken cancellationToken,
+        string? sdkVersion = null)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -58,7 +78,7 @@ internal static class StrictMutationEnumerator
                     return Refused("ENUMERATION_PROJECT_UNMAPPED",
                         $"Scope project {unit.Project} has no exact strict configuration context.");
                 var context = BuildContext(snapshot, captured, project, configuration,
-                    cancellationToken);
+                    sdkVersion, cancellationToken);
                 contextIdentities.Add((project.Project, context.Identity));
                 var targetPaths = SelectTargetPaths(unit, scopePlan, context.SourcePaths)
                     .Where(path => !context.ExcludedPaths.Contains(path)).ToArray();
@@ -158,7 +178,7 @@ internal static class StrictMutationEnumerator
 
     private static ProjectContext BuildContext(InputSnapshot snapshot,
         IReadOnlyDictionary<string, SnapshotFile> captured, CheckProject project,
-        CheckConfiguration configuration, CancellationToken cancellationToken)
+        CheckConfiguration configuration, string? sdkVersion, CancellationToken cancellationToken)
     {
         if (!captured.ContainsKey(project.Project))
             throw new EvaluationContractException($"Configured project is not captured: {project.Project}.");
@@ -168,13 +188,13 @@ internal static class StrictMutationEnumerator
         if (sourcePaths.Length == 0)
             throw new EvaluationContractException(
                 $"Configured project {project.Project} has no captured compile inputs.");
-        var projectSemantics = ValidateProjectFile(snapshot, captured, project, sourcePaths);
         var buildConfiguration = ResolveBuildConfiguration(configuration, project);
+        var projectSemantics = ValidateProjectFile(snapshot, captured, project, sourcePaths,
+            buildConfiguration);
         var excluded = sourcePaths.Where(path => configuration.Exclusions.Any(exclusion =>
             ProjectOwnershipResolver.GlobMatches(path, exclusion.Path))).ToHashSet(StringComparer.Ordinal);
         var parseOptions = new CSharpParseOptions(LanguageVersion.CSharp14,
-            preprocessorSymbols: StandardSymbols(buildConfiguration).Concat(project.DefineConstants)
-                .Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal));
+            preprocessorSymbols: projectSemantics.PreprocessorSymbols);
         var trees = new Dictionary<string, SyntaxTree>(StringComparer.Ordinal);
         var sources = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var path in sourcePaths)
@@ -198,21 +218,13 @@ internal static class StrictMutationEnumerator
             trees.Add(implicitPath, CSharpSyntaxTree.ParseText(ImplicitUsingsSource, parseOptions,
                 implicitPath, Encoding.UTF8, cancellationToken));
         }
-        var referenceSet = PlatformReferences();
-        var nullable = project.Nullable switch
-        {
-            "enable" => NullableContextOptions.Enable,
-            "disable" => NullableContextOptions.Disable,
-            "annotations" => NullableContextOptions.Annotations,
-            "warnings" => NullableContextOptions.Warnings,
-            _ => throw new EvaluationContractException($"Unsupported nullable context: {project.Nullable}.")
-        };
+        var referenceSet = PlatformReferences(sdkVersion);
         var compilation = CSharpCompilation.Create(
             "StrictEnumeration_" + project.Id,
             trees.Values,
             referenceSet.References,
             new CSharpCompilationOptions(projectSemantics.OutputKind,
-                deterministic: true, nullableContextOptions: nullable));
+                deterministic: true, nullableContextOptions: projectSemantics.Nullable));
         var errors = compilation.GetDiagnostics(cancellationToken).Where(diagnostic =>
                 diagnostic.Severity == DiagnosticSeverity.Error)
             .Take(MaxDiagnostics).ToArray();
@@ -227,9 +239,9 @@ internal static class StrictMutationEnumerator
                 ("implicit-usings", projectSemantics.ImplicitUsings ? "enabled" : "disabled"),
                 ("output-kind", projectSemantics.OutputKind.ToString()),
                 ("references", referenceSet.Identity),
-                ("symbols", string.Join(";", StandardSymbols(buildConfiguration)
-                    .Concat(project.DefineConstants).Distinct(StringComparer.Ordinal)
-                    .OrderBy(value => value, StringComparer.Ordinal)))
+                ("symbols", string.Join(";", projectSemantics.PreprocessorSymbols)),
+                ("ancestor-build-controls", "none-observed"),
+                ("semantic-environment", "cleared-v1")
             ]);
         return new(sourcePaths, excluded, sources, trees, compilation, identity);
     }
@@ -248,7 +260,7 @@ internal static class StrictMutationEnumerator
 
     private static ProjectSemantics ValidateProjectFile(InputSnapshot snapshot,
         IReadOnlyDictionary<string, SnapshotFile> captured, CheckProject project,
-        IReadOnlyList<string> configuredSourcePaths)
+        IReadOnlyList<string> configuredSourcePaths, string buildConfiguration)
     {
         var path = CapturedPath(snapshot, project.Project);
         XDocument document;
@@ -269,7 +281,13 @@ internal static class StrictMutationEnumerator
         if (root.Descendants().Any(element => element.Name.LocalName is "Import" or "Sdk"))
             throw new EnumerationContextException("ENUMERATION_IMPORT_UNSUPPORTED",
                 $"Explicit MSBuild imports and nested SDK declarations are unsupported: {project.Project}.");
+        var unsupportedProjectChild = root.Elements().FirstOrDefault(element =>
+            element.Name.LocalName is not ("PropertyGroup" or "ItemGroup"));
+        if (unsupportedProjectChild is not null)
+            throw new EnumerationContextException("ENUMERATION_PROJECT_ELEMENT_UNSUPPORTED",
+                $"Project element {unsupportedProjectChild.Name.LocalName} is unsupported in enumeration v1: {project.Project}.");
         RefuseApplicableDirectoryBuildFiles(captured, project.Project);
+        RefuseHostAncestorBuildFiles(snapshot.OriginalRoot);
         if (root.Descendants().Any(element => element.Attribute("Condition") is not null))
             throw new EnumerationContextException("ENUMERATION_CONDITION_UNSUPPORTED",
                 $"Conditional project evaluation is unsupported for strict enumeration: {project.Project}.");
@@ -277,6 +295,25 @@ internal static class StrictMutationEnumerator
                 "PackageReference" or "FrameworkReference" or "Reference" or "Using"))
             throw new EnumerationContextException("ENUMERATION_REFERENCE_UNSUPPORTED",
                 $"Project/package reference semantic resolution is not supported in enumeration v1: {project.Project}.");
+        var unsupportedItem = root.Descendants().Where(element => element.Parent?.Name.LocalName == "ItemGroup")
+            .FirstOrDefault(element => element.Name.LocalName != "Compile");
+        if (unsupportedItem is not null)
+            throw new EnumerationContextException("ENUMERATION_ITEM_UNSUPPORTED",
+                $"Project item {unsupportedItem.Name.LocalName} is unsupported in enumeration v1: {project.Project}.");
+        var unsupportedProperty = root.Descendants().Where(element =>
+                element.Parent?.Name.LocalName == "PropertyGroup")
+            .FirstOrDefault(element => !SupportedProjectProperties.Contains(element.Name.LocalName));
+        if (unsupportedProperty is not null)
+            throw new EnumerationContextException("ENUMERATION_PROPERTY_UNSUPPORTED",
+                $"Project property {unsupportedProperty.Name.LocalName} is unsupported in enumeration v1: {project.Project}.");
+        if (SingleProperty(root, "DefaultItemExcludes") is not null)
+            throw new EnumerationContextException("ENUMERATION_PROPERTY_UNSUPPORTED",
+                $"DefaultItemExcludes is unsupported in enumeration v1: {project.Project}.");
+        var disableFrameworkDefines = SingleProperty(root, "DisableImplicitFrameworkDefines");
+        if (disableFrameworkDefines is not null &&
+            (!bool.TryParse(disableFrameworkDefines, out var disabled) || disabled))
+            throw new EnumerationContextException("ENUMERATION_PROPERTY_UNSUPPORTED",
+                $"DisableImplicitFrameworkDefines is unsupported in enumeration v1: {project.Project}.");
         if (root.Descendants().Any(element => element.Name.LocalName == "Compile" &&
                 (element.Attribute("Remove") is not null || element.Attribute("Update") is not null)))
             throw new EnumerationContextException("ENUMERATION_COMPILE_TRANSFORM_UNSUPPORTED",
@@ -296,27 +333,23 @@ internal static class StrictMutationEnumerator
         if (langVersion is not null && langVersion is not ("14" or "14.0"))
             throw new EnumerationContextException("ENUMERATION_LANGUAGE_UNSUPPORTED",
                 $"Captured project language version is unsupported: {langVersion}.");
-        var nullable = SingleProperty(root, "Nullable");
-        if (nullable is not null && !nullable.Equals(project.Nullable, StringComparison.OrdinalIgnoreCase))
+        var nullable = (SingleProperty(root, "Nullable") ?? "disable").ToLowerInvariant();
+        if (!nullable.Equals(project.Nullable, StringComparison.Ordinal))
             throw new EnumerationContextException("ENUMERATION_NULLABLE_MISMATCH",
                 $"Captured project nullable context does not match strict configuration: {project.Project}.");
-        var constants = SingleProperty(root, "DefineConstants");
-        if (constants is not null)
-        {
-            var actual = constants.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .OrderBy(value => value, StringComparer.Ordinal).ToArray();
-            var expected = project.DefineConstants.OrderBy(value => value, StringComparer.Ordinal).ToArray();
-            if (!actual.SequenceEqual(expected, StringComparer.Ordinal))
-                throw new EnumerationContextException("ENUMERATION_SYMBOL_MISMATCH",
-                    $"Captured project DefineConstants do not match strict configuration: {project.Project}.");
-        }
+        var symbols = ResolvePreprocessorSymbols(root, project, buildConfiguration);
 
         var compileInventory = new HashSet<string>(StringComparer.Ordinal);
+        var defaultItems = SingleProperty(root, "EnableDefaultItems");
+        if (defaultItems is not null && !bool.TryParse(defaultItems, out _))
+            throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
+                $"EnableDefaultItems must be true or false: {project.Project}.");
         var defaultCompile = SingleProperty(root, "EnableDefaultCompileItems");
         if (defaultCompile is not null && !bool.TryParse(defaultCompile, out _))
             throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
                 $"EnableDefaultCompileItems must be true or false: {project.Project}.");
-        if (!string.Equals(defaultCompile, "false", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(defaultItems, "false", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(defaultCompile, "false", StringComparison.OrdinalIgnoreCase))
         {
             var projectDirectory = RepositoryDirectory(project.Project);
             foreach (var source in captured.Keys.Where(path =>
@@ -359,7 +392,16 @@ internal static class StrictMutationEnumerator
             _ => throw new EnumerationContextException("ENUMERATION_OUTPUT_TYPE_UNSUPPORTED",
                 $"Unsupported OutputType {outputType}: {project.Project}.")
         };
-        return new(outputKind, implicitEnabled);
+        var nullableContext = nullable switch
+        {
+            "enable" => NullableContextOptions.Enable,
+            "disable" => NullableContextOptions.Disable,
+            "annotations" => NullableContextOptions.Annotations,
+            "warnings" => NullableContextOptions.Warnings,
+            _ => throw new EnumerationContextException("ENUMERATION_NULLABLE_MISMATCH",
+                $"Unsupported nullable context {nullable}: {project.Project}.")
+        };
+        return new(outputKind, implicitEnabled, nullableContext, symbols);
     }
 
     private static void RefuseApplicableDirectoryBuildFiles(
@@ -378,6 +420,71 @@ internal static class StrictMutationEnumerator
             if (directory.Length == 0) break;
             directory = RepositoryDirectory(directory);
         }
+    }
+
+    private static void RefuseHostAncestorBuildFiles(string repositoryRoot)
+    {
+        var directory = Directory.GetParent(Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(repositoryRoot)));
+        string[] names =
+        [
+            "Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props",
+            "Directory.Build.rsp", "MSBuild.rsp", ".globalconfig", "global.json"
+        ];
+        while (directory is not null)
+        {
+            foreach (var name in names)
+            {
+                var path = Path.Combine(directory.FullName, name);
+                if (File.Exists(path) || Directory.Exists(path))
+                    throw new EnumerationContextException("ENUMERATION_ANCESTOR_BUILD_UNSUPPORTED",
+                        $"Build control above the repository root is unsupported in enumeration v1: {path}.");
+            }
+            directory = directory.Parent;
+        }
+    }
+
+    private static IReadOnlyList<string> ResolvePreprocessorSymbols(XElement root,
+        CheckProject project, string buildConfiguration)
+    {
+        const string inheritedPrefix = "$(DefineConstants)";
+        var property = SingleProperty(root, "DefineConstants");
+        var retainsConfigurationSymbols = property is null;
+        string[] declared;
+        if (property is null)
+        {
+            declared = [];
+        }
+        else if (property.StartsWith(inheritedPrefix, StringComparison.Ordinal))
+        {
+            retainsConfigurationSymbols = true;
+            var suffix = property[inheritedPrefix.Length..];
+            if (suffix.Length > 0 && suffix[0] != ';')
+                throw new EnumerationContextException("ENUMERATION_SYMBOL_UNSUPPORTED",
+                    $"DefineConstants must use an exact $(DefineConstants) prefix: {project.Project}.");
+            declared = SplitSymbols(suffix.TrimStart(';'));
+        }
+        else
+        {
+            if (property.Contains("$(", StringComparison.Ordinal) ||
+                property.Contains("@(", StringComparison.Ordinal) ||
+                property.Contains("%(", StringComparison.Ordinal))
+                throw new EnumerationContextException("ENUMERATION_SYMBOL_UNSUPPORTED",
+                    $"Dynamic DefineConstants are unsupported in enumeration v1: {project.Project}.");
+            declared = SplitSymbols(property);
+        }
+        var expected = project.DefineConstants.OrderBy(value => value, StringComparer.Ordinal).ToArray();
+        if (!declared.OrderBy(value => value, StringComparer.Ordinal).SequenceEqual(expected,
+                StringComparer.Ordinal))
+            throw new EnumerationContextException("ENUMERATION_SYMBOL_MISMATCH",
+                $"Captured project DefineConstants do not match strict configuration: {project.Project}.");
+        return FrameworkSymbols()
+            .Concat(retainsConfigurationSymbols ? ConfigurationSymbols(buildConfiguration) : [])
+            .Concat(declared).Distinct(StringComparer.Ordinal).OrderBy(value => value,
+                StringComparer.Ordinal).ToArray();
+
+        static string[] SplitSymbols(string value) => value.Split(';',
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
     private static string ResolveStaticCompilePath(InputSnapshot snapshot, string projectPath, string include)
@@ -416,43 +523,79 @@ internal static class StrictMutationEnumerator
         return values.SingleOrDefault()?.Value.Trim();
     }
 
-    private static ReferenceSet PlatformReferences() => ReferenceSetCache.Value;
-
-    private static ReferenceSet CreatePlatformReferences()
+    private static ReferenceSet PlatformReferences(string? sdkVersion)
     {
-        var runtimeDirectory = System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory();
-        var runtimeVersionDirectory = Directory.GetParent(Path.TrimEndingDirectorySeparator(runtimeDirectory));
-        var frameworkDirectory = runtimeVersionDirectory?.Parent;
+        var key = sdkVersion ?? "runtime:" + Path.GetFileName(Path.TrimEndingDirectorySeparator(
+            System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory()));
+        return ReferenceSetCache.GetOrAdd(key, _ => new(() => CreatePlatformReferences(sdkVersion),
+            LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+    }
+
+    private static ReferenceSet CreatePlatformReferences(string? sdkVersion)
+    {
+        var runtimeDirectory = Path.TrimEndingDirectorySeparator(
+            System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory());
+        var runtimeVersion = Path.GetFileName(runtimeDirectory);
+        var frameworkDirectory = Directory.GetParent(runtimeDirectory);
         var sharedDirectory = frameworkDirectory?.Parent;
-        var dotnetRoot = sharedDirectory?.FullName;
+        var dotnetDirectory = sharedDirectory?.Parent;
+        var dotnetRoot = dotnetDirectory?.FullName;
         var packRoot = dotnetRoot is null ? null : Path.Combine(dotnetRoot, "packs", "Microsoft.NETCore.App.Ref");
         if (packRoot is null || !Directory.Exists(packRoot))
             throw new EnumerationContextException("ENUMERATION_REFERENCE_PACK_UNAVAILABLE",
                 "The pinned Microsoft.NETCore.App.Ref pack is unavailable.");
-        var versions = Directory.EnumerateDirectories(packRoot).Select(path =>
-                (Path: path, Version: Version.TryParse(Path.GetFileName(path), out var parsed) ? parsed : null))
-            .Where(item => item.Version?.Major == 10).OrderByDescending(item => item.Version).ToArray();
-        var referenceDirectory = versions.Select(item => Path.Combine(item.Path, "ref", "net10.0"))
-            .FirstOrDefault(Directory.Exists);
-        if (referenceDirectory is null)
+        var targetingPackVersion = sdkVersion is null
+            ? runtimeVersion
+            : ResolveTargetingPackVersion(dotnetRoot!, sdkVersion);
+        var referenceDirectory = Path.Combine(packRoot, targetingPackVersion, "ref", "net10.0");
+        if (!Directory.Exists(referenceDirectory))
             throw new EnumerationContextException("ENUMERATION_REFERENCE_PACK_UNAVAILABLE",
-                "No net10.0 reference assembly directory exists in Microsoft.NETCore.App.Ref.");
+                $"The resolved SDK {sdkVersion ?? "<runtime-fallback>"} requires Microsoft.NETCore.App.Ref " +
+                $"{targetingPackVersion}, but its exact net10.0 reference pack is unavailable.");
         var paths = Directory.EnumerateFiles(referenceDirectory, "*.dll", SearchOption.TopDirectoryOnly)
             .OrderBy(Path.GetFileName, StringComparer.Ordinal).ToArray();
         if (paths.Length == 0)
             throw new EnumerationContextException("ENUMERATION_REFERENCE_PACK_UNAVAILABLE",
                 "The net10.0 reference assembly set is empty.");
-        var identity = MutationIdentity.ComputeDigest("net10-reference-set-v1", paths.SelectMany((path, index) =>
-            new[]
-            {
-                ($"name-{index:D8}", Path.GetFileName(path)),
-                ($"sha256-{index:D8}", Convert.ToHexString(
-                    System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant())
-            }).ToArray());
+        var identity = MutationIdentity.ComputeDigest("net10-reference-set-v1",
+            new[] { ("sdk-version", sdkVersion ?? "runtime-fallback"),
+                ("targeting-pack-version", targetingPackVersion) }.Concat(paths.SelectMany((path, index) =>
+                new[]
+                {
+                    ($"name-{index:D8}", Path.GetFileName(path)),
+                    ($"sha256-{index:D8}", Convert.ToHexString(
+                        System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant())
+                })).ToArray());
         return new(paths.Select(path => MetadataReference.CreateFromFile(path)).ToArray(), identity);
     }
 
-    private static IEnumerable<string> StandardSymbols(string configuration)
+    private static string ResolveTargetingPackVersion(string dotnetRoot, string sdkVersion)
+    {
+        var sdkDirectory = Path.Combine(dotnetRoot, "sdk", sdkVersion);
+        var bundledVersions = Path.Combine(sdkDirectory, "Microsoft.NETCoreSdk.BundledVersions.props");
+        if (!File.Exists(bundledVersions))
+            throw new EnumerationContextException("ENUMERATION_REFERENCE_PACK_UNAVAILABLE",
+                $"The resolved SDK directory is unavailable: {sdkDirectory}.");
+        XDocument document;
+        try { document = XDocument.Load(bundledVersions, LoadOptions.None); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Xml.XmlException)
+        {
+            throw new EnumerationContextException("ENUMERATION_REFERENCE_PACK_UNAVAILABLE",
+                $"The resolved SDK targeting-pack manifest could not be read: {bundledVersions}.", ex);
+        }
+        var declaredSdk = document.Descendants().FirstOrDefault(element =>
+            element.Name.LocalName == "NETCoreSdkVersion")?.Value.Trim();
+        var targetingPack = document.Descendants().FirstOrDefault(element =>
+            element.Name.LocalName == "BundledNETCoreAppPackageVersion")?.Value.Trim();
+        if (!string.Equals(declaredSdk, sdkVersion, StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(targetingPack) || targetingPack.Any(character =>
+                !char.IsAsciiDigit(character) && character is not ('.' or '-' or '+')))
+            throw new EnumerationContextException("ENUMERATION_REFERENCE_PACK_UNAVAILABLE",
+                $"The resolved SDK targeting-pack manifest does not bind SDK {sdkVersion} to one pack.");
+        return targetingPack;
+    }
+
+    private static IEnumerable<string> FrameworkSymbols()
     {
         yield return "NET";
         yield return "NET10_0";
@@ -465,6 +608,10 @@ internal static class StrictMutationEnumerator
         yield return "NETCOREAPP3_0_OR_GREATER";
         yield return "NETCOREAPP3_1_OR_GREATER";
         for (var version = 5; version <= 10; version++) yield return $"NET{version}_0_OR_GREATER";
+    }
+
+    private static IEnumerable<string> ConfigurationSymbols(string configuration)
+    {
         yield return "TRACE";
         if (configuration.Equals("Debug", StringComparison.Ordinal)) yield return "DEBUG";
     }
@@ -507,7 +654,8 @@ internal static class StrictMutationEnumerator
     private sealed record ProjectContext(IReadOnlyList<string> SourcePaths,
         IReadOnlySet<string> ExcludedPaths, IReadOnlyDictionary<string, string> Sources,
         IReadOnlyDictionary<string, SyntaxTree> Trees, CSharpCompilation Compilation, string Identity);
-    private sealed record ProjectSemantics(OutputKind OutputKind, bool ImplicitUsings);
+    private sealed record ProjectSemantics(OutputKind OutputKind, bool ImplicitUsings,
+        NullableContextOptions Nullable, IReadOnlyList<string> PreprocessorSymbols);
     private sealed record ReferenceSet(IReadOnlyList<MetadataReference> References, string Identity);
     private sealed class EnumerationContextException : Exception
     {

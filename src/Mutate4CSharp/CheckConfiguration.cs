@@ -186,7 +186,7 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
         if (languageVersion != "14.0")
             throw new ArgumentException(
                 $"Production project {id} languageVersion must use the version-1 C# 14.0 contract.");
-        var nullable = item.Nullable is null ? "enable" :
+        var nullable = item.Nullable is null ? "disable" :
             Required(item.Nullable, $"projects[{index}].nullable", 32);
         if (nullable is not ("enable" or "disable" or "annotations" or "warnings"))
             throw new ArgumentException(

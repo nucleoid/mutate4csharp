@@ -41,6 +41,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         EvaluationFingerprintMaterial? fingerprintMaterial = null;
         Exception? fingerprintMaterialFailure = null;
         string? semanticContextIdentity = null;
+        string? sdkVersion = null;
         CheckConfiguration? checkConfiguration = null;
         int? enumerationCount = null;
         IReadOnlyList<EvaluationUnitResult> reportUnits = [];
@@ -116,8 +117,16 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             }
             else
             {
+                try { sdkVersion = await ResolveSdkVersionAsync(snapshot, cancellationToken); }
+                catch (Exception ex) when (!IsFatal(ex))
+                {
+                    enumerationReasons = [new("ENUMERATION_SDK_UNAVAILABLE", Bound(ex.Message))];
+                    reason = enumerationReasons[0];
+                    evidence.Add(new("MUTATION_ENUMERATION_REFUSAL", reason.Message));
+                    goto ScopeEvidence;
+                }
                 var enumeration = StrictMutationEnumerator.Enumerate(snapshot, checkConfiguration,
-                    scopePlan, cancellationToken);
+                    scopePlan, cancellationToken, sdkVersion);
                 if (!enumeration.IsComplete)
                 {
                     enumerationReasons = enumeration.Reasons;
@@ -134,9 +143,9 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                             "Complete semantic enumeration requires one context identity.");
                     try
                     {
-                        fingerprintMaterial = await BuildEvaluationFingerprintMaterialAsync(snapshot,
+                        fingerprintMaterial = BuildEvaluationFingerprintMaterial(snapshot,
                             snapshotId!, scopePlan, checkConfiguration.Policy, semanticContextIdentity,
-                            cancellationToken);
+                            sdkVersion);
                     }
                     catch (Exception ex) when (!IsFatal(ex))
                     {
@@ -298,9 +307,10 @@ ScopeEvidence:
                 {
                     try
                     {
-                        fingerprintMaterial ??= await BuildEvaluationFingerprintMaterialAsync(
+                        sdkVersion ??= await ResolveSdkVersionAsync(snapshot, cancellationToken);
+                        fingerprintMaterial ??= BuildEvaluationFingerprintMaterial(
                             snapshot, snapshotId, scopePlan, checkConfiguration?.Policy ?? EvaluationReport.DefaultPolicy,
-                            semanticContextIdentity ?? "semantic-context-unavailable", cancellationToken);
+                            semanticContextIdentity ?? "semantic-context-unavailable", sdkVersion);
                         evidence.Add(new("TOOL_INTERNAL_SDK",
                             "Recorded the SDK resolved inside the captured consumer snapshot.",
                             [fingerprintMaterial.SdkIdentity]));
@@ -543,21 +553,13 @@ ScopeEvidence:
         };
     }
 
-    private static async Task<EvaluationFingerprintMaterial> BuildEvaluationFingerprintMaterialAsync(
+    private static EvaluationFingerprintMaterial BuildEvaluationFingerprintMaterial(
         InputSnapshot snapshot, string snapshotId, ScopePlan scopePlan, EvaluationPolicy policy,
-        string semanticContextIdentity, CancellationToken cancellationToken)
+        string semanticContextIdentity, string sdkVersion)
     {
         var inputs = snapshot.Files.Select(file => new FingerprintInput(Classify(file.RelativePath),
             file.RelativePath, file.Length, file.Sha256, file.Exists, file.IsTracked)).ToArray();
         var scope = ReportWriter.SerializeCanonicalScope(scopePlan);
-        SnapshotCapture.RejectInheritedGlobalJson(snapshot.CaptureRoot);
-        var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
-        var sdk = await ProcessTree.RunAsync(dotnet, ["--version"], snapshot.CaptureRoot,
-            TimeSpan.FromSeconds(30), cancellationToken);
-        var sdkVersion = sdk.StandardOutput.Trim();
-        if (sdk.TimedOut || sdk.ExitCode != 0 || sdkVersion.Length == 0 || sdkVersion.Any(character =>
-                !char.IsAsciiLetterOrDigit(character) && character is not ('.' or '-' or '+')))
-            throw new EvaluationContractException("The resolved .NET SDK identity could not be established.");
         var runtimeIdentity = $"framework={RuntimeInformation.FrameworkDescription};" +
             $"rid={RuntimeInformation.RuntimeIdentifier};os={RuntimeInformation.OSDescription};" +
             $"osArch={RuntimeInformation.OSArchitecture};processArch={RuntimeInformation.ProcessArchitecture}";
@@ -586,5 +588,19 @@ ScopeEvidence:
             if (path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)) return "source";
             return "asset";
         }
+    }
+
+    private static async Task<string> ResolveSdkVersionAsync(InputSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        SnapshotCapture.RejectInheritedGlobalJson(snapshot.CaptureRoot);
+        var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
+        var sdk = await ProcessTree.RunAsync(dotnet, ["--version"], snapshot.CaptureRoot,
+            TimeSpan.FromSeconds(30), cancellationToken);
+        var sdkVersion = sdk.StandardOutput.Trim();
+        if (sdk.TimedOut || sdk.ExitCode != 0 || sdkVersion.Length == 0 || sdkVersion.Any(character =>
+                !char.IsAsciiLetterOrDigit(character) && character is not ('.' or '-' or '+')))
+            throw new EvaluationContractException("The resolved .NET SDK identity could not be established.");
+        return sdkVersion;
     }
 }

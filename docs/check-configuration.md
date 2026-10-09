@@ -15,7 +15,8 @@ in plan mode.
 
 Each production project declares a stable ID, repository-relative `.csproj`, target framework, parse-context
 identity, source globs, and one or more test-suite IDs. Optional `languageVersion`, `nullable`, and
-`defineConstants` fields make the strict semantic context explicit; v1 defaults to C# `14.0`, nullable `enable`,
+`defineConstants` fields make the strict semantic context explicit; v1 defaults to C# `14.0`, nullable `disable`
+(the plain SDK default when `<Nullable>` is absent),
 and no user symbols. Each suite declares a repository-relative project or
 solution, runner, framework, configuration, and the expected test-assembly members that must be visible in TRX.
 Expected-member names are unique case-insensitively at runtime (JSON Schema `uniqueItems` additionally catches exact
@@ -66,12 +67,19 @@ matching exclusion is published as `CONFIGURED_EXCLUSION` with its required reas
 that path and reason into report and evaluation fingerprints.
 
 The public command now uses this captured configuration to enumerate canonical mutation and evaluation-unit IDs
-for supported, self-contained net10.0 projects. Version 1 refuses conditional project evaluation,
+for supported, self-contained net10.0 projects. Version 1 uses an allowlist for project properties/items and refuses
+unmodelled project semantics, conditional project evaluation,
 `ProjectReference`/`PackageReference` resolution, explicit imports, inherited `Directory.Build.props`/`.targets`,
-non-plain SDKs, Compile Remove/Update transforms, unresolved semantic diagnostics, and non-Git explicit-input
+build controls above the repository root, non-plain SDKs, Compile Remove/Update transforms, unresolved semantic
+diagnostics, and non-Git explicit-input
 enumeration rather than silently borrowing ambient MSBuild state. The suite configuration supplies `DEBUG`/`TRACE`
-semantics; any other conditional symbols must be listed in `defineConstants`. Plain SDK library, console/WinExe,
-and deterministic implicit-using contexts are supported against the installed net10.0 reference pack, whose
-content identity is bound into the evaluation fingerprint. Supported checks end
+semantics unless the project replaces rather than extends `DefineConstants`; user symbols must be listed in
+`defineConstants`, and the project must either declare them literally or append them through an exact
+`$(DefineConstants);...` prefix. Files with preprocessor directives expand to full-project scope so declaration
+planning and semantic enumeration cannot disagree about inactive text. Plain SDK library, console/WinExe, and
+deterministic implicit-using contexts are supported against the exact reference pack declared by the SDK resolved
+inside the frozen consumer snapshot; the SDK, pack version, and pack content identity are bound into the evaluation
+fingerprint. Strict child execution clears
+the semantic MSBuild property environment named by this contract. Supported checks end
 at `EXECUTION_NOT_IMPLEMENTED` until baseline and mutant execution is connected by issue #3; no test process is
 launched at this boundary.
