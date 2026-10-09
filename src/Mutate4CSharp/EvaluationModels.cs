@@ -30,7 +30,7 @@ internal sealed record EvaluationEvidence(string Kind, string Summary,
     private static string Bound(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return value.Length <= MaxDiagnosticLength ? value : value[..MaxDiagnosticLength];
+        return EvaluationTextBounds.Prefix(value, MaxDiagnosticLength);
     }
 }
 internal sealed record EvaluationReason
@@ -49,7 +49,32 @@ internal sealed record EvaluationReason
     public static string BoundMessage(string message)
     {
         ArgumentNullException.ThrowIfNull(message);
-        return message.Length <= MaxMessageLength ? message : message[..MaxMessageLength];
+        return EvaluationTextBounds.Prefix(message, MaxMessageLength);
+    }
+}
+
+internal static class EvaluationTextBounds
+{
+    public static string Prefix(string value, int maximum)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        ArgumentOutOfRangeException.ThrowIfNegative(maximum);
+        if (value.Length <= maximum) return value;
+        var length = maximum;
+        if (length > 0 && char.IsHighSurrogate(value[length - 1]) &&
+            char.IsLowSurrogate(value[length])) length--;
+        return value[..length];
+    }
+
+    public static string Suffix(string value, int maximum)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        ArgumentOutOfRangeException.ThrowIfNegative(maximum);
+        if (value.Length <= maximum) return value;
+        var start = value.Length - maximum;
+        if (start > 0 && char.IsLowSurrogate(value[start]) &&
+            char.IsHighSurrogate(value[start - 1])) start++;
+        return value[start..];
     }
 }
 internal sealed record EvaluationUnitResult(string UnitId, string EvaluationUnitId,

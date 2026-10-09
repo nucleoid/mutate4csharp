@@ -1164,6 +1164,8 @@ internal static class ExecutionEnvironment
     private static string Tail(params string[] values)
     {
         var lines = string.Join('\n', values).Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        return EvaluationReason.BoundMessage(string.Join(" | ", lines.TakeLast(4)).Trim());
+        const string prefix = "Dependency preparation failed: ";
+        return EvaluationTextBounds.Suffix(string.Join(" | ", lines.TakeLast(4)).Trim(),
+            EvaluationReason.MaxMessageLength - prefix.Length);
     }
 }
