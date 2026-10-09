@@ -21,20 +21,33 @@ internal static class ProjectOwnershipResolver
             }
             if (candidates.Length > 1)
             {
-                var candidateNames = candidates.Select(item => item.Project).OrderBy(item => item,
-                    StringComparer.Ordinal).ToArray();
-                var shown = candidateNames.Take(20).ToArray();
-                var remainder = candidateNames.Length > shown.Length ?
-                    $", +{candidateNames.Length - shown.Length} more" : string.Empty;
-                reasons.Add(new("AMBIGUOUS_PROJECT_OWNERSHIP",
-                    $"{input} is owned by multiple configured projects: {string.Join(", ", shown)}{remainder}. Use non-overlapping project roots."));
-                continue;
+                var commonExplicitPatterns = candidates.Select(candidate => candidate.SharedSources
+                        .Where(pattern => GlobMatches(input, pattern)).ToHashSet(StringComparer.Ordinal))
+                    .Aggregate((left, right) =>
+                    {
+                        left.IntersectWith(right);
+                        return left;
+                    });
+                if (commonExplicitPatterns.Count == 0)
+                {
+                    var candidateNames = candidates.Select(item => item.Project).OrderBy(item => item,
+                        StringComparer.Ordinal).ToArray();
+                    var shown = candidateNames.Take(20).ToArray();
+                    var remainder = candidateNames.Length > shown.Length ?
+                        $", +{candidateNames.Length - shown.Length} more" : string.Empty;
+                    reasons.Add(new("AMBIGUOUS_PROJECT_OWNERSHIP",
+                        $"{input} is owned by multiple configured projects: {string.Join(", ", shown)}{remainder}. " +
+                        "Declare one identical sharedSources pattern in every intended linked-file context."));
+                    continue;
+                }
             }
-            var candidate = candidates[0];
-            if (!units.TryGetValue(candidate.Project, out var unit))
-                unit = (candidate, new(StringComparer.Ordinal));
-            unit.Inputs.Add(input);
-            units[candidate.Project] = unit;
+            foreach (var candidate in candidates)
+            {
+                if (!units.TryGetValue(candidate.Project, out var unit))
+                    unit = (candidate, new(StringComparer.Ordinal));
+                unit.Inputs.Add(input);
+                units[candidate.Project] = unit;
+            }
         }
         return new(units.Values.OrderBy(unit => unit.Project.Project, StringComparer.Ordinal)
                 .Select(unit => new ProjectScopeUnit(unit.Project.Project, unit.Project.Tests,

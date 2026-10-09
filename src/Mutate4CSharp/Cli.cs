@@ -22,8 +22,9 @@ Strict evaluation:
   --mutation-id ID          Diagnostic exact-ID rerun (repeatable; requires --plan-fingerprint)
   --plan-fingerprint ID     Refuse a stale exact-ID rerun plan
 
-  PREVIEW: check cannot produce PASS or FAIL before canonical enumeration is connected.
-  When capture succeeds, check returns exit 4 INCOMPLETE/ENUMERATION_NOT_IMPLEMENTED.
+  PREVIEW: check cannot produce PASS or FAIL before mutation execution is connected.
+  Supported Git/configuration contexts enumerate a bounded plan, then return exit 4
+  INCOMPLETE/EXECUTION_NOT_IMPLEMENTED without running tests or mutants.
   Usage, snapshot refusal, and exception paths can stop earlier and may not publish a report.
 
 Modes:

@@ -140,7 +140,8 @@ public sealed class ToolPackagingIntegrationTests : IDisposable
         Assert.Equal(0, exampleTestsBuild.ExitCode);
 
         var source = Path.Combine(consumer, "src", "Example", "Flag.cs");
-        File.AppendAllText(source, "\n");
+        File.WriteAllText(source, File.ReadAllText(source).Replace(
+            "configured && true", "configured || false", StringComparison.Ordinal));
         var sourceBefore = File.ReadAllBytes(source);
         var indexBefore = (await RunAsync(consumer, "git", "diff", "--cached", "--binary")).StandardOutput;
         var statusBefore = (await RunAsync(consumer, "git", "status", "--short", "--untracked-files=all")).StandardOutput;
@@ -155,7 +156,10 @@ public sealed class ToolPackagingIntegrationTests : IDisposable
         using var parsed = JsonDocument.Parse(File.ReadAllBytes(report));
         Assert.Equal("INCOMPLETE", parsed.RootElement.GetProperty("outcome").GetString());
         Assert.Contains(parsed.RootElement.GetProperty("reasons").EnumerateArray(),
-            reason => reason.GetProperty("code").GetString() == "ENUMERATION_NOT_IMPLEMENTED");
+            reason => reason.GetProperty("code").GetString() == "EXECUTION_NOT_IMPLEMENTED");
+        var enumerated = parsed.RootElement.GetProperty("counts").GetProperty("enumerated");
+        Assert.Equal(JsonValueKind.Number, enumerated.ValueKind);
+        Assert.True(enumerated.GetInt32() > 0);
         Assert.Equal(sourceBefore, File.ReadAllBytes(source));
         Assert.Equal(indexBefore, (await RunAsync(consumer, "git", "diff", "--cached", "--binary")).StandardOutput);
         Assert.Equal(statusBefore, (await RunAsync(consumer, "git", "status", "--short", "--untracked-files=all")).StandardOutput);

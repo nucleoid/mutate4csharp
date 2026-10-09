@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace Mutate4CSharp;
 
 internal sealed record ConfiguredProject(string Project, IReadOnlyList<string> Tests,
-    IReadOnlyList<string> Sources);
+    IReadOnlyList<string> Sources, IReadOnlyList<string> SharedSources);
 internal sealed record ConfiguredExclusion(string Path, string Reason);
 
 internal sealed record ScopeConfiguration(
@@ -17,7 +17,8 @@ internal sealed record ScopeConfiguration(
         bool IncludeTests = false, List<ProjectDocument>? Projects = null,
         List<TestSuiteDocument>? TestSuites = null);
     private sealed record ProjectDocument(string? Project = null, List<string>? Tests = null,
-        List<string>? Sources = null, List<string>? TestSuites = null);
+        List<string>? Sources = null, List<string>? SharedSources = null,
+        List<string>? TestSuites = null);
     private sealed record TestSuiteDocument(string? Id = null, string? Path = null);
 
     public static ScopeConfiguration Load(string root)
@@ -48,7 +49,7 @@ internal sealed record ScopeConfiguration(
                 return new(fullRoot, false, false, strict.Projects.Select(project => new ConfiguredProject(
                     project.Project, project.TestSuites.Select(id => strictSuitePaths[id])
                         .Distinct(StringComparer.Ordinal).OrderBy(value => value,
-                            StringComparer.Ordinal).ToArray(), project.Sources)).OrderBy(item => item.Project,
+                            StringComparer.Ordinal).ToArray(), project.Sources, project.SharedSources)).OrderBy(item => item.Project,
                             StringComparer.Ordinal).ToArray(), strict.Exclusions.Select(item =>
                                 new ConfiguredExclusion(item.Path, item.Reason)).ToArray());
             }
@@ -89,7 +90,13 @@ internal sealed record ScopeConfiguration(
                 throw new ArgumentException($"Configured tests for {project} must be project or solution paths.");
             var sources = (item.Sources ?? []).Select(value => Normalize(value, "sources"))
                 .OrderBy(value => value, StringComparer.Ordinal).ToArray();
-            projects.Add(new(project, tests.OrderBy(value => value, StringComparer.Ordinal).ToArray(), sources));
+            var sharedSources = (item.SharedSources ?? []).Select(value => Normalize(value, "sharedSources"))
+                .OrderBy(value => value, StringComparer.Ordinal).ToArray();
+            if (sharedSources.Any(shared => !sources.Contains(shared, StringComparer.Ordinal)))
+                throw new ArgumentException(
+                    $"Configured sharedSources for {project} must also appear in sources.");
+            projects.Add(new(project, tests.OrderBy(value => value, StringComparer.Ordinal).ToArray(), sources,
+                sharedSources));
         }
         var duplicate = projects.GroupBy(item => item.Project, StringComparer.Ordinal)
             .FirstOrDefault(group => group.Count() > 1);

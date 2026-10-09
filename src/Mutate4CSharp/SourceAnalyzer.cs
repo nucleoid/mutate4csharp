@@ -18,8 +18,19 @@ internal static class SourceAnalyzer
         var compilation = CreateCompilation(tree, projectDirectory);
         var model = compilation.GetSemanticModel(tree, ignoreAccessibility: true);
         var scopes = DiscoverScopes(root);
-        var sites = DiscoverSites(root, tree, model, scopes);
+        var sites = DiscoverSitesCore(root, tree, model, scopes);
         return new(source, original, tree, scopes, sites);
+    }
+
+    internal static IReadOnlyList<MutationSite> DiscoverStrictSites(SyntaxTree tree,
+        SemanticModel model)
+    {
+        ArgumentNullException.ThrowIfNull(tree);
+        ArgumentNullException.ThrowIfNull(model);
+        if (!ReferenceEquals(model.SyntaxTree, tree))
+            throw new EvaluationContractException("Strict semantic model does not belong to the source tree.");
+        var root = tree.GetRoot();
+        return DiscoverSitesCore(root, tree, model, DiscoverScopes(root));
     }
 
     private static CSharpCompilation CreateCompilation(SyntaxTree target, string? projectDirectory)
@@ -92,7 +103,8 @@ internal static class SourceAnalyzer
         _ => "accessor"
     };
 
-    private static IReadOnlyList<MutationSite> DiscoverSites(SyntaxNode root, SyntaxTree tree, SemanticModel model, IReadOnlyList<ScopeInfo> scopes)
+    private static IReadOnlyList<MutationSite> DiscoverSitesCore(SyntaxNode root, SyntaxTree tree,
+        SemanticModel model, IReadOnlyList<ScopeInfo> scopes)
     {
         var pending = new List<(TextSpan Span, string Replacement, string Description, string OperatorId)>();
         foreach (var literal in root.DescendantNodes().OfType<LiteralExpressionSyntax>())

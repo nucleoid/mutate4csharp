@@ -17,6 +17,8 @@ public sealed class CheckConfigurationTests : IDisposable
 
         Assert.Equal("1", configuration.SchemaVersion);
         Assert.Equal("app", Assert.Single(configuration.Projects).Id);
+        Assert.Null(Assert.Single(configuration.Projects).Nullable);
+        Assert.Null(Assert.Single(configuration.Projects).DefineConstants);
         Assert.Equal("unit", Assert.Single(configuration.TestSuites).Id);
         Assert.Equal("generated code", Assert.Single(configuration.Exclusions).Reason);
         Assert.Equal(new EvaluationPolicy(2, 25, 90, 30, 300, true, 2), configuration.Policy);
@@ -52,6 +54,22 @@ public sealed class CheckConfigurationTests : IDisposable
     }
 
     [Theory]
+    [InlineData("net10.0-windows")]
+    [InlineData("net10.0-linux")]
+    public void LoadsSchemaValidPlatformFrameworksForEnumerationTimeRefusal(string framework)
+    {
+        var project = ValidConfiguration.Replace(
+            "\"targetFramework\": \"net10.0\"", $"\"targetFramework\": \"{framework}\"",
+            StringComparison.Ordinal);
+        Assert.Equal(framework, Assert.Single(Load(project).Projects).TargetFramework);
+
+        var suite = ValidConfiguration.Replace(
+            "\"framework\": \"net10.0\"", $"\"framework\": \"{framework}\"",
+            StringComparison.Ordinal);
+        Assert.Equal(framework, Assert.Single(Load(suite).TestSuites).Framework);
+    }
+
+    [Theory]
     [InlineData("../outside.csproj")]
     [InlineData("/outside.csproj")]
     [InlineData("C:/outside.csproj")]
@@ -65,7 +83,7 @@ public sealed class CheckConfigurationTests : IDisposable
     }
 
     [Fact]
-    public void RejectsDuplicateIdsAndAmbiguousSourceMembership()
+    public void RejectsDuplicateIdsAndLoadsOverlappingSourcePatternsForOwnershipValidation()
     {
         var duplicate = ValidConfiguration.Replace("\"projects\": [", "\"projects\": [" + Project + ",", StringComparison.Ordinal);
         Assert.Contains("Duplicate", Assert.Throws<ArgumentException>(() => Load(duplicate)).Message,
@@ -74,8 +92,22 @@ public sealed class CheckConfigurationTests : IDisposable
         var ambiguous = ValidConfiguration.Replace("\"projects\": [", "\"projects\": [" +
             Project.Replace("\"id\": \"app\"", "\"id\": \"other\"", StringComparison.Ordinal)
                 .Replace("src/App/App.csproj", "src/Other/Other.csproj", StringComparison.Ordinal) + ",", StringComparison.Ordinal);
-        Assert.Contains("ambiguous", Assert.Throws<ArgumentException>(() => Load(ambiguous)).Message,
-            StringComparison.OrdinalIgnoreCase);
+        var shared = Load(ambiguous);
+        Assert.Equal(2, shared.Projects.Count(project =>
+            project.Sources.Contains("src/App/**/*.cs", StringComparer.Ordinal)));
+    }
+
+    [Fact]
+    public void SharedSourcePatternsMustAlsoBeCompileSourcePatterns()
+    {
+        var invalid = ValidConfiguration.Replace(
+            "\"sources\": [\"src/App/**/*.cs\"]",
+            "\"sources\": [\"src/App/**/*.cs\"], \"sharedSources\": [\"shared/**/*.cs\"]",
+            StringComparison.Ordinal);
+
+        var error = Assert.Throws<ArgumentException>(() => Load(invalid));
+
+        Assert.Contains("sharedSources", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]

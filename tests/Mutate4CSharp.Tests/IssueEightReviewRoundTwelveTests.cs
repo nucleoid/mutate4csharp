@@ -51,7 +51,10 @@ public sealed class IssueEightReviewRoundTwelveTests : IDisposable
         await RunRequiredAsync(consumer, "git", "add", ".");
         await RunRequiredAsync(consumer, "git", "commit", "--quiet", "-m", "fixture");
         var head = (await RunAsync(consumer, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
-        await File.AppendAllTextAsync(Path.Combine(consumer, "src", "Example", "Flag.cs"), "\n",
+        var exampleSource = Path.Combine(consumer, "src", "Example", "Flag.cs");
+        var exampleText = await File.ReadAllTextAsync(exampleSource, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(exampleSource, exampleText.Replace(
+            "configured && true", "configured || false", StringComparison.Ordinal),
             TestContext.Current.CancellationToken);
 
         var ancestorBuildMarker = Path.Combine(_root, "ancestor-build-executed");
@@ -121,6 +124,8 @@ public sealed class IssueEightReviewRoundTwelveTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(hostileXml, "__init__.py"),
             $"from pathlib import Path\nPath({PythonLiteral(hostilePythonMarker)}).write_text('xml')\nraise RuntimeError('hostile xml imported')\n",
             TestContext.Current.CancellationToken);
+        await File.AppendAllTextAsync(Path.Combine(consumer, ".git", "info", "exclude"),
+            "\n/json.py\n/xml/\n", TestContext.Current.CancellationToken);
         var hostileBin = Path.Combine(_root, "hostile-bin");
         var pathDotnetMarker = Path.Combine(_root, "hostile-path-dotnet-executed");
         Directory.CreateDirectory(hostileBin);

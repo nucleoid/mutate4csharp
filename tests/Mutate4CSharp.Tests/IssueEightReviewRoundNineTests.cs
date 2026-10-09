@@ -67,12 +67,16 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
     }
 
     [Theory]
-    [InlineData("mismatched-exit", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":3,\"incompleteConditions\":[{\"code\":\"ENUMERATION_NOT_IMPLEMENTED\"}]}", 4, "exitCode does not match")]
-    [InlineData("wrong-outcome", "{\"outcome\":\"COMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"ENUMERATION_NOT_IMPLEMENTED\"}]}", 4, "requires exit 4 with outcome INCOMPLETE")]
-    [InlineData("missing-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[]}", 4, "lacks ENUMERATION_NOT_IMPLEMENTED")]
+    [InlineData("mismatched-exit", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":3,\"incompleteConditions\":[{\"code\":\"EXECUTION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":0}}", 4, "exitCode does not match")]
+    [InlineData("wrong-outcome", "{\"outcome\":\"COMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"EXECUTION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":0}}", 4, "requires exit 4 with outcome INCOMPLETE")]
+    [InlineData("missing-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[],\"counts\":{\"enumerated\":0}}", 4, "lacks valid incomplete conditions")]
     [InlineData("malformed", "{", 4, "report validation failed")]
     [InlineData("non-object", "[]", 4, "report root must be an object")]
-    [InlineData("zero-with-report", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":0,\"incompleteConditions\":[{\"code\":\"ENUMERATION_NOT_IMPLEMENTED\"}]}", 0, "requires exit 4 with outcome INCOMPLETE")]
+    [InlineData("unknown-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"NOT_A_GATE_CONDITION\"}],\"counts\":{\"enumerated\":null}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
+    [InlineData("retired-enumeration", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"ENUMERATION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":null}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
+    [InlineData("sdk-unavailable", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"ENUMERATION_SDK_UNAVAILABLE\"}],\"counts\":{\"enumerated\":null}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
+    [InlineData("execution-with-foreign-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"EXECUTION_NOT_IMPLEMENTED\"},{\"code\":\"SNAPSHOT_DIVERGED\"}],\"counts\":{\"enumerated\":1}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
+    [InlineData("zero-with-report", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":0,\"incompleteConditions\":[{\"code\":\"EXECUTION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":0}}", 0, "requires exit 4 with outcome INCOMPLETE")]
     public async Task GateReportBindingNegativesRefuseExactly(string name, string json, int processExit, string diagnostic)
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "The shipped workflow is a Bash integration.");
@@ -86,6 +90,36 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
             head, head, report, "no-state");
         Assert.Equal(OrchestrationRefusal, result.ExitCode);
         Assert.Contains(diagnostic, result.Diagnostic, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("ENUMERATION_REFERENCE_UNSUPPORTED")]
+    [InlineData("ENUMERATION_LIMIT_EXCEEDED")]
+    [InlineData("ENUMERATION_ENCODING_UNSUPPORTED")]
+    [InlineData("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED")]
+    [InlineData("UNSUPPORTED_CHANGED_INPUT")]
+    [InlineData("UNSUPPORTED_SYNTAX")]
+    [InlineData("NO_SUPPORTED_DECLARATION")]
+    [InlineData("UNMAPPED_PROJECT")]
+    [InlineData("AMBIGUOUS_PROJECT_OWNERSHIP")]
+    [InlineData("CONFIGURED_PATH_MISSING")]
+    [InlineData("EXACT_ID_RERUN_UNAVAILABLE")]
+    [InlineData("TARGET_SELECTION_INVALID")]
+    public async Task GateAcceptsValidatedSemanticAndScopeRefusalsAsIncompleteNotIntegrityFailure(string code)
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "The shipped workflow is a Bash integration.");
+        var target = Path.Combine(_root, "semantic-refusal-target-" + code);
+        await CreateRepositoryAsync(target);
+        var head = (await RunAsync(target, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
+        var fixture = await CreateToolFixtureAsync(
+            $"{{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{{\"code\":\"{code}\"}}],\"counts\":{{\"enumerated\":null}},\"evidence\":[]}}", 4);
+
+        var result = await RunAsync(target, "bash", Path.Combine(RepositoryRoot, "scripts", "agent-gate.sh"),
+            "gate", target, fixture.Receipt, fixture.PackageSha, fixture.PayloadSha, fixture.ToolCommit,
+            head, head, Path.Combine(_root, "semantic-refusal-" + code + ".json"), "no-state");
+
+        Assert.Equal(4, result.ExitCode);
+        Assert.DoesNotContain("agent-gate:", result.Diagnostic, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -145,7 +179,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
         await CreateRepositoryAsync(target);
         var head = (await RunAsync(target, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
         var fixture = await CreateToolFixtureAsync(
-            "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"ENUMERATION_NOT_IMPLEMENTED\"}]}", 4);
+            "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"EXECUTION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":0}}", 4);
 
         var result = await RunAsync(target, "bash", Path.Combine(RepositoryRoot, "scripts", "agent-gate.sh"),
             "gate", target, fixture.Receipt, fixture.PackageSha, fixture.PayloadSha, fixture.ToolCommit,

@@ -51,12 +51,176 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         Assert.Contains($"Run ID: {runId}", output.ToString(), StringComparison.Ordinal);
         Assert.Equal("INCOMPLETE", report.RootElement.GetProperty("outcome").GetString());
         Assert.Contains(report.RootElement.GetProperty("reasons").EnumerateArray(),
+            reason => reason.GetProperty("code").GetString() is
+                "ENUMERATION_SCOPE_INCOMPLETE" or "ENUMERATION_CONTEXT_UNSUPPORTED" or
+                "EXECUTION_NOT_IMPLEMENTED");
+        Assert.DoesNotContain(report.RootElement.GetProperty("reasons").EnumerateArray(),
             reason => reason.GetProperty("code").GetString() == "ENUMERATION_NOT_IMPLEMENTED");
         var snapshot = report.RootElement.GetProperty("evidence").EnumerateArray()
             .Single(item => item.GetProperty("kind").GetString() == "INPUT_SNAPSHOT");
         Assert.Contains(snapshot.GetProperty("diagnostics").EnumerateArray(),
             item => item.GetString()?.StartsWith("captureId=", StringComparison.Ordinal) == true && item.GetString()!.Length == 74);
         Assert.NotEmpty(report.RootElement.GetProperty("evidence").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task SupportedCapturedScopePublishesBoundEnumerationBeforeExecutionIntegration()
+    {
+        using var repository = StrictEnumerationRepository("public int Value() => 0;");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "baseline");
+        repository.WriteText("src/App/Flag.cs", "public sealed class Flag { public int Value() => 1; }\n");
+        var reportPath = Path.Combine(_directory, "enumerated.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
+        EvaluationRunResult result;
+        try
+        {
+            result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], reportPath, "enumerated-run"), CancellationToken.None);
+        }
+        finally { Environment.CurrentDirectory = previous; }
+
+        Assert.Equal(4, result.Report.ExitCode);
+        Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+        Assert.Equal(1, result.Report.Counts.Enumerated);
+        var unit = Assert.Single(result.Report.Units);
+        Assert.Equal(UnitDisposition.Omitted, unit.Disposition);
+        Assert.Equal(0, result.Report.Counts.Executed);
+        Assert.Equal(0, result.Report.Counts.Errors);
+        Assert.Equal(1, result.Report.Counts.Omitted);
+        Assert.True(MutationIdentity.IsMutationId(unit.UnitId));
+        Assert.True(EvaluationUnitIdentity.IsEvaluationUnitId(unit.EvaluationUnitId));
+        Assert.Contains(result.Report.Reasons, reason => reason.Code == "EXECUTION_NOT_IMPLEMENTED");
+        Assert.DoesNotContain(result.Report.Reasons, reason => reason.Code == "ENUMERATION_NOT_IMPLEMENTED");
+        Assert.Contains(result.Report.Evidence, item => item.Kind == "MUTATION_PLAN" &&
+            item.Diagnostics?.Any(value => value.StartsWith("planFingerprint=sha256:",
+                StringComparison.Ordinal)) == true);
+    }
+
+    [Fact]
+    public async Task ChangedNonProductionInputRemainsValidatedScopeIncompleteRatherThanIntegrityFailure()
+    {
+        using var repository = StrictEnumerationRepository("public int Value() => 0;");
+        repository.WriteText("README.md", "baseline\n");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "baseline");
+        repository.WriteText("src/App/Flag.cs", "public sealed class Flag { public int Value() => 1; }\n");
+        repository.WriteText("README.md", "changed\n");
+        var reportPath = Path.Combine(_directory, "scope-incomplete.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
+        EvaluationRunResult result;
+        try
+        {
+            result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], reportPath, "scope-incomplete-run"), CancellationToken.None);
+        }
+        finally { Environment.CurrentDirectory = previous; }
+
+        Assert.Equal(4, result.Report.ExitCode);
+        Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+        Assert.Null(result.Report.Counts.Enumerated);
+        Assert.Contains(result.Report.IncompleteConditions,
+            reason => reason.Code == "ENUMERATION_SCOPE_INCOMPLETE");
+        Assert.Contains(result.Report.IncompleteConditions,
+            reason => reason.Code == "UNSUPPORTED_CHANGED_INPUT");
+    }
+
+    [Fact]
+    public async Task OriginalWorkspaceDriftAfterEnumerationInvalidatesTheBoundPlan()
+    {
+        using var repository = StrictEnumerationRepository("public int Value() => 0;");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "baseline");
+        repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public int Value() => 1; }\n");
+        var validationPass = 0;
+        var captureOptions = SnapshotCaptureOptions.Default with
+        {
+            Hook = (stage, relativePath) =>
+            {
+                if (stage != SnapshotCaptureStage.BeforeOriginalFileHashed ||
+                    relativePath != "src/App/Flag.cs" || ++validationPass != 2) return;
+                repository.WriteText("src/App/Flag.cs",
+                    "public sealed class Flag { public int Value() => 2; }\n");
+            }
+        };
+        var reportPath = Path.Combine(_directory, "post-enumeration-drift.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
+        EvaluationRunResult result;
+        try
+        {
+            result = await new EvaluationCoordinator(captureOptions).RunAsync(
+                new(false, "HEAD", [], reportPath, "post-enumeration-drift"), CancellationToken.None);
+        }
+        finally { Environment.CurrentDirectory = previous; }
+
+        Assert.Equal(4, result.Report.ExitCode);
+        Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+        Assert.Null(result.SnapshotId);
+        Assert.Null(result.Report.Counts.Enumerated);
+        Assert.Empty(result.Report.Units);
+        Assert.Contains(result.Report.Reasons, reason => reason.Code == "SNAPSHOT_DIVERGED");
+        Assert.DoesNotContain(result.Report.Evidence, item => item.Kind == "MUTATION_PLAN");
+    }
+
+    [Fact]
+    public async Task CompleteZeroSiteEnumerationIsNotReportedAsUnknown()
+    {
+        using var repository = StrictEnumerationRepository("public int Value() => 2;");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "baseline");
+        repository.WriteText("src/App/Flag.cs", "public sealed class Flag { public int Value() => 3; }\n");
+        var reportPath = Path.Combine(_directory, "zero.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
+        EvaluationRunResult result;
+        try
+        {
+            result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], reportPath, "zero-run"), CancellationToken.None);
+        }
+        finally { Environment.CurrentDirectory = previous; }
+
+        Assert.Equal(0, result.Report.Counts.Enumerated);
+        Assert.Empty(result.Report.Units);
+        Assert.Contains(result.Report.Reasons, reason => reason.Code == "EXECUTION_NOT_IMPLEMENTED");
+        Assert.DoesNotContain(result.Report.Reasons, reason => reason.Code == "ENUMERATION_INCOMPLETE");
+    }
+
+    [Fact]
+    public async Task ExactIdRequestFreshlyRebindsTheCurrentPlanAsDiagnosticOnly()
+    {
+        using var repository = StrictEnumerationRepository("public int Value() => 0;");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "baseline");
+        repository.WriteText("src/App/Flag.cs", "public sealed class Flag { public int Value() => 1; }\n");
+        var firstReport = Path.Combine(_directory, "full-plan.json");
+        var targetedReport = Path.Combine(_directory, "targeted-plan.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
+        try
+        {
+            var coordinator = new EvaluationCoordinator();
+            var full = await coordinator.RunAsync(
+                new(false, "HEAD", [], firstReport, "full-plan"), CancellationToken.None);
+            var mutation = Assert.Single(full.Report.Units).UnitId;
+            var planFingerprint = Assert.Single(full.Report.Evidence,
+                    item => item.Kind == "MUTATION_PLAN").Diagnostics!
+                .Single(value => value.StartsWith("planFingerprint=", StringComparison.Ordinal))[16..];
+
+            var targeted = await coordinator.RunAsync(new(false, "HEAD", [], targetedReport,
+                "targeted-plan", MutationIds: [mutation], PlanFingerprint: planFingerprint),
+                CancellationToken.None);
+
+            Assert.True(targeted.Report.DiagnosticPartial);
+            Assert.Contains(targeted.Report.IncompleteConditions,
+                reason => reason.Code == MutationSelection.TargetedDiagnosticCode);
+            Assert.Contains(targeted.Report.Evidence, item => item.Kind == "EXACT_ID_REQUEST");
+        }
+        finally { Environment.CurrentDirectory = previous; }
     }
 
     [Fact]
@@ -604,6 +768,47 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         var code = await Program.Main(["check", "--base", "HEAD", "--report", path]);
 
         Assert.Equal(1, code);
+    }
+
+    private static SnapshotTestRepository StrictEnumerationRepository(string member)
+    {
+        var repository = new SnapshotTestRepository();
+        repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+            </Project>
+            """);
+        repository.WriteText("src/App/Flag.cs", $"public sealed class Flag {{ {member} }}\n");
+        repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+            </Project>
+            """);
+        repository.WriteText("mutate4csharp.json", """
+            {
+              "version": 1,
+              "projects": [{
+                "id": "app",
+                "project": "src/App/App.csproj",
+                "targetFramework": "net10.0",
+                "parseContext": "net10-csharp14",
+                "languageVersion": "14.0",
+                "nullable": "enable",
+                "defineConstants": [],
+                "sources": ["src/App/**/*.cs"],
+                "testSuites": ["unit"]
+              }],
+              "testSuites": [{
+                "id": "unit",
+                "path": "tests/App.Tests/App.Tests.csproj",
+                "runner": "vstest",
+                "framework": "net10.0",
+                "configuration": "Release",
+                "expectedMembers": ["App.Tests.dll"]
+              }]
+            }
+            """);
+        return repository;
     }
 
     public void Dispose() { try { Directory.Delete(_directory, true); } catch { } }

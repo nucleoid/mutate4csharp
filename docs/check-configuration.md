@@ -8,10 +8,16 @@ Strict repository execution is described by `mutate4csharp.json` at the captured
 machine-readable contract is [`contracts/check-config-v1.schema.json`](contracts/check-config-v1.schema.json),
 and the repository root contains a working example. Unknown properties, duplicate JSON properties or IDs,
 unsupported versions/runners, empty mappings, rooted or escaping paths, duplicate mappings, conflicting suite
-aliases, and ambiguous source membership are rejected before any test process is launched.
+aliases, and accidental ambiguous source membership are rejected before any test process is launched. A linked
+source may intentionally belong to multiple project contexts only when every owner declares the same exact
+path or glob pattern in both `sources` and `sharedSources`. Broad shared globs are an explicit opt-in to evaluate
+every matching file in every declaring context; overlaps without one identical shared pattern remain ambiguous,
+including in plan mode.
 
 Each production project declares a stable ID, repository-relative `.csproj`, target framework, parse-context
-identity, source globs, and one or more test-suite IDs. Each suite declares a repository-relative project or
+identity, source globs, and one or more test-suite IDs. Optional `languageVersion` defaults to C# `14.0`.
+Optional `nullable` and `defineConstants` values assert the semantic context; when omitted, enumeration derives
+them from the frozen project, and when present a mismatch is refused. Each suite declares a repository-relative project or
 solution, runner, framework, configuration, and the expected test-assembly members that must be visible in TRX.
 Expected-member names are unique case-insensitively at runtime (JSON Schema `uniqueItems` additionally catches exact
 duplicates). Alias paths are execution-equivalent after converting backslashes to forward slashes and applying invariant
@@ -60,6 +66,33 @@ Configured `exclusions` are applied during strict scope planning before project 
 matching exclusion is published as `CONFIGURED_EXCLUSION` with its required reason; the canonical scope plan binds
 that path and reason into report and evaluation fingerprints.
 
-The public command currently validates and fingerprints this configuration but still ends at
-`ENUMERATION_NOT_IMPLEMENTED`, because canonical mutation enumeration is intentionally integrated later. No
-baseline is launched before that prerequisite exists.
+The public command now uses this captured configuration to enumerate canonical mutation and evaluation-unit IDs
+for supported, self-contained projects targeting exact `net10.0`. The version-1 configuration schema continues to
+accept platform-qualified TFMs for planning compatibility, but semantic enumeration refuses them until their
+additional compiler symbols and reference contracts are modelled. Version 1 uses an allowlist for project properties/items and refuses
+unmodelled project semantics, conditional project evaluation,
+`ProjectReference`/`PackageReference` resolution, explicit imports, inherited `Directory.Build.props`/`.targets`,
+captured `Directory.Packages.props`/`Directory.Build.rsp`/`MSBuild.rsp`,
+build controls above the repository root, non-plain SDKs, Compile Remove/Update transforms, unresolved semantic
+diagnostics, and non-Git explicit-input
+enumeration rather than silently borrowing ambient MSBuild state. Project property names must use their canonical
+SDK casing; case variants are refused rather than risk modelling different semantics from case-insensitive MSBuild.
+Enumeration is bounded at 10,000 evaluation units; exceeding it is an explicit incomplete refusal with an unknown
+count, not a truncated plan. Production compile inputs classified as tests by the same path and mapped-project
+rules used in scope planning remain compilation inputs but are never mutation targets. Non-UTF-8 source text and
+duplicate explicit/default Compile inputs are explicit incomplete limitations. Capture-policy or ignored inputs
+that could fall into a production Compile inventory are likewise refused unless they are one of that project's
+own SDK-default hidden/bin/obj exclusions. SDK semantics supply the upper-case configuration
+symbol (`DEBUG`, `RELEASE`, or the configured equivalent) unless `DisableImplicitConfigurationDefines` is true;
+`TRACE` is inherited unless a bare `DefineConstants` value replaces it or `DisableDiagnosticTracing` is true.
+User symbols are derived from captured project bytes; when the optional `defineConstants` assertion is supplied,
+it must match the project symbols, which must be declared literally or appended through an exact
+`$(DefineConstants);...` prefix. Files with preprocessor directives expand to full-project scope so declaration
+planning and semantic enumeration cannot disagree about inactive text. Plain SDK library, console/WinExe, and
+deterministic implicit-using contexts are supported against the exact reference pack declared by the SDK resolved
+inside the frozen consumer snapshot; the SDK, pack version, and pack content identity are bound into the evaluation
+fingerprint. Every project and source read is checked against the snapshot manifest length and SHA-256 before
+semantic analysis, so later capture-directory mutation cannot be bound as the original snapshot. Strict child execution clears
+the semantic MSBuild property environment named by this contract. Supported checks end
+at `EXECUTION_NOT_IMPLEMENTED` until baseline and mutant execution is connected by issue #3; no test process is
+launched at this boundary.

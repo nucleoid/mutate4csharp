@@ -195,18 +195,62 @@ try:
     if process_exit != 4 or report.get("outcome") != "INCOMPLETE":
         raise ValueError("current gate requires exit 4 with outcome INCOMPLETE")
     conditions = report.get("incompleteConditions")
-    if not isinstance(conditions, list) or not any(
-        isinstance(item, dict) and item.get("code") == "ENUMERATION_NOT_IMPLEMENTED"
+    if not isinstance(conditions, list) or not conditions or not all(
+        isinstance(item, dict) and isinstance(item.get("code"), str)
         for item in conditions
     ):
-        raise ValueError("report lacks ENUMERATION_NOT_IMPLEMENTED incomplete condition")
-    if any(isinstance(item, dict) and item.get("code") == "SIDECAR_WRITE_FAILED" for item in conditions):
+        raise ValueError("report lacks valid incomplete conditions")
+    if any(item.get("code") == "SIDECAR_WRITE_FAILED" for item in conditions):
         raise ValueError("report contains SIDECAR_WRITE_FAILED")
     evidence = report.get("evidence", [])
     if not isinstance(evidence, list):
         raise ValueError("report evidence is not an array")
     if any(isinstance(item, dict) and item.get("kind") == "SIDECAR_PUBLICATION_FAILURE" for item in evidence):
         raise ValueError("report contains SIDECAR_PUBLICATION_FAILURE")
+    execution_pending = any(
+        isinstance(item, dict) and item.get("code") == "EXECUTION_NOT_IMPLEMENTED"
+        for item in conditions
+    )
+    execution_codes = {"EXECUTION_NOT_IMPLEMENTED", "TARGETED_DIAGNOSTIC"}
+    enumeration_codes = {
+        "ENUMERATION_ANCESTOR_BUILD_UNSUPPORTED",
+        "ENUMERATION_COMPILE_INVENTORY_MISMATCH", "ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
+        "ENUMERATION_COMPILE_TRANSFORM_UNSUPPORTED", "ENUMERATION_CONDITION_UNSUPPORTED",
+        "ENUMERATION_CONFIGURATION_REQUIRED", "ENUMERATION_CONFIGURATION_UNSUPPORTED",
+        "ENUMERATION_ENCODING_UNSUPPORTED",
+        "ENUMERATION_FRAMEWORK_UNSUPPORTED", "ENUMERATION_IMPLICIT_USINGS_UNSUPPORTED",
+        "ENUMERATION_IMPORT_UNSUPPORTED", "ENUMERATION_INHERITED_BUILD_UNSUPPORTED",
+        "ENUMERATION_ITEM_UNSUPPORTED", "ENUMERATION_LANGUAGE_UNSUPPORTED",
+        "ENUMERATION_LIMIT_EXCEEDED",
+        "ENUMERATION_NULLABLE_MISMATCH", "ENUMERATION_OUTPUT_TYPE_UNSUPPORTED",
+        "ENUMERATION_PARSE_INVALID", "ENUMERATION_PROJECT_ELEMENT_UNSUPPORTED",
+        "ENUMERATION_PROJECT_UNMAPPED", "ENUMERATION_PROJECT_UNSUPPORTED",
+        "ENUMERATION_PROPERTY_UNSUPPORTED", "ENUMERATION_REFERENCE_UNSUPPORTED",
+        "ENUMERATION_REQUIRES_GIT_SNAPSHOT", "ENUMERATION_SCOPE_INCOMPLETE",
+        "ENUMERATION_SDK_UNSUPPORTED", "ENUMERATION_SEMANTIC_INVALID",
+        "ENUMERATION_SYMBOL_MISMATCH", "ENUMERATION_SYMBOL_UNSUPPORTED",
+    }
+    scope_refusal_codes = {
+        "AMBIGUOUS_PROJECT_OWNERSHIP", "UNMAPPED_PROJECT", "CONFIGURED_PATH_MISSING",
+        "UNSUPPORTED_SYNTAX", "NO_SUPPORTED_DECLARATION", "UNSUPPORTED_CHANGED_INPUT",
+        "EXACT_ID_RERUN_UNAVAILABLE", "TARGET_SELECTION_INVALID",
+    }
+    execution_valid = execution_pending and all(item["code"] in execution_codes for item in conditions)
+    enumeration_refusal = not execution_pending and all(
+        item["code"] in enumeration_codes or item["code"] in scope_refusal_codes
+        for item in conditions
+    )
+    if not execution_valid and not enumeration_refusal:
+        raise ValueError("report lacks an accepted execution or enumeration incomplete condition")
+    counts = report.get("counts")
+    if not isinstance(counts, dict):
+        raise ValueError("report counts is not an object")
+    enumerated = counts.get("enumerated")
+    if execution_pending:
+        if not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated < 0:
+            raise ValueError("report lacks a bounded nonnegative enumeration count")
+    elif enumerated is not None:
+        raise ValueError("enumeration refusal must retain unknown enumeration count")
     if state_mode == "default-state":
         with open(path, "rb") as stream:
             report_bytes = stream.read()
@@ -376,6 +420,25 @@ prepare() {
   printf 'RECEIPT=%s\nPACKAGE_SHA256=%s\nPAYLOAD_SHA256=%s\nTOOL_SOURCE_COMMIT=%s\nSDK_VERSION=%s\nDOTNET_HOST=%s\n' "$receipt" "$(sha256_file "$package")" "$(payload_sha256 "$payload")" "$source_commit" "$orchestration_sdk_version" "$TRUSTED_DOTNET"
 }
 
+require_supported_example_enumeration() {
+  local report=$1
+  if (cd "$SDK_DIRECTORY" && python3 -I - "$report") <<'PY'
+import json, sys
+with open(sys.argv[1], "rb") as stream:
+    report = json.load(stream)
+codes = [item.get("code") for item in report.get("incompleteConditions", [])
+         if isinstance(item, dict)]
+enumerated = report.get("counts", {}).get("enumerated")
+if codes != ["EXECUTION_NOT_IMPLEMENTED"] or not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated <= 0:
+    print(f"unexpected strict example result: codes={codes!r}, enumerated={enumerated!r}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+  then
+    return 0
+  fi
+  fail "strict example did not publish one supported nonzero enumeration plan"
+}
+
 gate() {
   [[ $# -eq 9 ]] ||
     fail "gate requires TARGET_REPOSITORY RECEIPT EXPECTED_PACKAGE_SHA256 EXPECTED_PAYLOAD_SHA256 EXPECTED_TOOL_SOURCE_COMMIT TASK_START EXPECTED_TARGET_HEAD REPORT (no-state|default-state)"
@@ -539,6 +602,8 @@ PY
   TOOL_SDK_RECEIPT=
   [[ "$no_state_exit" -eq 4 ]] || fail "strict no-state example did not return expected incomplete exit 4"
   [[ "$default_state_exit" -eq 4 ]] || fail "strict default-state example did not return expected incomplete exit 4"
+  require_supported_example_enumeration "$report_directory/no-state.json"
+  require_supported_example_enumeration "$report_directory/default-state.json"
 }
 
 case "${1:-}" in

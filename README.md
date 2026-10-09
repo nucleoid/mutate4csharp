@@ -1,6 +1,6 @@
 # mutate4csharp
 
-`mutate4csharp` is a clean-room mutation-testing CLI for C# and .NET 10. Its established CLI discovers mutation sites in a selected source file with Roslyn, establishes a green test baseline, uses OpenCover line coverage, and runs every selected mutant in a private copy of the owning repository or solution. Its preview agent interface adds deterministic Git-aware multi-file change scope, frozen repository inputs, isolated suite orchestration, and versioned reports; canonical mutation enumeration is not yet connected to that strict interface.
+`mutate4csharp` is a clean-room mutation-testing CLI for C# and .NET 10. Its established CLI discovers mutation sites in a selected source file with Roslyn, establishes a green test baseline, uses OpenCover line coverage, and runs every selected mutant in a private copy of the owning repository or solution. Its preview agent interface adds deterministic Git-aware multi-file change scope, frozen repository inputs, canonical semantic mutation enumeration, isolated suite orchestration, and versioned reports; strict baseline and mutant execution are not yet connected.
 
 The repository pins .NET SDK `10.0.103` in `global.json` and CI to keep local and hosted builds on the same feature band.
 
@@ -49,12 +49,15 @@ Strict agent evaluation is an additive, versioned **preview** interface:
 ```
 
 Strict checks now capture bounded current working-tree bytes, validate `mutate4csharp.json`, and produce a deterministic versioned
-change-scope plan. Git mode compares the once-resolved direct base commit (never a merge base) with
+change-scope plan and, for the supported captured project boundary, canonical mutation and evaluation-unit IDs. Git mode compares the once-resolved direct base commit (never a merge base) with
 captured working-tree bytes, including staged, unstaged, and eligible untracked changes without
-duplicating paths. Explicit repeated inputs also work outside Git. Suite orchestration, bounded scheduling,
-and fail-closed aggregate contracts are implemented, but canonical mutation enumeration is not yet connected.
-Public strict `check` can never produce `PASS` or `FAIL` at this integration boundary. When capture succeeds, it
-returns exit `4` with `INCOMPLETE` and the `ENUMERATION_NOT_IMPLEMENTED` incomplete condition. Usage rejection,
+duplicating paths. Explicit repeated inputs also work outside Git for scope planning, but strict semantic enumeration
+requires a Git-backed project snapshot. Suite orchestration, bounded scheduling,
+and fail-closed aggregate contracts are implemented, but strict execution is not yet connected.
+Public strict `check` can never produce `PASS` or `FAIL` at this integration boundary. A supported capture publishes
+the bound nonzero or known-zero enumeration, then returns exit `4` with `INCOMPLETE` and the
+`EXECUTION_NOT_IMPLEMENTED` incomplete condition. Unsupported semantic contexts publish precise enumeration
+refusals with an unknown count. Usage rejection,
 snapshot refusal, and exception paths differ and may not reach enumeration or report publication. The strict interface writes an
 atomic JSON report and uses fail-closed outcomes. Its report schema,
 exit precedence, accounting rules, and current frozen-capture gate are documented in

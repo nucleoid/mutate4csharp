@@ -2,7 +2,17 @@ namespace Mutate4CSharp;
 
 internal enum EvaluationOutcome { Pass, Fail, Incomplete, NotApplicable }
 internal enum BaselineStatus { Green, Red, Empty, Unknown }
-internal enum UnitDisposition { Killed, Survived, Uncovered, CompileInvalid, Error, Omitted, Unstable, Pending }
+internal enum UnitDisposition
+{
+    Killed,
+    Survived,
+    Uncovered,
+    CompileInvalid,
+    Error,
+    Omitted,
+    Unstable,
+    Pending
+}
 
 internal sealed class EvaluationContractException : Exception
 {

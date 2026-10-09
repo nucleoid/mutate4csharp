@@ -1,0 +1,1393 @@
+using System.Globalization;
+using System.Text;
+
+namespace Mutate4CSharp.Tests;
+
+public sealed class StrictMutationEnumeratorTests : IDisposable
+{
+    private readonly SnapshotTestRepository _repository = new();
+
+    [Fact]
+    public async Task EnumeratesOnlyTheChangedDeclarationFromFrozenBytes()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs", """
+            public sealed class Flag
+            {
+                public int Changed() => 0;
+                public int Unchanged() => 1;
+            }
+            """);
+        Commit();
+        _repository.WriteText("src/App/Flag.cs", """
+            public sealed class Flag
+            {
+                public int Changed() => 1;
+                public int Unchanged() => 1;
+            }
+            """);
+
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var scope = await ScopePlanner.PlanGitAsync(snapshot, CancellationToken.None);
+        var configuration = LoadConfiguration(snapshot);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, configuration, scope,
+            CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        var candidate = Assert.Single(result.Candidates);
+        Assert.Contains("method:Changed", candidate.Material.DeclarationIdentity, StringComparison.Ordinal);
+        Assert.Equal("1", Source(snapshot, candidate.Material.RepositoryPath)
+            .Substring(candidate.SourceStart, candidate.SourceLength));
+        Assert.Equal("0", candidate.Material.Replacement);
+    }
+
+    [Fact]
+    public async Task FullProjectScopeEnumeratesEveryConfiguredCompileItemButNotTests()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/A.cs", "public sealed class A { public int Value() => 0; }\n");
+        _repository.WriteText("src/App/B.cs", "public sealed class B { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/Tests/SelfCheck.cs",
+            "public sealed class SelfCheck { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var configuration = LoadConfiguration(snapshot);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [new("src/App/App.csproj", ["tests/App.Tests/App.Tests.csproj"], ["src/App/A.cs"], "FULL_PROJECT")],
+            [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, configuration, scope,
+            CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Equal(["src/App/A.cs", "src/App/B.cs"], result.Candidates
+            .Select(candidate => candidate.Material.RepositoryPath).Distinct(StringComparer.Ordinal));
+        Assert.DoesNotContain(result.Candidates,
+            candidate => candidate.Material.RepositoryPath.Contains("/Tests/", StringComparison.OrdinalIgnoreCase) ||
+                         candidate.Material.RepositoryPath.StartsWith("tests/", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task FullProjectScopeKeepsGeneratedSourcesForCompilationButNeverMutatesThem()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Generated.g.cs",
+            "public static class Generated { public const bool Enabled = true; }\n");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => Generated.Enabled; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var configuration = LoadConfiguration(snapshot);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [new("src/App/App.csproj", ["tests/App.Tests/App.Tests.csproj"],
+                ["src/App/Flag.cs"], "FULL_PROJECT")], [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, configuration, scope,
+            CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.DoesNotContain(result.Candidates,
+            candidate => candidate.Material.RepositoryPath == "src/App/Generated.g.cs");
+    }
+
+    [Fact]
+    public async Task FullProjectUsesAllConfiguredSuitePathsForTestSourceClassification()
+    {
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup></Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/specs/Spec.cs",
+            "public sealed class Spec { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/specs/SpecSuite.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup></Project>
+            """);
+        _repository.WriteText("src/Other/Other.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup></Project>
+            """);
+        _repository.WriteText("src/Other/Other.cs", "public sealed class Other { }\n");
+        _repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup></Project>
+            """);
+        WriteConfiguration([
+            new
+            {
+                id = "app", project = "src/App/App.csproj", targetFramework = "net10.0",
+                parseContext = "net10-csharp14", languageVersion = "14.0", nullable = "enable",
+                defineConstants = Array.Empty<string>(), sources = new[] { "src/App/**/*.cs" },
+                sharedSources = Array.Empty<string>(), testSuites = new[] { "unit" }
+            },
+            new
+            {
+                id = "other", project = "src/Other/Other.csproj", targetFramework = "net10.0",
+                parseContext = "net10-csharp14", languageVersion = "14.0", nullable = "enable",
+                defineConstants = Array.Empty<string>(), sources = new[] { "src/Other/**/*.cs" },
+                sharedSources = Array.Empty<string>(), testSuites = new[] { "foreign" }
+            }
+        ], testSuites: [
+            new { id = "unit", path = "tests/App.Tests/App.Tests.csproj", runner = "vstest",
+                framework = "net10.0", configuration = "Release", expectedMembers = new[] { "App.Tests.dll" } },
+            new { id = "foreign", path = "src/App/specs/SpecSuite.csproj", runner = "vstest",
+                framework = "net10.0", configuration = "Release", expectedMembers = new[] { "SpecSuite.dll" } }
+        ]);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [new("src/App/App.csproj", ["tests/App.Tests/App.Tests.csproj"], ["src/App/Flag.cs"], "FULL_PROJECT")],
+            [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot), scope,
+            CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Contains(result.Candidates, candidate => candidate.Material.RepositoryPath == "src/App/Flag.cs");
+        Assert.DoesNotContain(result.Candidates,
+            candidate => candidate.Material.RepositoryPath == "src/App/specs/Spec.cs");
+    }
+
+    [Fact]
+    public async Task UsesOneSemanticContextForStringNumericNullableAndConditionalSites()
+    {
+        WriteProject("src/App", "src/App/**/*.cs", defineConstants: ["FEATURE"]);
+        _repository.WriteText("src/App/Operators.cs", """
+            #if FEATURE
+            public sealed class Operators
+            {
+                public int Numeric(int left, int right) => left + right;
+                public string Text(string left, string right) => left + right;
+                public string? Maybe(string value) => value;
+            }
+            #endif
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var configuration = LoadConfiguration(snapshot);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [new("src/App/App.csproj", ["tests/App.Tests/App.Tests.csproj"],
+                ["src/App/Operators.cs"], "FULL_PROJECT")], [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, configuration, scope,
+            CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Single(result.Candidates,
+            candidate => candidate.Material.OperatorId == "binary.AddExpression");
+        Assert.Contains(result.Candidates, candidate => candidate.Material.OperatorId == "rvalue.null");
+    }
+
+    [Fact]
+    public async Task ChangedConditionalDeclarationEscalatesToConfiguredFullProjectContext()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Conditional.cs", """
+            public sealed class Conditional
+            {
+            #if TRACE
+                public bool Changed() => true;
+            #endif
+                public bool Unchanged() => true;
+            }
+            """);
+        Commit();
+        _repository.WriteText("src/App/Conditional.cs", """
+            public sealed class Conditional
+            {
+            #if TRACE
+                public bool Changed() => false;
+            #endif
+                public bool Unchanged() => true;
+            }
+            """);
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var scope = await ScopePlanner.PlanGitAsync(snapshot, CancellationToken.None);
+
+        Assert.Equal("FULL_PROJECT", Assert.Single(scope.ProjectUnits).Expansion);
+        Assert.Contains(Assert.Single(scope.Files).Reasons,
+            reason => reason.Code == "PREPROCESSOR_SCOPE_EXPANSION");
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot), scope,
+            CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Contains(result.Candidates,
+            item => item.Material.DeclarationIdentity.Contains("Changed", StringComparison.Ordinal));
+        Assert.Contains(result.Candidates,
+            item => item.Material.DeclarationIdentity.Contains("Unchanged", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task OmittedNullableUsesThePlainSdkDisabledDefault()
+    {
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs", """
+            public sealed class Flag
+            {
+                public string Same(string value) => value;
+                public bool Enabled() => true;
+            }
+            """);
+        WriteConfiguration([
+            new
+            {
+                id = "app", project = "src/App/App.csproj", targetFramework = "net10.0",
+                parseContext = "net10-csharp14", languageVersion = "14.0",
+                defineConstants = Array.Empty<string>(), sources = new[] { "src/App/**/*.cs" },
+                testSuites = new[] { "unit" }
+            }
+        ]);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Contains(result.Candidates, item => item.Material.OperatorId == "literal.boolean");
+        Assert.DoesNotContain(result.Candidates, item => item.Material.OperatorId == "rvalue.null");
+    }
+
+    [Fact]
+    public async Task OmittedNullableUsesTheCapturedProjectContext()
+    {
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs", """
+            public sealed class Flag
+            {
+                public string? Maybe(string value) => value;
+            }
+            """);
+        WriteConfiguration([
+            new
+            {
+                id = "app", project = "src/App/App.csproj", targetFramework = "net10.0",
+                parseContext = "net10-csharp14", languageVersion = "14.0",
+                sources = new[] { "src/App/**/*.cs" }, testSuites = new[] { "unit" }
+            }
+        ]);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Single(result.Candidates,
+            candidate => candidate.Material.OperatorId == "rvalue.null");
+    }
+
+    [Fact]
+    public async Task OmittedDefineConstantsUsesCapturedProjectSymbols()
+    {
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><DefineConstants>$(DefineConstants);FEATURE</DefineConstants></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs", """
+            #if FEATURE
+            public sealed class Flag { public bool Value() => true; }
+            #endif
+            """);
+        WriteConfiguration([
+            new
+            {
+                id = "app", project = "src/App/App.csproj", targetFramework = "net10.0",
+                parseContext = "net10-csharp14", languageVersion = "14.0",
+                sources = new[] { "src/App/**/*.cs" }, testSuites = new[] { "unit" }
+            }
+        ]);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Single(result.Candidates,
+            candidate => candidate.Material.DeclarationIdentity.Contains("Value", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task DisableDiagnosticTracingRemovesUserDeclaredTrace()
+    {
+        WriteProject("src/App", "src/App/**/*.cs", ["TRACE", "FEATURE"]);
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><DefineConstants>$(DefineConstants);TRACE;FEATURE</DefineConstants><DisableDiagnosticTracing>true</DisableDiagnosticTracing></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Conditional.cs", """
+            public sealed class Conditional
+            {
+            #if TRACE
+                public bool TraceOnly() => true;
+            #endif
+            #if FEATURE
+                public bool Feature() => true;
+            #endif
+            }
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Conditional.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        var candidate = Assert.Single(result.Candidates);
+        Assert.Contains("Feature", candidate.Material.DeclarationIdentity, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DefinesEveryNetCoreAppOrGreaterSymbolFromThePinnedSdk()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Conditional.cs", """
+            #if NETCOREAPP1_1_OR_GREATER
+            public sealed class Conditional { public bool Value() => true; }
+            #endif
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Conditional.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Single(result.Candidates,
+            candidate => candidate.Material.DeclarationIdentity.Contains("Value", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ResolvesBackslashLinkedCompilePathsOnLinux()
+    {
+        WriteSharedProjects();
+        _repository.WriteText("src/One/One.csproj", ProjectXml("..\\..\\shared\\Flag.cs"));
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [new("src/One/One.csproj", ["tests/App.Tests/App.Tests.csproj"],
+                ["shared/Flag.cs"], "FULL_PROJECT")], [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot), scope,
+            CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Single(result.Candidates);
+
+        static string ProjectXml(string linked) => $"""
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>
+              <ItemGroup><Compile Include="{linked}" Link="Flag.cs" /></ItemGroup>
+            </Project>
+            """;
+    }
+
+    [Fact]
+    public async Task BareDefineConstantsReplaceTraceButKeepDebugAndFrameworkSymbols()
+    {
+        WriteProject("src/App", "src/App/**/*.cs", ["FEATURE"], suiteConfiguration: "Debug",
+            defineConstantsInherit: false);
+        _repository.WriteText("src/App/Conditional.cs", """
+            public sealed class Conditional
+            {
+            #if TRACE
+                public bool TraceOnly() => true;
+            #endif
+            #if DEBUG
+                public bool DebugOnly() => true;
+            #endif
+            #if FEATURE && NET10_0
+                public bool Feature() => true;
+            #endif
+            }
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Conditional.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Equal(2, result.Candidates.Count);
+        Assert.Contains(result.Candidates,
+            candidate => candidate.Material.DeclarationIdentity.Contains("DebugOnly", StringComparison.Ordinal));
+        Assert.Contains(result.Candidates,
+            candidate => candidate.Material.DeclarationIdentity.Contains("Feature", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Candidates,
+            candidate => candidate.Material.DeclarationIdentity.Contains("TraceOnly", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RefusesUnmodelledProjectPropertiesAndDisabledDefaultItems()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><UnmodelledSemantic>value</UnmodelledSemantic></PropertyGroup>
+            </Project>
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var unsupported = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(unsupported.IsComplete);
+        Assert.Contains(unsupported.Reasons,
+            reason => reason.Code == "ENUMERATION_PROPERTY_UNSUPPORTED");
+    }
+
+    [Fact]
+    public async Task EnableDefaultItemsFalseCannotSilentlyInventCompileInputs()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><EnableDefaultItems>false</EnableDefaultItems></PropertyGroup>
+            </Project>
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Contains(result.Reasons,
+            reason => reason.Code == "ENUMERATION_COMPILE_INVENTORY_MISMATCH");
+    }
+
+    [Fact]
+    public async Task SnapshotBoundaryRefusesBuildControlsAboveTheRepositoryRootBeforeEnumeration()
+    {
+        var parent = Path.Combine(Path.GetTempPath(), "mutate4csharp-ancestor-enumeration",
+            Guid.NewGuid().ToString("N"));
+        var repositoryPath = Path.Combine(parent, "repository");
+        Directory.CreateDirectory(parent);
+        File.WriteAllText(Path.Combine(parent, "Directory.Build.props"),
+            "<Project><PropertyGroup><DefineConstants>OUTSIDE</DefineConstants></PropertyGroup></Project>\n");
+        try
+        {
+            using var repository = new SnapshotTestRepository(repositoryPath);
+            repository.WriteText("src/App/App.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+                </Project>
+                """);
+            repository.WriteText("src/App/Flag.cs",
+                "public sealed class Flag { public bool Value() => true; }\n");
+            repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup></Project>
+                """);
+            repository.WriteText("mutate4csharp.json", System.Text.Json.JsonSerializer.Serialize(new
+            {
+                version = 1,
+                projects = new[] { Project("app", "src/App/App.csproj", "src/App/**/*.cs", []) },
+                testSuites = new[]
+                {
+                    new { id = "unit", path = "tests/App.Tests/App.Tests.csproj", runner = "vstest",
+                        framework = "net10.0", configuration = "Release",
+                        expectedMembers = new[] { "App.Tests.dll" } }
+                }
+            }));
+            repository.Git("add", ".");
+            repository.Git("commit", "-m", "fixture");
+            var error = await Assert.ThrowsAsync<SnapshotCaptureException>(() =>
+                SnapshotCapture.CaptureAsync(repository.Root, "HEAD", [],
+                    SnapshotCaptureOptions.Default, CancellationToken.None));
+
+            Assert.Contains("Inherited build input outside the snapshot root", error.Message,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            try { Directory.Delete(parent, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task ReleaseConfigurationIncludesTraceButNotDebugBranches()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Conditional.cs", """
+            public sealed class Conditional
+            {
+            #if TRACE
+                public bool Traced() => true;
+            #endif
+            #if DEBUG
+                public bool DebugOnly() => true;
+            #endif
+            #if RELEASE
+                public bool Released() => true;
+            #endif
+            #if !RELEASE
+                public bool NotReleased() => true;
+            #endif
+            }
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Conditional.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Equal(2, result.Candidates.Count);
+        Assert.Contains(result.Candidates,
+            item => item.Material.DeclarationIdentity.Contains("Traced", StringComparison.Ordinal));
+        Assert.Contains(result.Candidates,
+            item => item.Material.DeclarationIdentity.Contains("Released", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Candidates,
+            item => item.Material.DeclarationIdentity.Contains("DebugOnly", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Candidates,
+            item => item.Material.DeclarationIdentity.Contains("NotReleased", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task DebugConfigurationIncludesTraceAndDebugBranches()
+    {
+        WriteProject("src/App", "src/App/**/*.cs", suiteConfiguration: "Debug");
+        _repository.WriteText("src/App/Conditional.cs", """
+            public sealed class Conditional
+            {
+            #if TRACE
+                public bool Traced() => true;
+            #endif
+            #if DEBUG
+                public bool DebugOnly() => true;
+            #endif
+            #if RELEASE
+                public bool Released() => true;
+            #endif
+            }
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Conditional.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Equal(2, result.Candidates.Count);
+        Assert.Contains(result.Candidates,
+            item => item.Material.DeclarationIdentity.Contains("Traced", StringComparison.Ordinal));
+        Assert.Contains(result.Candidates,
+            item => item.Material.DeclarationIdentity.Contains("DebugOnly", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Candidates,
+            item => item.Material.DeclarationIdentity.Contains("Released", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task HiddenDefaultCompileItemMakesConfiguredInventoryUntrusted()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Visible.cs",
+            "public sealed class Visible { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/.tools/Hidden.cs",
+            "public sealed class Hidden { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Visible.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons,
+            reason => reason.Code == "ENUMERATION_COMPILE_INVENTORY_MISMATCH");
+    }
+
+    [Fact]
+    public async Task DotPrefixedSourceFileRemainsInTheDefaultCompileInventory()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/.Shim.cs",
+            "public sealed class Shim { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/.Shim.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Single(result.Candidates,
+            candidate => candidate.Material.RepositoryPath == "src/App/.Shim.cs");
+    }
+
+    [Fact]
+    public async Task PlatformFrameworkIsLoadedButRefusedBySemanticEnumeration()
+    {
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        WriteConfiguration([
+            new
+            {
+                id = "app", project = "src/App/App.csproj", targetFramework = "net10.0-windows",
+                parseContext = "net10-csharp14", languageVersion = "14.0", nullable = "enable",
+                defineConstants = Array.Empty<string>(), sources = new[] { "src/App/**/*.cs" },
+                testSuites = new[] { "unit" }
+            }
+        ], framework: "net10.0-windows");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons,
+            reason => reason.Code == "ENUMERATION_FRAMEWORK_UNSUPPORTED");
+    }
+
+    [Fact]
+    public async Task DuplicateChangedFilePlansReturnSpecificRefusal()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var declaration = new DeclarationScope("Flag.method:Value`0()", "MethodDeclaration",
+            "method Value", 1, 1, "DECLARATION_CHANGED");
+        var file = new ScopeFilePlan("src/App/Flag.cs", null, ChangeKind.Modified,
+            [declaration], [], false, []);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit,
+            [file, file], [], [new("src/App/App.csproj", ["tests/App.Tests/App.Tests.csproj"],
+                ["src/App/Flag.cs"], "CHANGED_DECLARATIONS")], [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot), scope,
+            CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason => reason.Code == "ENUMERATION_SCOPE_STALE" &&
+            reason.Message.Contains("duplicate", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task RefusesOutputPathPropertiesThatCanChangeDefaultCompileExclusions()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><BaseOutputPath>artifacts/</BaseOutputPath></PropertyGroup>
+            </Project>
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons,
+            reason => reason.Code == "ENUMERATION_PROPERTY_UNSUPPORTED");
+    }
+
+    [Fact]
+    public async Task RefusesInheritedBuildConfigurationInsteadOfIgnoringIt()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("Directory.Build.props",
+            "<Project><PropertyGroup><DefineConstants>FEATURE</DefineConstants></PropertyGroup></Project>\n");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons,
+            reason => reason.Code == "ENUMERATION_INHERITED_BUILD_UNSUPPORTED");
+    }
+
+    [Theory]
+    [InlineData("Directory.Build.rsp")]
+    [InlineData("MSBuild.rsp")]
+    [InlineData("Directory.Packages.props")]
+    public async Task SnapshotBoundaryRefusesCapturedInheritedBuildInputs(string inheritedInput)
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        var content = inheritedInput.EndsWith(".props", StringComparison.OrdinalIgnoreCase)
+            ? "<Project><PropertyGroup><Nullable>enable</Nullable></PropertyGroup></Project>\n"
+            : "-p:DefineConstants=HIDDEN\n";
+        _repository.WriteText(inheritedInput, content);
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        Commit();
+        if (inheritedInput == "Directory.Build.rsp")
+        {
+            var error = await Assert.ThrowsAsync<SnapshotCaptureException>(() =>
+                SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+                    SnapshotCaptureOptions.Default, CancellationToken.None));
+            Assert.Contains(inheritedInput, error.Message, StringComparison.OrdinalIgnoreCase);
+            return;
+        }
+
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+        Assert.False(result.IsComplete);
+        Assert.Contains(result.Reasons,
+            reason => reason.Code == "ENUMERATION_INHERITED_BUILD_UNSUPPORTED");
+    }
+
+    [Fact]
+    public async Task CapturePolicyCannotHideACompileInputFromSemanticEnumeration()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/TestResults/HiddenPartial.cs",
+            "public partial class Flag { public bool Hidden() => false; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason =>
+            reason.Code == "ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED" &&
+            reason.Message.Contains("TestResults", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CapturePolicyCannotHideDefaultCompileInputOutsideConfiguredRecursiveScope()
+    {
+        WriteProject("src/App", "src/App/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/TestResults/HiddenPartial.cs",
+            "public partial class Flag { public bool Hidden() => false; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason =>
+            reason.Code == "ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED" &&
+            reason.Message.Contains("TestResults", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CapturePolicyCannotTreatDotPrefixedFileAsSdkExcludedDirectory()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("src/App/.env.cs",
+            "public partial class Flag { public bool Hidden() => false; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason =>
+            reason.Code == "ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED" &&
+            reason.Message.Contains(".env.cs", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ProjectSymbolsUseCompilerSeparatorsWhenConfigurationOmitsAssertion()
+    {
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><DefineConstants>$(DefineConstants);ALPHA,BETA GAMMA</DefineConstants></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs", """
+            #if ALPHA && BETA && GAMMA
+            public sealed class Flag { public bool Value() => true; }
+            #endif
+            """);
+        WriteConfiguration([
+            new
+            {
+                id = "app", project = "src/App/App.csproj", targetFramework = "net10.0",
+                parseContext = "net10-csharp14", sources = new[] { "src/App/**/*.cs" },
+                testSuites = new[] { "unit" }
+            }
+        ]);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Single(result.Candidates);
+    }
+
+    [Theory]
+    [InlineData("nullable", "enable")]
+    [InlineData("defineconstants", "$(DefineConstants);FEATURE")]
+    [InlineData("defaultitemexcludes", "generated/**")]
+    [InlineData("disableimplicitframeworkdefines", "false")]
+    public async Task RefusesNonCanonicalPropertyCasingInsteadOfMisreadingMsbuildSemantics(
+        string property, string value)
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/App.csproj", $"""
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><{property}>{value}</{property}></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason => reason.Code == "ENUMERATION_PROPERTY_UNSUPPORTED" &&
+            reason.Message.Contains("casing", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task BoundedEnumerationRefusesInsteadOfPublishingATruncatedPlan()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs", """
+            public sealed class Flag
+            {
+                public bool A() => true;
+                public bool B() => false;
+                public int C() => 1 + 2;
+            }
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None,
+            maxCandidates: 2);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason => reason.Code == "ENUMERATION_LIMIT_EXCEEDED");
+    }
+
+    [Fact]
+    public async Task EmptyCompileInventoryIsAValidatedEnumerationRefusal()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [new("src/App/App.csproj", ["tests/App.Tests/App.Tests.csproj"], [], "FULL_PROJECT")], [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot), scope,
+            CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons,
+            reason => reason.Code == "ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED");
+    }
+
+    [Fact]
+    public async Task DuplicateDefaultAndExplicitCompileInputIsRefusedLikeTheSdkBuild()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+              <ItemGroup><Compile Include="Flag.cs" /></ItemGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason =>
+            reason.Code == "ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED" &&
+            reason.Message.Contains("more than once", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task NonUtf8SourceIsAValidatedEnumerationLimitation()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        var prefix = Encoding.ASCII.GetBytes(
+            "public sealed class Legacy { public bool Value() => true; } // ");
+        _repository.Write("src/App/Legacy.cs", prefix.Concat([(byte)0x80, (byte)'\n']).ToArray());
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Legacy.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason => reason.Code == "ENUMERATION_ENCODING_UNSUPPORTED");
+    }
+
+    [Fact]
+    public async Task RefusesCaptureBytesChangedAfterSnapshotIdentityWasEstablished()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        File.WriteAllText(Path.Combine(snapshot.CaptureRoot, "src", "App", "Flag.cs"),
+            "public sealed class Flag { public bool Value() => false; }\n");
+
+        var error = Assert.Throws<SnapshotDivergedException>(() =>
+            StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+                FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None));
+
+        Assert.Contains("Frozen capture bytes changed", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MarkerTextInsideAStringDoesNotMakeProductionSourceGenerated()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs", """
+            public sealed class Flag
+            {
+                private const string Marker = "<auto-generated";
+                public bool Value() => true;
+            }
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Contains(result.Candidates,
+            candidate => candidate.Material.RepositoryPath == "src/App/Flag.cs");
+    }
+
+    [Fact]
+    public async Task SupportsTopLevelStatementsAndImplicitUsingsForPlainSdkExe()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Program.cs", "Console.WriteLine(true);\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Program.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Single(result.Candidates,
+            candidate => candidate.Material.RepositoryPath == "src/App/Program.cs" &&
+                candidate.Material.OperatorId == "literal.boolean");
+    }
+
+    [Fact]
+    public async Task RefusesUnsupportedSdkWithSpecificReason()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk.Web">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Contains(result.Reasons, reason => reason.Code == "ENUMERATION_SDK_UNSUPPORTED");
+    }
+
+    [Fact]
+    public async Task SharedSourceHasStableMutationIdentityAndDistinctEvaluationUnits()
+    {
+        WriteSharedProjects();
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var configuration = LoadConfiguration(snapshot);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [
+                new("src/One/One.csproj", ["tests/App.Tests/App.Tests.csproj"], ["shared/Flag.cs"], "FULL_PROJECT"),
+                new("src/Two/Two.csproj", ["tests/App.Tests/App.Tests.csproj"], ["shared/Flag.cs"], "FULL_PROJECT")
+            ], [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, configuration, scope,
+            CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Equal(2, result.Candidates.Count);
+        Assert.Single(result.Candidates.Select(candidate => candidate.MutationId).Distinct(StringComparer.Ordinal));
+        Assert.Equal(2, result.Candidates.Select(candidate => candidate.EvaluationUnitId)
+            .Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
+    public async Task FullProjectExpansionRefusesOverlappingOwnershipWithoutSharedOptIn()
+    {
+        WriteSharedProjects();
+        var configurationPath = Path.Combine(_repository.Root, "mutate4csharp.json");
+        var configurationText = File.ReadAllText(configurationPath).Replace(
+            "\"sharedSources\":[\"shared/*.cs\"]", "\"sharedSources\":[]", StringComparison.Ordinal);
+        _repository.WriteText("mutate4csharp.json", configurationText);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [
+                new("src/One/One.csproj", ["tests/App.Tests/App.Tests.csproj"], ["shared/Flag.cs"], "FULL_PROJECT"),
+                new("src/Two/Two.csproj", ["tests/App.Tests/App.Tests.csproj"], ["shared/Flag.cs"], "FULL_PROJECT")
+            ], [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot), scope,
+            CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason => reason.Code == "AMBIGUOUS_PROJECT_OWNERSHIP");
+    }
+
+    [Fact]
+    public async Task SharedSourceEnumerationIsStableAcrossProjectOrderAndCulture()
+    {
+        WriteSharedProjects();
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var configuration = LoadConfiguration(snapshot);
+        ProjectScopeUnit[] units =
+        [
+            new("src/One/One.csproj", ["tests/App.Tests/App.Tests.csproj"], ["shared/Flag.cs"], "FULL_PROJECT"),
+            new("src/Two/Two.csproj", ["tests/App.Tests/App.Tests.csproj"], ["shared/Flag.cs"], "FULL_PROJECT")
+        ];
+        var forward = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            units, [], true);
+        var reverse = forward with { ProjectUnits = units.Reverse().ToArray() };
+        var first = StrictMutationEnumerator.Enumerate(snapshot, configuration, forward,
+            CancellationToken.None);
+        var priorCulture = CultureInfo.CurrentCulture;
+        var priorUiCulture = CultureInfo.CurrentUICulture;
+        StrictMutationEnumerationResult second;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("tr-TR");
+            CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo("tr-TR");
+            second = StrictMutationEnumerator.Enumerate(snapshot, configuration, reverse,
+                CancellationToken.None);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = priorCulture;
+            CultureInfo.CurrentUICulture = priorUiCulture;
+        }
+
+        Assert.True(first.IsComplete, string.Join(Environment.NewLine, first.Reasons));
+        Assert.True(second.IsComplete, string.Join(Environment.NewLine, second.Reasons));
+        Assert.Equal(first.SemanticContextIdentity, second.SemanticContextIdentity);
+        Assert.Equal(first.Candidates.Select(CandidateIdentity), second.Candidates.Select(CandidateIdentity));
+
+        static string CandidateIdentity(MutationCandidate candidate) =>
+            $"{candidate.MutationId}|{candidate.EvaluationUnitId}|{candidate.SourceStart}|{candidate.SourceLength}";
+    }
+
+    [Fact]
+    public async Task DuplicateProjectUnitIsRefusedWithSpecificReason()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var unit = new ProjectScopeUnit("src/App/App.csproj", ["tests/App.Tests/App.Tests.csproj"],
+            ["src/App/Flag.cs"], "FULL_PROJECT");
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [unit, unit], [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot), scope,
+            CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason => reason.Code == "ENUMERATION_DUPLICATE_UNIT");
+    }
+
+    [Fact]
+    public async Task UnsupportedReferenceContextReturnsNoTrustedPartialCandidates()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+              <ItemGroup><PackageReference Include="Example.Package" Version="1.0.0" /></ItemGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs", "public sealed class Flag { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var configuration = LoadConfiguration(snapshot);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [new("src/App/App.csproj", ["tests/App.Tests/App.Tests.csproj"],
+                ["src/App/Flag.cs"], "FULL_PROJECT")], [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, configuration, scope,
+            CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason => reason.Code == "ENUMERATION_REFERENCE_UNSUPPORTED" &&
+            reason.Message.Contains("reference", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task ConfigurationCannotInventACompileInput()
+    {
+        WriteProject("src/App", "src/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs", "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("src/Other.cs", "public sealed class Other { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var configuration = LoadConfiguration(snapshot);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [new("src/App/App.csproj", ["tests/App.Tests/App.Tests.csproj"],
+                ["src/App/Flag.cs"], "FULL_PROJECT")], [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, configuration, scope,
+            CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason => reason.Code == "ENUMERATION_COMPILE_INVENTORY_MISMATCH" &&
+            reason.Message.Contains("Compile inventory", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task StaleChangedDeclarationReturnsNoTrustedPartialCandidates()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs", "public sealed class Flag { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var configuration = LoadConfiguration(snapshot);
+        var stale = new DeclarationScope("Flag.method:Missing`0()", "MethodDeclaration",
+            "method Missing", 1, 1, "DECLARATION_CHANGED");
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit,
+            [new("src/App/Flag.cs", null, ChangeKind.Modified, [stale], [], false, [])], [],
+            [new("src/App/App.csproj", ["tests/App.Tests/App.Tests.csproj"],
+                ["src/App/Flag.cs"], "CHANGED_DECLARATIONS")], [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, configuration, scope,
+            CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason => reason.Code == "ENUMERATION_SCOPE_STALE" &&
+            reason.Message.Contains("stale", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void WriteProject(string directory, string sourceGlob,
+        IReadOnlyList<string>? defineConstants = null, string suiteConfiguration = "Release",
+        bool defineConstantsInherit = true)
+    {
+        var constants = defineConstants is { Count: > 0 }
+            ? $"<DefineConstants>{(defineConstantsInherit ? "$(DefineConstants);" : string.Empty)}{string.Join(';', defineConstants)}</DefineConstants>"
+            : string.Empty;
+        _repository.WriteText($"{directory}/App.csproj", $"""
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable>{constants}</PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+            </Project>
+            """);
+        WriteConfiguration([
+            Project("app", $"{directory}/App.csproj", sourceGlob, defineConstants ?? [])
+        ], suiteConfiguration);
+    }
+
+    private void WriteSharedProjects()
+    {
+        _repository.WriteText("src/One/One.csproj", ProjectXml("../../shared/Flag.cs"));
+        _repository.WriteText("src/Two/Two.csproj", ProjectXml("../../shared/Flag.cs"));
+        _repository.WriteText("shared/Flag.cs", "public sealed class Flag { public bool Value() => true; }\n");
+        _repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup></Project>
+            """);
+        WriteConfiguration([
+            Project("one", "src/One/One.csproj", "shared/*.cs", []),
+            Project("two", "src/Two/Two.csproj", "shared/*.cs", [])
+        ]);
+
+        static string ProjectXml(string linked) => $"""
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>
+              <ItemGroup><Compile Include="{linked}" Link="Flag.cs" /></ItemGroup>
+            </Project>
+            """;
+    }
+
+    private static object Project(string id, string path, string sources,
+        IReadOnlyList<string> defineConstants) => new
+    {
+        id,
+        project = path,
+        targetFramework = "net10.0",
+        parseContext = "net10-csharp14",
+        languageVersion = "14.0",
+        nullable = "enable",
+        defineConstants,
+        sources = new[] { sources },
+        sharedSources = sources.StartsWith("shared/", StringComparison.Ordinal)
+            ? new[] { sources } : Array.Empty<string>(),
+        testSuites = new[] { "unit" }
+    };
+
+    private void WriteConfiguration(IReadOnlyList<object> projects,
+        string suiteConfiguration = "Release", string framework = "net10.0",
+        IReadOnlyList<object>? testSuites = null) => _repository.WriteText(
+        "mutate4csharp.json", System.Text.Json.JsonSerializer.Serialize(new
+        {
+            version = 1,
+            projects,
+            testSuites = testSuites ??
+            [
+                (object)new
+                {
+                    id = "unit", path = "tests/App.Tests/App.Tests.csproj", runner = "vstest",
+                    framework, configuration = suiteConfiguration,
+                    expectedMembers = new[] { "App.Tests.dll" }
+                }
+            ]
+        }));
+
+    private void Commit()
+    {
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "fixture");
+    }
+
+    private static CheckConfiguration LoadConfiguration(InputSnapshot snapshot)
+    {
+        var bytes = File.ReadAllBytes(Path.Combine(snapshot.CaptureRoot, "mutate4csharp.json"));
+        return CheckConfiguration.Load(snapshot.CaptureRoot, bytes);
+    }
+
+    private static string Source(InputSnapshot snapshot, string relative) =>
+        File.ReadAllText(Path.Combine(snapshot.CaptureRoot,
+            relative.Replace('/', Path.DirectorySeparatorChar)), Encoding.UTF8);
+
+    private static ScopePlan FullProjectScope(InputSnapshot snapshot, string input) =>
+        new("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [new("src/App/App.csproj", ["tests/App.Tests/App.Tests.csproj"], [input], "FULL_PROJECT")],
+            [], true);
+
+    public void Dispose() => _repository.Dispose();
+}

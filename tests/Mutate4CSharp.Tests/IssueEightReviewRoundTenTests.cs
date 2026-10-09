@@ -146,7 +146,7 @@ public sealed class IssueEightReviewRoundTenTests : IDisposable
     public void PythonImportsAreIsolatedAndSdkChecksUseOneNeutralDirectory()
     {
         var script = Read("scripts/agent-gate.sh");
-        Assert.Equal(3, Count(script, "python3 -I -"));
+        Assert.Equal(4, Count(script, "python3 -I -"));
         Assert.DoesNotContain("python3 - ", script, StringComparison.Ordinal);
         Assert.Contains("neutral SDK directory", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("trusted_sdk_version", script, StringComparison.Ordinal);
@@ -161,7 +161,7 @@ public sealed class IssueEightReviewRoundTenTests : IDisposable
 
     [Theory]
     [InlineData("SIDECAR_WRITE_FAILED", "SYNTHETIC_OUTCOME")]
-    [InlineData("ENUMERATION_NOT_IMPLEMENTED", "SIDECAR_PUBLICATION_FAILURE")]
+    [InlineData("EXECUTION_NOT_IMPLEMENTED", "SIDECAR_PUBLICATION_FAILURE")]
     public async Task GateRejectsReportsWithSidecarPublicationFailure(string conditionCode, string evidenceKind)
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "The shipped workflow is a Bash integration.");
@@ -169,7 +169,7 @@ public sealed class IssueEightReviewRoundTenTests : IDisposable
         await CreateRepositoryAsync(target);
         var head = (await RunAsync(target, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
         var reportJson = $$"""
-            {"schemaVersion":"1","outcome":"INCOMPLETE","exitCode":4,"incompleteConditions":[{"code":"ENUMERATION_NOT_IMPLEMENTED"},{"code":"{{conditionCode}}"}],"evidence":[{"kind":"{{evidenceKind}}"}]}
+            {"schemaVersion":"1","outcome":"INCOMPLETE","exitCode":4,"incompleteConditions":[{"code":"EXECUTION_NOT_IMPLEMENTED"},{"code":"{{conditionCode}}"}],"counts":{"enumerated":0},"evidence":[{"kind":"{{evidenceKind}}"}]}
             """;
         var fixture = await CreateToolFixtureAsync(
             $"printf '%s\\n' '{reportJson}' > \"$5\"\nexit 4");
@@ -240,7 +240,7 @@ public sealed class IssueEightReviewRoundTenTests : IDisposable
         Directory.CreateDirectory(sdk);
         await File.WriteAllTextAsync(package, "package", TestContext.Current.CancellationToken);
         File.Copy(Path.Combine(RepositoryRoot, "global.json"), Path.Combine(sdk, "global.json"));
-        var body = checkBody ?? "printf '%s\\n' '{\"schemaVersion\":\"1\",\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"ENUMERATION_NOT_IMPLEMENTED\"}]}' > \"$5\"\nexit 4";
+        var body = checkBody ?? "printf '%s\\n' '{\"schemaVersion\":\"1\",\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"EXECUTION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":0}}' > \"$5\"\nexit 4";
         await WriteExecutableAsync(command,
             $"#!/usr/bin/env bash\nif [[ ${{1:-}} = --version ]]; then echo '{version}+{toolCommit}'; exit 0; fi\n{body}\n");
         var runtime = (await RunAsync(sdk, DotnetHost(), "--version")).StandardOutput.Trim();
