@@ -320,6 +320,18 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 }
                 snapshot = null;
             }
+            if (exactIdRequest && reason.Code != "FINALIZATION_PENDING" &&
+                evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
+            {
+                enumerationReasons = enumerationReasons.Concat([
+                    new EvaluationReason("EXACT_ID_RERUN_UNAVAILABLE",
+                        "Exact-ID reruns require a freshly bound complete semantic enumeration plan.")
+                ]).Distinct().ToArray();
+                evidence.Add(new("EXACT_ID_REQUEST",
+                    $"Refused {exactMutationIds.Count} exact mutation ID request(s) without a complete bound plan.",
+                    EvaluationEvidence.BoundDiagnostics(exactMutationIds,
+                        truncationLabel: "ids-truncated")));
+            }
             var incompleteConditions = new List<EvaluationReason> { reason };
             incompleteConditions.AddRange(enumerationReasons);
             incompleteConditions.AddRange(scopePlan.Reasons.Concat(scopePlan.Files.SelectMany(file => file.Reasons))
@@ -577,7 +589,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         baseline = BaselineStatus.Unknown;
         reportSuites = [];
         evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or
-            "MUTATION_PLAN" or "DEPENDENCY_INPUT");
+            "MUTATION_PLAN" or "DEPENDENCY_INPUT" or "EXACT_ID_REQUEST");
     }
 
     private static string Bound(string value) =>

@@ -697,7 +697,9 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
             throw new SnapshotCaptureException(prefix + diagnostic);
         }
         ExecutionEnvironment.ValidateResolvedPackageRoots(worker.Root, packages.Root, config);
-        if (!string.Equals(PackageFingerprint, ExecutionEnvironment.FingerprintPackages(packages.Root), StringComparison.Ordinal))
+        if (!string.Equals(PackageFingerprint,
+                ExecutionEnvironment.FingerprintPackages(packages.Root, cancellationToken: cancellationToken),
+                StringComparison.Ordinal))
             throw new ExecutionBoundaryIntegrityException(
                 "Worker restore changed its private frozen package-cache copy.");
     }
@@ -849,8 +851,10 @@ internal static class ExecutionEnvironment
                 Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
                 await SnapshotWorkspace.CopyFileAsync(packageLock, destination, deadline.Token);
             }
-            var packageFingerprint = FingerprintPackages(packages, options.MaxFiles, options.MaxBytes);
-            var graphFingerprint = FingerprintTreeBounded(graphs, options.MaxFiles, options.MaxBytes);
+            var packageFingerprint = FingerprintPackages(packages, options.MaxFiles, options.MaxBytes,
+                deadline.Token);
+            var graphFingerprint = FingerprintTreeBounded(graphs, options.MaxFiles, options.MaxBytes,
+                deadline.Token);
             var sdk = await ProcessTree.RunAsync(dotnet, ["--version"], preparation.Root,
                 TimeSpan.FromSeconds(30), deadline.Token, requireLinuxSessionIsolation: true);
             if (sdk.ExitCode != 0 || sdk.TimedOut)
@@ -944,10 +948,12 @@ internal static class ExecutionEnvironment
         return selectedPath;
     }
 
-    public static string FingerprintTree(string root) => FingerprintTreeBounded(root, int.MaxValue, long.MaxValue);
+    public static string FingerprintTree(string root) =>
+        FingerprintTreeBounded(root, int.MaxValue, long.MaxValue, CancellationToken.None);
 
-    internal static string FingerprintPackages(string root, int maxFiles = int.MaxValue, long maxBytes = long.MaxValue) =>
-        FingerprintTreeBounded(root, maxFiles, maxBytes,
+    internal static string FingerprintPackages(string root, int maxFiles = int.MaxValue,
+        long maxBytes = long.MaxValue, CancellationToken cancellationToken = default) =>
+        FingerprintTreeBounded(root, maxFiles, maxBytes, cancellationToken,
             path => !Path.GetFileName(path).Equals(".nupkg.metadata", StringComparison.OrdinalIgnoreCase));
 
     internal static void ValidateResolvedPackageRoots(string workspaceRoot, string expectedPackageRoot,
@@ -1057,25 +1063,35 @@ internal static class ExecutionEnvironment
     }
 
     private static string FingerprintTreeBounded(string root, int maxFiles, long maxBytes,
-        Func<string, bool>? include = null)
+        CancellationToken cancellationToken, Func<string, bool>? include = null)
     {
         var fullRoot = Path.GetFullPath(root);
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var count = 0;
         long total = 0;
+        var buffer = new byte[81920];
+        cancellationToken.ThrowIfCancellationRequested();
         foreach (var file in Directory.EnumerateFiles(fullRoot, "*", SearchOption.AllDirectories)
                      .Where(path => include?.Invoke(path) != false)
                      .OrderBy(path => Path.GetRelativePath(fullRoot, path), StringComparer.Ordinal))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
                 throw new ExecutionBoundaryIntegrityException(
                     "Resolved dependency content contains a link or reparse point.");
             if (++count > maxFiles) throw new SnapshotLimitException("Resolved dependency file count exceeds its bound.");
-            var bytes = File.ReadAllBytes(file);
-            checked { total += bytes.Length; }
-            if (total > maxBytes) throw new SnapshotLimitException("Resolved dependency bytes exceed their bound.");
             Append(hash, Path.GetRelativePath(fullRoot, file).Replace('\\', '/'));
-            hash.AppendData(bytes);
+            using var input = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read, buffer.Length,
+                FileOptions.SequentialScan);
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                checked { total += read; }
+                if (total > maxBytes)
+                    throw new SnapshotLimitException("Resolved dependency bytes exceed their bound.");
+                hash.AppendData(buffer, 0, read);
+            }
         }
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
     }

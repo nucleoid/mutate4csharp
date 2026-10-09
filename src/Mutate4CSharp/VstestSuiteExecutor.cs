@@ -69,7 +69,8 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                     linked.Token, ExecutionEnvironment.ProcessEnvironment(packages.Root), noRestore: true,
                     requireExecutionBoundary: true, framework: suite.Framework, configuration: suite.Configuration);
                 if (!string.Equals(environment.PackageFingerprint,
-                        ExecutionEnvironment.FingerprintPackages(packages.Root), StringComparison.Ordinal))
+                        ExecutionEnvironment.FingerprintPackages(packages.Root,
+                            cancellationToken: linked.Token), StringComparison.Ordinal))
                     throw new ExecutionBoundaryIntegrityException(
                         "Baseline execution changed its private frozen package-cache copy.");
                 var disposition = ClassifyBaseline(run);

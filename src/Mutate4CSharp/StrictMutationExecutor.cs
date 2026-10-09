@@ -94,7 +94,8 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
                     requireExecutionBoundary: true, framework: suite.Framework,
                     configuration: suite.Configuration);
                 if (!string.Equals(_environment.PackageFingerprint,
-                        ExecutionEnvironment.FingerprintPackages(ownedPackages.Root), StringComparison.Ordinal))
+                        ExecutionEnvironment.FingerprintPackages(ownedPackages.Root,
+                            cancellationToken: cancellationToken), StringComparison.Ordinal))
                     throw new ExecutionBoundaryIntegrityException(
                         "Mutant execution changed its private frozen package-cache copy.");
                 var compile = CompilerEvidence.Evaluate(run,
