@@ -171,6 +171,17 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 }
             }
 ScopeEvidence:
+            if (exactIdRequest && reason.Code != "EXECUTION_NOT_IMPLEMENTED" &&
+                evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
+            {
+                enumerationReasons = enumerationReasons.Concat([
+                    new EvaluationReason("EXACT_ID_RERUN_UNAVAILABLE",
+                        "Exact-ID reruns require a freshly bound complete semantic enumeration plan.")
+                ]).Distinct().ToArray();
+                evidence.Add(new("EXACT_ID_REQUEST",
+                    $"Refused {exactMutationIds.Count} exact mutation ID request(s) without a complete bound plan.",
+                    exactMutationIds.Take(100).ToArray()));
+            }
             evidence.Add(new("SCOPE_PLAN",
                 $"Scope plan v{scopePlan.SchemaVersion}: {scopePlan.Files.Count} file(s), " +
                 $"{scopePlan.ProjectUnits.Count} project unit(s), {scopePlan.Exclusions.Count} exclusion(s).",

@@ -51,7 +51,10 @@ public sealed class IssueEightReviewRoundTwelveTests : IDisposable
         await RunRequiredAsync(consumer, "git", "add", ".");
         await RunRequiredAsync(consumer, "git", "commit", "--quiet", "-m", "fixture");
         var head = (await RunAsync(consumer, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
-        await File.AppendAllTextAsync(Path.Combine(consumer, "src", "Example", "Flag.cs"), "\n",
+        var exampleSource = Path.Combine(consumer, "src", "Example", "Flag.cs");
+        var exampleText = await File.ReadAllTextAsync(exampleSource, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(exampleSource, exampleText.Replace(
+            "configured && true", "configured || false", StringComparison.Ordinal),
             TestContext.Current.CancellationToken);
 
         var ancestorBuildMarker = Path.Combine(_root, "ancestor-build-executed");

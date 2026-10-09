@@ -140,7 +140,8 @@ public sealed class ToolPackagingIntegrationTests : IDisposable
         Assert.Equal(0, exampleTestsBuild.ExitCode);
 
         var source = Path.Combine(consumer, "src", "Example", "Flag.cs");
-        File.AppendAllText(source, "\n");
+        File.WriteAllText(source, File.ReadAllText(source).Replace(
+            "configured && true", "configured || false", StringComparison.Ordinal));
         var sourceBefore = File.ReadAllBytes(source);
         var indexBefore = (await RunAsync(consumer, "git", "diff", "--cached", "--binary")).StandardOutput;
         var statusBefore = (await RunAsync(consumer, "git", "status", "--short", "--untracked-files=all")).StandardOutput;
