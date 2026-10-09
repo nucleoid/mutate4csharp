@@ -163,23 +163,6 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                             "ids-truncated")));
                 }
             }
-            if (exactIdRequest && reason.Code != "FINALIZATION_PENDING" &&
-                evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
-            {
-                enumerationReasons = enumerationReasons.Concat([
-                    new EvaluationReason("EXACT_ID_RERUN_UNAVAILABLE",
-                        "Exact-ID reruns require a freshly bound complete semantic enumeration plan.")
-                ]).Distinct().ToArray();
-                evidence.Add(new("EXACT_ID_REQUEST",
-                    $"Refused {exactMutationIds.Count} exact mutation ID request(s) without a complete bound plan.",
-                    EvaluationEvidence.BoundDiagnostics(exactMutationIds,
-                        truncationLabel: "ids-truncated")));
-            }
-            evidence.Add(new("SCOPE_PLAN",
-                $"Scope plan v{scopePlan.SchemaVersion}: {scopePlan.Files.Count} file(s), " +
-                $"{scopePlan.ProjectUnits.Count} project unit(s), {scopePlan.Exclusions.Count} exclusion(s).",
-                scopePlan.Reasons.Select(item => BoundDiagnostic($"{item.Code}: {item.Message}"))
-                    .Take(20).ToArray()));
         }
         catch (StrictExecutionRefusalException ex)
         {
@@ -224,6 +207,24 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             evidence.Add(new("SNAPSHOT_VALIDATION_FAILURE", Bound($"{ex.GetType().Name}: {ex.Message}")));
         }
 
+        if (exactIdRequest && reason.Code != "FINALIZATION_PENDING" &&
+            evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
+        {
+            enumerationReasons = enumerationReasons.Concat([
+                new EvaluationReason("EXACT_ID_RERUN_UNAVAILABLE",
+                    "Exact-ID reruns require a freshly bound complete semantic enumeration plan.")
+            ]).Distinct().ToArray();
+            evidence.Add(new("EXACT_ID_REQUEST",
+                $"Refused {exactMutationIds.Count} exact mutation ID request(s) without a complete bound plan.",
+                EvaluationEvidence.BoundDiagnostics(exactMutationIds,
+                    truncationLabel: "ids-truncated")));
+        }
+        evidence.Add(new("SCOPE_PLAN",
+            $"Scope plan v{scopePlan.SchemaVersion}: {scopePlan.Files.Count} file(s), " +
+            $"{scopePlan.ProjectUnits.Count} project unit(s), {scopePlan.Exclusions.Count} exclusion(s).",
+            scopePlan.Reasons.Select(item => BoundDiagnostic($"{item.Code}: {item.Message}"))
+                .Take(20).ToArray()));
+
         try
         {
             if (snapshot is not null)
@@ -234,7 +235,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     var previousReason = reason;
                     var previousReasons = enumerationReasons;
                     reason = SnapshotFailure(ex);
-                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
+                    InvalidateSnapshotExecutionEvidence(evidence, ref baseline, ref reportSuites);
                     AddSnapshotFailureEvidence(evidence, ex);
                     snapshotId = null;
                     enumerationCount = null;
@@ -248,7 +249,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     var previousReason = reason;
                     var previousReasons = enumerationReasons;
                     reason = new("SNAPSHOT_CANCELLED", "Immutable capture validation was cancelled.");
-                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
+                    InvalidateSnapshotExecutionEvidence(evidence, ref baseline, ref reportSuites);
                     evidence.Add(new("SNAPSHOT_CANCELLATION",
                         "Cancellation was observed before report publication."));
                     snapshotId = null;
@@ -264,7 +265,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     var previousReasons = enumerationReasons;
                     reason = new("SNAPSHOT_VALIDATION_FAILED",
                         "Immutable capture failed closed during native or runtime validation.");
-                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
+                    InvalidateSnapshotExecutionEvidence(evidence, ref baseline, ref reportSuites);
                     evidence.Add(new("SNAPSHOT_VALIDATION_FAILURE",
                         Bound($"{ex.GetType().Name}: {ex.Message}")));
                     snapshotId = null;
@@ -301,7 +302,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     var previousReasons = enumerationReasons;
                     reason = new("SNAPSHOT_CLEANUP_FAILED",
                         "The immutable capture could not be cleaned up safely.");
-                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
+                    InvalidateSnapshotExecutionEvidence(evidence, ref baseline, ref reportSuites);
                     if (ex is SnapshotCaptureException snapshotFailure)
                     {
                         AddSnapshotFailureEvidence(evidence, snapshotFailure);
@@ -569,6 +570,15 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
 
     private static bool IsIntegrityFailure(EvaluationReason reason) => reason.Code is
         "EXECUTION_BOUNDARY_INTEGRITY" or "SNAPSHOT_DIVERGED" or "SNAPSHOT_LIMIT";
+
+    private static void InvalidateSnapshotExecutionEvidence(List<EvaluationEvidence> evidence,
+        ref BaselineStatus baseline, ref IReadOnlyList<SuiteEvidence> reportSuites)
+    {
+        baseline = BaselineStatus.Unknown;
+        reportSuites = [];
+        evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or
+            "MUTATION_PLAN" or "DEPENDENCY_INPUT");
+    }
 
     private static string Bound(string value) =>
         EvaluationTextBounds.Prefix(value, EvaluationReason.MaxMessageLength);

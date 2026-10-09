@@ -344,7 +344,10 @@ internal static class StrictExecutionPipeline
             };
             var details = new List<string>
             {
-                $"disposition={run.Disposition}", $"tests={run.AccountedMembers.Count}"
+                $"disposition={run.Disposition}", $"tests={run.AccountedMembers.Count}",
+                "accountedMembers=" + (run.AccountedMembers.Count == 0
+                    ? "<none>" : string.Join(',', run.AccountedMembers)),
+                "expectedMembers=" + string.Join(',', suite.ExpectedMembers)
             };
             if (run.CoverageSha256 is not null)
             {
@@ -353,7 +356,9 @@ internal static class StrictExecutionPipeline
                 details.Add("pathMap=baseline-clone-to-snapshot-v1");
             }
             return new SuiteEvidence(suite.Identity, baseline,
-                [new("SUITE_BASELINE", $"Fresh baseline classified suite as {baseline}.", details)]);
+                [new("SUITE_BASELINE", $"Fresh baseline classified suite as {baseline}.",
+                    EvaluationEvidence.BoundDiagnostics(run.Diagnostics, details,
+                        "diagnostics-truncated"))]);
         }).ToArray();
 }
 

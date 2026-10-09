@@ -192,8 +192,13 @@ try:
         raise ValueError("report root must be an object")
     if report.get("exitCode") != process_exit:
         raise ValueError("report exitCode does not match process result")
-    if process_exit != 4 or report.get("outcome") != "INCOMPLETE":
-        raise ValueError("current gate requires exit 4 with outcome INCOMPLETE")
+    if process_exit not in (2, 4) or report.get("outcome") != "INCOMPLETE":
+        raise ValueError("current gate requires exit 2 or 4 with outcome INCOMPLETE")
+    baseline = report.get("baseline")
+    if process_exit == 2 and baseline not in ("RED", "EMPTY"):
+        raise ValueError("exit 2 requires a RED or EMPTY baseline")
+    if process_exit == 4 and baseline in ("RED", "EMPTY"):
+        raise ValueError("RED or EMPTY baseline requires exit 2")
     conditions = report.get("incompleteConditions")
     if not isinstance(conditions, list) or not conditions or not all(
         isinstance(item, dict) and isinstance(item.get("code"), str)

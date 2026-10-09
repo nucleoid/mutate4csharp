@@ -68,7 +68,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
 
     [Theory]
     [InlineData("mismatched-exit", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":3,\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":0}}", 4, "exitCode does not match")]
-    [InlineData("wrong-outcome", "{\"outcome\":\"COMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":0}}", 4, "requires exit 4 with outcome INCOMPLETE")]
+    [InlineData("wrong-outcome", "{\"outcome\":\"COMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":0}}", 4, "requires exit 2 or 4 with outcome INCOMPLETE")]
     [InlineData("missing-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[],\"counts\":{\"enumerated\":0}}", 4, "lacks valid incomplete conditions")]
     [InlineData("malformed", "{", 4, "report validation failed")]
     [InlineData("non-object", "[]", 4, "report root must be an object")]
@@ -76,7 +76,9 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
     [InlineData("retired-enumeration", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"ENUMERATION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":null}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
     [InlineData("sdk-unavailable", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"ENUMERATION_SDK_UNAVAILABLE\"}],\"counts\":{\"enumerated\":null}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
     [InlineData("execution-with-foreign-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"},{\"code\":\"SNAPSHOT_DIVERGED\"}],\"counts\":{\"enumerated\":1}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
-    [InlineData("zero-with-report", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":0,\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":0}}", 0, "requires exit 4 with outcome INCOMPLETE")]
+    [InlineData("zero-with-report", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":0,\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":0}}", 0, "requires exit 2 or 4 with outcome INCOMPLETE")]
+    [InlineData("exit-two-green", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":2,\"baseline\":\"GREEN\",\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":1}}", 2, "exit 2 requires a RED or EMPTY baseline")]
+    [InlineData("exit-four-red", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"baseline\":\"RED\",\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":1}}", 4, "RED or EMPTY baseline requires exit 2")]
     public async Task GateReportBindingNegativesRefuseExactly(string name, string json, int processExit, string diagnostic)
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "The shipped workflow is a Bash integration.");

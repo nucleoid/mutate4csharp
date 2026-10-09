@@ -2,9 +2,15 @@ using System.Xml.Linq;
 
 namespace Mutate4CSharp;
 
-internal sealed class TrxAccountingException(string path, Exception innerException) :
-    Exception($"Failed to read TRX membership from '{Path.GetFileName(path)}': {innerException.Message}",
-        innerException);
+internal sealed class TrxAccountingException : Exception
+{
+    public TrxAccountingException(string path, Exception innerException) :
+        base($"Failed to read TRX membership from '{Path.GetFileName(path)}': {innerException.Message}",
+            innerException) { }
+
+    public TrxAccountingException(string path, string message) :
+        base($"Failed to account TRX membership from '{Path.GetFileName(path)}': {message}") { }
+}
 
 internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutionEnvironment environment,
     TimeProvider? timeProvider = null) : ISuiteExecutor
@@ -154,11 +160,14 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
             try
             {
                 var document = XDocument.Load(path);
-                foreach (var storage in document.Descendants().Where(item => item.Name.LocalName == "UnitTest")
-                             .Select(item => item.Attribute("storage")?.Value)
-                             .Where(value => !string.IsNullOrWhiteSpace(value)))
+                var unitTests = document.Descendants()
+                    .Where(item => item.Name.LocalName == "UnitTest").ToArray();
+                if (unitTests.Any(item => string.IsNullOrWhiteSpace(item.Attribute("storage")?.Value)))
+                    throw new TrxAccountingException(path,
+                        "one or more UnitTest definitions did not declare storage.");
+                foreach (var storage in unitTests.Select(item => item.Attribute("storage")!.Value))
                 {
-                    var member = Path.GetFileName(storage!.Replace('\\', Path.DirectorySeparatorChar));
+                    var member = Path.GetFileName(storage.Replace('\\', Path.DirectorySeparatorChar));
                     if (!string.IsNullOrWhiteSpace(member)) members.Add(member);
                 }
             }
