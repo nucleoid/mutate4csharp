@@ -430,6 +430,7 @@ codes = [item.get("code") for item in report.get("incompleteConditions", [])
          if isinstance(item, dict)]
 enumerated = report.get("counts", {}).get("enumerated")
 if codes != ["EXECUTION_NOT_IMPLEMENTED"] or not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated <= 0:
+    print(f"unexpected strict example result: codes={codes!r}, enumerated={enumerated!r}", file=sys.stderr)
     raise SystemExit(1)
 PY
   then

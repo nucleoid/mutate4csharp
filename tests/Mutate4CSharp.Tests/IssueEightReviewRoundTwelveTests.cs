@@ -124,6 +124,8 @@ public sealed class IssueEightReviewRoundTwelveTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(hostileXml, "__init__.py"),
             $"from pathlib import Path\nPath({PythonLiteral(hostilePythonMarker)}).write_text('xml')\nraise RuntimeError('hostile xml imported')\n",
             TestContext.Current.CancellationToken);
+        await File.AppendAllTextAsync(Path.Combine(consumer, ".git", "info", "exclude"),
+            "\n/json.py\n/xml/\n", TestContext.Current.CancellationToken);
         var hostileBin = Path.Combine(_root, "hostile-bin");
         var pathDotnetMarker = Path.Combine(_root, "hostile-path-dotnet-executed");
         Directory.CreateDirectory(hostileBin);
