@@ -7,6 +7,31 @@ internal sealed record EvaluationEvidence(string Kind, string Summary,
 {
     public const int MaxDiagnostics = 20;
     public const int MaxDiagnosticLength = 512;
+
+    public static IReadOnlyList<string> BoundDiagnostics(IEnumerable<string> diagnostics,
+        IReadOnlyList<string>? requiredTail = null, string truncationLabel = "diagnostics-truncated")
+    {
+        ArgumentNullException.ThrowIfNull(diagnostics);
+        requiredTail ??= [];
+        if (requiredTail.Count > MaxDiagnostics)
+            throw new EvaluationContractException("Required evidence diagnostics exceed schema bounds.");
+        var values = diagnostics.Select(Bound).ToArray();
+        var tail = requiredTail.Select(Bound).ToArray();
+        var available = MaxDiagnostics - tail.Length;
+        if (values.Length <= available) return values.Concat(tail).ToArray();
+        if (available == 0)
+            throw new EvaluationContractException("Evidence diagnostics leave no room for truncation accounting.");
+        var retained = available - 1;
+        return values.Take(retained)
+            .Append(Bound($"{truncationLabel}={values.Length - retained}"))
+            .Concat(tail).ToArray();
+    }
+
+    private static string Bound(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return value.Length <= MaxDiagnosticLength ? value : value[..MaxDiagnosticLength];
+    }
 }
 internal sealed record EvaluationReason(string Code, string Message);
 internal sealed record EvaluationUnitResult(string UnitId, string EvaluationUnitId,

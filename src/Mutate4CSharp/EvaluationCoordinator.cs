@@ -150,13 +150,18 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 }
                 evidence.AddRange(execution.Evidence);
                 if (exactIdRequest)
+                {
+                    var counters = new[]
+                    {
+                        $"executed={reportUnits.Count(item => item.Disposition is not (UnitDisposition.Omitted or UnitDisposition.Uncovered or UnitDisposition.Pending))}",
+                        $"omitted={reportUnits.Count(item => item.Disposition == UnitDisposition.Omitted)}"
+                    };
                     evidence.Add(new("EXACT_ID_REQUEST",
                         $"Freshly bound {exactMutationIds.Count} diagnostic mutation ID(s); " +
                         "terminal dispositions are recorded in the unit ledger.",
-                        exactMutationIds.Take(100).Concat([
-                            $"executed={reportUnits.Count(item => item.Disposition is not (UnitDisposition.Omitted or UnitDisposition.Uncovered or UnitDisposition.Pending))}",
-                            $"omitted={reportUnits.Count(item => item.Disposition == UnitDisposition.Omitted)}"
-                        ]).ToArray()));
+                        EvaluationEvidence.BoundDiagnostics(exactMutationIds, counters,
+                            "ids-truncated")));
+                }
             }
             if (exactIdRequest && reason.Code != "FINALIZATION_PENDING" &&
                 evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
@@ -167,7 +172,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 ]).Distinct().ToArray();
                 evidence.Add(new("EXACT_ID_REQUEST",
                     $"Refused {exactMutationIds.Count} exact mutation ID request(s) without a complete bound plan.",
-                    exactMutationIds.Take(100).ToArray()));
+                    EvaluationEvidence.BoundDiagnostics(exactMutationIds,
+                        truncationLabel: "ids-truncated")));
             }
             evidence.Add(new("SCOPE_PLAN",
                 $"Scope plan v{scopePlan.SchemaVersion}: {scopePlan.Files.Count} file(s), " +
@@ -186,7 +192,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         catch (SnapshotCaptureException ex)
         {
             reason = SnapshotFailure(ex);
-            enumerationReasons = NestedSnapshotFailureReasons(ex);
+            enumerationReasons = PreservedFailureReasons(reason, [], ex);
             AddSnapshotFailureEvidence(evidence, ex);
         }
         catch (OperationCanceledException)
@@ -225,13 +231,15 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 try { await snapshot.ValidateOriginalAsync(cancellationToken); }
                 catch (SnapshotCaptureException ex)
                 {
+                    var previousReason = reason;
+                    var previousReasons = enumerationReasons;
                     reason = SnapshotFailure(ex);
                     evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
                     AddSnapshotFailureEvidence(evidence, ex);
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
-                    enumerationReasons = NestedSnapshotFailureReasons(ex);
+                    enumerationReasons = PreservedFailureReasons(previousReason, previousReasons, ex);
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot divergence."));
                 }
@@ -285,22 +293,20 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 try { await snapshot.DisposeAsync(); }
                 catch (Exception ex)
                 {
-                    var retainedIntegrity = IsIntegrityFailure(reason) ? reason : null;
+                    var previousReason = reason;
+                    var previousReasons = enumerationReasons;
                     reason = new("SNAPSHOT_CLEANUP_FAILED",
                         "The immutable capture could not be cleaned up safely.");
                     evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
                     if (ex is SnapshotCaptureException snapshotFailure)
                     {
                         AddSnapshotFailureEvidence(evidence, snapshotFailure);
-                        enumerationReasons = NestedSnapshotFailureReasons(snapshotFailure);
                     }
                     else
                     {
                         evidence.Add(new("SNAPSHOT_CLEANUP", Bound(ex.Message)));
-                        enumerationReasons = [];
                     }
-                    if (retainedIntegrity is not null)
-                        enumerationReasons = enumerationReasons.Append(retainedIntegrity).Distinct().ToArray();
+                    enumerationReasons = PreservedFailureReasons(previousReason, previousReasons, ex);
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
@@ -504,32 +510,58 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         _ => "SNAPSHOT_REFUSAL"
     };
 
-    private static IReadOnlyList<EvaluationReason> NestedSnapshotFailureReasons(
-        SnapshotCaptureException exception) => SnapshotFailureChain(exception).Skip(1)
-        .Select(SnapshotFailure).Distinct().ToArray();
+    internal static IReadOnlyList<EvaluationReason> PreservedFailureReasons(
+        EvaluationReason currentReason, IReadOnlyList<EvaluationReason> existingReasons,
+        Exception latestFailure)
+    {
+        ArgumentNullException.ThrowIfNull(currentReason);
+        ArgumentNullException.ThrowIfNull(existingReasons);
+        ArgumentNullException.ThrowIfNull(latestFailure);
+        return existingReasons.Prepend(currentReason).Where(IsIntegrityFailure)
+            .Concat(FailureChain(latestFailure).Skip(1).SelectMany(FailureReasons))
+            .Distinct().ToArray();
+    }
+
+    internal static IReadOnlyList<EvaluationEvidence> PreservedFailureEvidence(Exception failure)
+    {
+        ArgumentNullException.ThrowIfNull(failure);
+        return FailureChain(failure).SelectMany(FailureEvidence).Distinct().ToArray();
+    }
 
     private static void AddSnapshotFailureEvidence(List<EvaluationEvidence> evidence,
         SnapshotCaptureException exception)
     {
-        foreach (var failure in SnapshotFailureChain(exception))
-        {
-            var item = new EvaluationEvidence(SnapshotEvidenceKind(failure), Bound(failure.Message));
+        foreach (var item in PreservedFailureEvidence(exception))
             if (!evidence.Contains(item)) evidence.Add(item);
-        }
     }
 
-    private static IEnumerable<SnapshotCaptureException> SnapshotFailureChain(
-        SnapshotCaptureException exception)
+    private static IEnumerable<Exception> FailureChain(Exception exception)
     {
-        SnapshotCaptureException? current = exception;
+        Exception? current = exception;
         for (var depth = 0; current is not null && depth < 16; depth++)
         {
             yield return current;
-            current = current is SnapshotCleanupException { OriginalFailure: SnapshotCaptureException original }
-                ? original
-                : null;
+            current = current is SnapshotCleanupException { OriginalFailure: { } original } ? original : null;
         }
     }
+
+    private static IEnumerable<EvaluationReason> FailureReasons(Exception failure) => failure switch
+    {
+        SnapshotCaptureException snapshot => [SnapshotFailure(snapshot)],
+        StrictExecutionRefusalException refusal => refusal.Reasons,
+        _ => []
+    };
+
+    private static IEnumerable<EvaluationEvidence> FailureEvidence(Exception failure) => failure switch
+    {
+        SnapshotCaptureException snapshot =>
+            [new EvaluationEvidence(SnapshotEvidenceKind(snapshot), Bound(snapshot.Message))],
+        StrictExecutionRefusalException refusal =>
+            [new EvaluationEvidence("STRICT_EXECUTION_REFUSAL", refusal.Reason.Message,
+                EvaluationEvidence.BoundDiagnostics(refusal.Reasons.Select(item =>
+                    $"{item.Code}: {item.Message}")))],
+        _ => []
+    };
 
     private static bool IsIntegrityFailure(EvaluationReason reason) => reason.Code is
         "EXECUTION_BOUNDARY_INTEGRITY" or "SNAPSHOT_DIVERGED" or "SNAPSHOT_LIMIT";

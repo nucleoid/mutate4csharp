@@ -231,15 +231,10 @@ internal static class StrictExecutionPipeline
     }
 
     private static IReadOnlyList<string> BoundAttemptDiagnostics(
-        IReadOnlyList<ScheduledMutationResult> results)
-    {
-        var diagnostics = results.Select((item, index) =>
-            $"attempt={index + 1};disposition={item.Disposition}").ToArray();
-        if (diagnostics.Length <= EvaluationEvidence.MaxDiagnostics) return diagnostics;
-        var retained = EvaluationEvidence.MaxDiagnostics - 1;
-        return diagnostics.Take(retained)
-            .Append($"attempts-truncated={diagnostics.Length - retained}").ToArray();
-    }
+        IReadOnlyList<ScheduledMutationResult> results) => EvaluationEvidence.BoundDiagnostics(
+        results.Select((item, index) =>
+            $"attempt={index + 1};disposition={item.Disposition}"),
+        truncationLabel: "attempts-truncated");
 
     internal static async Task<ContiguousAttemptBatch> RunContiguousAttemptsAsync(
         IIsolatedMutationExecutor executor, IReadOnlyList<ScheduledMutation> scheduled, int repetitions,

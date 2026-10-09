@@ -216,10 +216,14 @@ public sealed class StrictCheckIntegrationTests : IDisposable
     [Fact]
     public async Task ExactIdRequestFreshlyRebindsTheCurrentPlanAsDiagnosticOnly()
     {
-        using var repository = StrictEnumerationRepository("public int Value() => 0;");
+        var baselineMembers = string.Join(' ', Enumerable.Range(0, 25)
+            .Select(index => $"public int Value{index}() => 0;"));
+        var changedMembers = string.Join(' ', Enumerable.Range(0, 25)
+            .Select(index => $"public int Value{index}() => 1;"));
+        using var repository = StrictEnumerationRepository(baselineMembers);
         repository.Git("add", ".");
         repository.Git("commit", "-m", "baseline");
-        repository.WriteText("src/App/Flag.cs", "public sealed class Flag { public int Value() => 1; }\n");
+        repository.WriteText("src/App/Flag.cs", $"public sealed class Flag {{ {changedMembers} }}\n");
         var firstReport = Path.Combine(_directory, "full-plan.json");
         var targetedReport = Path.Combine(_directory, "targeted-plan.json");
         var staleReport = Path.Combine(_directory, "stale-targeted-plan.json");
@@ -231,7 +235,8 @@ public sealed class StrictCheckIntegrationTests : IDisposable
             var coordinator = new EvaluationCoordinator();
             var full = await coordinator.RunAsync(
                 new(false, "HEAD", [], firstReport, "full-plan"), CancellationToken.None);
-            var mutation = Assert.Single(full.Report.Units).UnitId;
+            Assert.True(full.Report.Units.Count >= 25);
+            var mutation = full.Report.Units[0].UnitId;
             var planFingerprint = Assert.Single(full.Report.Evidence,
                     item => item.Kind == "MUTATION_PLAN").Diagnostics!
                 .Single(value => value.StartsWith("planFingerprint=", StringComparison.Ordinal))[16..];
@@ -255,8 +260,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
             Assert.DoesNotContain(stale.Report.IncompleteConditions,
                 reason => reason.Code == "SNAPSHOT_VALIDATION_FAILED");
 
-            var manyIds = Enumerable.Range(0, 25)
-                .Select(index => $"mutation:v1:{index:x64}").ToArray();
+            var manyIds = full.Report.Units.Take(25).Select(item => item.UnitId).ToArray();
             var many = await coordinator.RunAsync(new(false, "HEAD", [], manyIdsReport,
                 "many-targeted-ids", MutationIds: manyIds,
                 PlanFingerprint: planFingerprint), CancellationToken.None);
@@ -265,7 +269,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
             Assert.True(File.Exists(manyIdsReport));
             Assert.True(manyEvidence.Diagnostics!.Count <= EvaluationEvidence.MaxDiagnostics);
             Assert.Contains(manyEvidence.Diagnostics,
-                item => item == "ids-truncated=6");
+                item => item == "ids-truncated=8");
         }
         finally { Environment.CurrentDirectory = previous; }
     }
