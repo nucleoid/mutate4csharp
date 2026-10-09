@@ -154,7 +154,7 @@ internal static class TestRunner
     private static bool IsOutcome(XElement result, string expected) =>
         string.Equals(result.Attribute("outcome")?.Value, expected, StringComparison.OrdinalIgnoreCase);
 
-    private static string Bound(string value, int maximum) => value.Length <= maximum ? value : value[..maximum];
+    private static string Bound(string value, int maximum) => EvaluationTextBounds.Prefix(value, maximum);
 
     public static IReadOnlyList<string> FindCoverage(string directory) => Directory.Exists(directory)
         ? ProjectLocator.EnumerateFilesSafe(directory, "*.xml")

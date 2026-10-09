@@ -570,8 +570,10 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
     private static bool IsIntegrityFailure(EvaluationReason reason) => reason.Code is
         "EXECUTION_BOUNDARY_INTEGRITY" or "SNAPSHOT_DIVERGED" or "SNAPSHOT_LIMIT";
 
-    private static string Bound(string value) => value.Length <= 1024 ? value : value[..1024];
-    private static string BoundDiagnostic(string value) => value.Length <= 512 ? value : value[..512];
+    private static string Bound(string value) =>
+        EvaluationTextBounds.Prefix(value, EvaluationReason.MaxMessageLength);
+    private static string BoundDiagnostic(string value) =>
+        EvaluationTextBounds.Prefix(value, EvaluationEvidence.MaxDiagnosticLength);
 
     private static bool IsFatal(Exception exception) =>
         exception is OutOfMemoryException or StackOverflowException or AccessViolationException;

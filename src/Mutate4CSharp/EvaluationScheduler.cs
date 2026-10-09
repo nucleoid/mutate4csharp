@@ -207,5 +207,5 @@ internal sealed class EvaluationScheduler
             .Append($"diagnostics-truncated={diagnostics.Count - (maximum - 1)}").ToArray();
     }
 
-    private static string Bound(string value, int maximum) => value.Length <= maximum ? value : value[..maximum];
+    private static string Bound(string value, int maximum) => EvaluationTextBounds.Prefix(value, maximum);
 }

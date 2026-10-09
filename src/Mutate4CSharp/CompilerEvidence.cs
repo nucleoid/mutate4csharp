@@ -29,7 +29,7 @@ internal static partial class CompilerEvidence
         var diagnostics = DiagnosticPattern().Matches(mutated.StandardOutput + "\n" + mutated.StandardError)
             .Select(match => new { Path = NormalizeFullPath(match.Groups["path"].Value, workingDirectory), Text = Sanitize(match.Value) })
             .Where(item => string.Equals(item.Path, target, PathComparison(target)))
-            .Select(item => item.Text.Length <= MaxDiagnosticLength ? item.Text : item.Text[..MaxDiagnosticLength])
+            .Select(item => EvaluationTextBounds.Prefix(item.Text, MaxDiagnosticLength))
             .Distinct(StringComparer.Ordinal)
             .Take(MaxDiagnostics)
             .ToArray();

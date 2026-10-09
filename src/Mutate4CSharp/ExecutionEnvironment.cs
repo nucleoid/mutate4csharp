@@ -298,7 +298,7 @@ internal static class ProcessTree
     }
 
     private static string BoundDiagnostic(string value, int maximum) =>
-        value.Length <= maximum ? value : value[..maximum];
+        EvaluationTextBounds.Prefix(value, maximum);
 
     private static string ReadSetSidHelp(string executable)
     {
@@ -691,8 +691,10 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
         {
             var diagnostic = string.Join(' ', new[] { run.StandardError, run.StandardOutput }
                 .SelectMany(value => value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)));
-            if (diagnostic.Length > 2048) diagnostic = diagnostic[..2048];
-            throw new SnapshotCaptureException($"Frozen worker restore failed: {diagnostic}");
+            const string prefix = "Frozen worker restore failed: ";
+            diagnostic = EvaluationTextBounds.Suffix(diagnostic,
+                EvaluationEvidence.MaxDiagnosticLength - prefix.Length);
+            throw new SnapshotCaptureException(prefix + diagnostic);
         }
         ExecutionEnvironment.ValidateResolvedPackageRoots(worker.Root, packages.Root, config);
         if (!string.Equals(PackageFingerprint, ExecutionEnvironment.FingerprintPackages(packages.Root), StringComparison.Ordinal))

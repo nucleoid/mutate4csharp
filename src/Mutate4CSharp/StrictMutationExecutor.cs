@@ -161,6 +161,6 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
     {
         var sanitized = string.Join(' ', value.Split((char[]?)null,
             StringSplitOptions.RemoveEmptyEntries));
-        return sanitized.Length <= 512 ? sanitized : sanitized[..512];
+        return EvaluationTextBounds.Suffix(sanitized, EvaluationEvidence.MaxDiagnosticLength);
     }
 }

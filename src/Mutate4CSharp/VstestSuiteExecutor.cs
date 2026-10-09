@@ -2,6 +2,10 @@ using System.Xml.Linq;
 
 namespace Mutate4CSharp;
 
+internal sealed class TrxAccountingException(string path, Exception innerException) :
+    Exception($"Failed to read TRX membership from '{Path.GetFileName(path)}': {innerException.Message}",
+        innerException);
+
 internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutionEnvironment environment,
     TimeProvider? timeProvider = null) : ISuiteExecutor
 {
@@ -125,7 +129,7 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
         {
             var bounded = string.Join(' ', (value ?? string.Empty).Split((char[]?)null,
                 StringSplitOptions.RemoveEmptyEntries));
-            if (bounded.Length > 512) bounded = bounded[..512];
+            bounded = EvaluationTextBounds.Suffix(bounded, EvaluationEvidence.MaxDiagnosticLength);
             if (bounded.Length > 0) diagnostics.Add(bounded);
         }
         return diagnostics.Take(20).ToArray();
@@ -139,7 +143,7 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
             : [];
         var value = "Coverage output was missing; result files: " +
             (files.Length == 0 ? "<none>" : string.Join(", ", files));
-        return value.Length <= 512 ? value : value[..512];
+        return EvaluationTextBounds.Prefix(value, EvaluationEvidence.MaxDiagnosticLength);
     }
 
     internal static IReadOnlyList<string> AccountedMembers(IReadOnlyList<string> trxPaths)
@@ -160,7 +164,7 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Xml.XmlException)
             {
-                return [];
+                throw new TrxAccountingException(path, ex);
             }
         }
         return members.ToArray();

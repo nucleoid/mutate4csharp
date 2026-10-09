@@ -813,7 +813,8 @@ internal static class StrictMutationEnumerator
     private static StrictMutationEnumerationResult Refused(string code, string message) =>
         new([], [new(code, Bound(message))], false, null);
 
-    private static string Bound(string value) => value.Length <= 1024 ? value : value[..1024];
+    private static string Bound(string value) =>
+        EvaluationTextBounds.Prefix(value, EvaluationReason.MaxMessageLength);
 
     private static bool IsFatal(Exception exception) =>
         exception is OutOfMemoryException or StackOverflowException or AccessViolationException;

@@ -376,14 +376,10 @@ internal sealed class SuiteCoordinator
             conditions.Add(new(code, message));
     }
 
-    private static string Bound(string value, int maximum) => value.Length <= maximum ? value : value[..maximum];
+    private static string Bound(string value, int maximum) => EvaluationTextBounds.Prefix(value, maximum);
 
     private static string BoundWithoutSplittingSurrogate(string value, int maximum)
     {
-        if (value.Length <= maximum) return value;
-        var length = maximum;
-        if (length > 0 && char.IsHighSurrogate(value[length - 1]) &&
-            length < value.Length && char.IsLowSurrogate(value[length])) length--;
-        return value[..length];
+        return EvaluationTextBounds.Prefix(value, maximum);
     }
 }

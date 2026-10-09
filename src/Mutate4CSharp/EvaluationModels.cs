@@ -70,6 +70,7 @@ internal static class EvaluationTextBounds
     {
         ArgumentNullException.ThrowIfNull(value);
         ArgumentOutOfRangeException.ThrowIfNegative(maximum);
+        if (maximum == 0) return string.Empty;
         if (value.Length <= maximum) return value;
         var start = value.Length - maximum;
         if (start > 0 && char.IsLowSurrogate(value[start]) &&

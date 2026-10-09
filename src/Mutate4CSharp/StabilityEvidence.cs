@@ -81,6 +81,6 @@ internal static class StabilityEvidence
     private static string Bound(string? value, int length)
     {
         if (string.IsNullOrWhiteSpace(value)) return "(empty)";
-        return value.Length <= length ? value : value[..length];
+        return EvaluationTextBounds.Prefix(value, length);
     }
 }

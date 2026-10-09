@@ -365,7 +365,7 @@ internal static class ScopePlanner
         var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
             Encoding.UTF8.GetBytes(value)))[..16].ToLowerInvariant();
         var suffix = $" … [sha256:{hash}]";
-        return value[..(maxLength - suffix.Length)] + suffix;
+        return EvaluationTextBounds.Prefix(value, maxLength - suffix.Length) + suffix;
     }
 
     private static StringComparer PathComparer => OperatingSystem.IsWindows()
