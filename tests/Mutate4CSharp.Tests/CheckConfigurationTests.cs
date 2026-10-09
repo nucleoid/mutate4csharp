@@ -17,7 +17,8 @@ public sealed class CheckConfigurationTests : IDisposable
 
         Assert.Equal("1", configuration.SchemaVersion);
         Assert.Equal("app", Assert.Single(configuration.Projects).Id);
-        Assert.Equal("disable", Assert.Single(configuration.Projects).Nullable);
+        Assert.Null(Assert.Single(configuration.Projects).Nullable);
+        Assert.Null(Assert.Single(configuration.Projects).DefineConstants);
         Assert.Equal("unit", Assert.Single(configuration.TestSuites).Id);
         Assert.Equal("generated code", Assert.Single(configuration.Exclusions).Reason);
         Assert.Equal(new EvaluationPolicy(2, 25, 90, 30, 300, true, 2), configuration.Policy);

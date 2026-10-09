@@ -6,7 +6,6 @@
       "project": "src/Mutate4CSharp/Mutate4CSharp.csproj",
       "targetFramework": "net10.0",
       "parseContext": "net10-csharp14",
-      "nullable": "enable",
       "sources": [
         "src/Mutate4CSharp/**/*.cs"
       ],

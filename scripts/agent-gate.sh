@@ -195,15 +195,29 @@ try:
     if process_exit != 4 or report.get("outcome") != "INCOMPLETE":
         raise ValueError("current gate requires exit 4 with outcome INCOMPLETE")
     conditions = report.get("incompleteConditions")
-    if not isinstance(conditions, list) or not any(
-        isinstance(item, dict) and item.get("code") == "EXECUTION_NOT_IMPLEMENTED"
+    if not isinstance(conditions, list) or not conditions or not all(
+        isinstance(item, dict) and isinstance(item.get("code"), str)
         for item in conditions
     ):
-        raise ValueError("report lacks EXECUTION_NOT_IMPLEMENTED incomplete condition")
+        raise ValueError("report lacks valid incomplete conditions")
+    execution_pending = any(
+        isinstance(item, dict) and item.get("code") == "EXECUTION_NOT_IMPLEMENTED"
+        for item in conditions
+    )
+    enumeration_refusal = not execution_pending and all(
+        item["code"].startswith("ENUMERATION_") for item in conditions
+    )
+    if not execution_pending and not enumeration_refusal:
+        raise ValueError("report lacks an accepted execution or enumeration incomplete condition")
     counts = report.get("counts")
-    if not isinstance(counts, dict) or not isinstance(counts.get("enumerated"), int) or \
-            isinstance(counts.get("enumerated"), bool) or counts["enumerated"] < 0:
-        raise ValueError("report lacks a bounded nonnegative enumeration count")
+    if not isinstance(counts, dict):
+        raise ValueError("report counts is not an object")
+    enumerated = counts.get("enumerated")
+    if execution_pending:
+        if not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated < 0:
+            raise ValueError("report lacks a bounded nonnegative enumeration count")
+    elif enumerated is not None:
+        raise ValueError("enumeration refusal must retain unknown enumeration count")
     if any(isinstance(item, dict) and item.get("code") == "SIDECAR_WRITE_FAILED" for item in conditions):
         raise ValueError("report contains SIDECAR_WRITE_FAILED")
     evidence = report.get("evidence", [])

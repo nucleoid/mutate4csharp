@@ -14,10 +14,9 @@ pattern in both `sources` and `sharedSources`; broad or accidental overlapping g
 in plan mode.
 
 Each production project declares a stable ID, repository-relative `.csproj`, target framework, parse-context
-identity, source globs, and one or more test-suite IDs. Optional `languageVersion`, `nullable`, and
-`defineConstants` fields make the strict semantic context explicit; v1 defaults to C# `14.0`, nullable `disable`
-(the plain SDK default when `<Nullable>` is absent),
-and no user symbols. Each suite declares a repository-relative project or
+identity, source globs, and one or more test-suite IDs. Optional `languageVersion` defaults to C# `14.0`.
+Optional `nullable` and `defineConstants` values assert the semantic context; when omitted, enumeration derives
+them from the frozen project, and when present a mismatch is refused. Each suite declares a repository-relative project or
 solution, runner, framework, configuration, and the expected test-assembly members that must be visible in TRX.
 Expected-member names are unique case-insensitively at runtime (JSON Schema `uniqueItems` additionally catches exact
 duplicates). Alias paths are execution-equivalent after converting backslashes to forward slashes and applying invariant

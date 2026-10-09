@@ -87,11 +87,11 @@ the stable contract for the future execution connection.
 The first enumeration envelope is deliberately narrow: an exact-`net10.0`, plain `Microsoft.NET.Sdk`,
 self-contained project with statically provable compile items and no project/package/framework references,
 conditions, explicit imports, inherited `Directory.Build.*`, source-generator dependency, or unmodelled project
-property/item. Nullable-enabled projects must explicitly declare `"nullable":"enable"` in configuration; omission
-means the plain SDK's disabled nullable context. Projects outside this envelope receive a project-context refusal,
-which the packaged wrapper reports as orchestration exit `73`; it is not an accepted mutation result and is not
-interchangeable with a receipt-integrity success. Package, wrapper, and consumer configuration therefore require a
-lockstep upgrade for this intentional fail-closed boundary.
+property/item. Optional `nullable` and `defineConstants` values are assertions: when omitted, enumeration derives
+them from the frozen project; when supplied, mismatches are refused. Projects outside this envelope produce a
+validated `INCOMPLETE` report with an unknown enumeration count and retain tool exit `4`. The wrapper validates that
+specific `ENUMERATION_*` shape but does not confuse it with a successful mutation result. Malformed reports,
+receipt/hash drift, symbolic paths and other orchestration or integrity failures remain distinct exit `73`.
 
 ## Agent loop
 
@@ -131,8 +131,10 @@ Missing or malformed receipt fields, duplicate or unknown keys, host/SDK mismatc
 symbolic repository boundaries, identity drift, non-commit baselines, existing/symlinked/internal report paths, or
 changed target `HEAD` fail before a result is accepted.
 The current gate accepts a tool result only when a newly created regular report parses, its `exitCode` equals the
-process exit, it says `INCOMPLETE` / `4` with `EXECUTION_NOT_IMPLEMENTED`, and `counts.enumerated` is a bounded
-nonnegative integer. A crash that merely exits 4 or an unsupported/unknown enumeration is refused.
+process exit, and it says `INCOMPLETE` / `4`. A supported plan must contain `EXECUTION_NOT_IMPLEMENTED` and a bounded
+nonnegative `counts.enumerated`. A project outside the current semantic envelope may instead contain only validated
+`ENUMERATION_*` incomplete conditions and must keep `counts.enumerated` null. Both are nonpassing results. A crash
+that merely exits 4, a malformed condition, or a contradictory count is refused as orchestration exit `73`.
 All orchestration refusals use exit `73`, distinct from tool usage exit `1` and strict incomplete exit `4`.
 The preflight and post-run checks reject existing and symbolic report targets, while the tool publishes atomically
 under an adjacent lock. Hash and identity checks before and after execution narrow but do not eliminate TOCTOU: a

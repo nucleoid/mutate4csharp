@@ -203,6 +203,141 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
     }
 
     [Fact]
+    public async Task OmittedNullableUsesTheCapturedProjectContext()
+    {
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs", """
+            public sealed class Flag
+            {
+                public string? Maybe(string value) => value;
+            }
+            """);
+        WriteConfiguration([
+            new
+            {
+                id = "app", project = "src/App/App.csproj", targetFramework = "net10.0",
+                parseContext = "net10-csharp14", languageVersion = "14.0",
+                sources = new[] { "src/App/**/*.cs" }, testSuites = new[] { "unit" }
+            }
+        ]);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Single(result.Candidates,
+            candidate => candidate.Material.OperatorId == "rvalue.null");
+    }
+
+    [Fact]
+    public async Task OmittedDefineConstantsUsesCapturedProjectSymbols()
+    {
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><DefineConstants>$(DefineConstants);FEATURE</DefineConstants></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("tests/App.Tests/App.Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs", """
+            #if FEATURE
+            public sealed class Flag { public bool Value() => true; }
+            #endif
+            """);
+        WriteConfiguration([
+            new
+            {
+                id = "app", project = "src/App/App.csproj", targetFramework = "net10.0",
+                parseContext = "net10-csharp14", languageVersion = "14.0",
+                sources = new[] { "src/App/**/*.cs" }, testSuites = new[] { "unit" }
+            }
+        ]);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Single(result.Candidates,
+            candidate => candidate.Material.DeclarationIdentity.Contains("Value", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task DisableDiagnosticTracingRemovesUserDeclaredTrace()
+    {
+        WriteProject("src/App", "src/App/**/*.cs", ["TRACE", "FEATURE"]);
+        _repository.WriteText("src/App/App.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><DefineConstants>$(DefineConstants);TRACE;FEATURE</DefineConstants><DisableDiagnosticTracing>true</DisableDiagnosticTracing></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Conditional.cs", """
+            public sealed class Conditional
+            {
+            #if TRACE
+                public bool TraceOnly() => true;
+            #endif
+            #if FEATURE
+                public bool Feature() => true;
+            #endif
+            }
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Conditional.cs"), CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        var candidate = Assert.Single(result.Candidates);
+        Assert.Contains("Feature", candidate.Material.DeclarationIdentity, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ResolvesBackslashLinkedCompilePathsOnLinux()
+    {
+        WriteSharedProjects();
+        _repository.WriteText("src/One/One.csproj", ProjectXml("..\\..\\shared\\Flag.cs"));
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [new("src/One/One.csproj", ["tests/App.Tests/App.Tests.csproj"],
+                ["shared/Flag.cs"], "FULL_PROJECT")], [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot), scope,
+            CancellationToken.None);
+
+        Assert.True(result.IsComplete, string.Join(Environment.NewLine, result.Reasons));
+        Assert.Single(result.Candidates);
+
+        static string ProjectXml(string linked) => $"""
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>
+              <ItemGroup><Compile Include="{linked}" Link="Flag.cs" /></ItemGroup>
+            </Project>
+            """;
+    }
+
+    [Fact]
     public async Task BareDefineConstantsReplaceTraceButKeepDebugAndFrameworkSymbols()
     {
         WriteProject("src/App", "src/App/**/*.cs", ["FEATURE"], suiteConfiguration: "Debug",

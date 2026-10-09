@@ -241,7 +241,8 @@ internal static class StrictMutationEnumerator
             [
                 ("project", project.Project), ("configuration", buildConfiguration),
                 ("target-framework", project.TargetFramework), ("parse-context", project.ParseContext),
-                ("language-version", project.LanguageVersion), ("nullable", project.Nullable),
+                ("language-version", project.LanguageVersion),
+                ("nullable", projectSemantics.Nullable.ToString()),
                 ("implicit-usings", projectSemantics.ImplicitUsings ? "enabled" : "disabled"),
                 ("output-kind", projectSemantics.OutputKind.ToString()),
                 ("references", referenceSet.Identity),
@@ -347,7 +348,7 @@ internal static class StrictMutationEnumerator
             throw new EnumerationContextException("ENUMERATION_LANGUAGE_UNSUPPORTED",
                 $"Captured project language version is unsupported: {langVersion}.");
         var nullable = (SingleProperty(root, "Nullable") ?? "disable").ToLowerInvariant();
-        if (!nullable.Equals(project.Nullable, StringComparison.Ordinal))
+        if (project.Nullable is not null && !nullable.Equals(project.Nullable, StringComparison.Ordinal))
             throw new EnumerationContextException("ENUMERATION_NULLABLE_MISMATCH",
                 $"Captured project nullable context does not match strict configuration: {project.Project}.");
         var symbols = ResolvePreprocessorSymbols(root, project, buildConfiguration,
@@ -488,15 +489,16 @@ internal static class StrictMutationEnumerator
                     $"Dynamic DefineConstants are unsupported in enumeration v1: {project.Project}.");
             declared = SplitSymbols(property);
         }
-        var expected = project.DefineConstants.OrderBy(value => value, StringComparer.Ordinal).ToArray();
-        if (!declared.OrderBy(value => value, StringComparer.Ordinal).SequenceEqual(expected,
+        var expected = project.DefineConstants?.OrderBy(value => value, StringComparer.Ordinal).ToArray();
+        if (expected is not null && !declared.OrderBy(value => value, StringComparer.Ordinal).SequenceEqual(expected,
                 StringComparer.Ordinal))
             throw new EnumerationContextException("ENUMERATION_SYMBOL_MISMATCH",
                 $"Captured project DefineConstants do not match strict configuration: {project.Project}.");
         return FrameworkSymbols()
             .Concat(retainsConfigurationSymbols && !disableDiagnosticTracing ? ["TRACE"] : [])
             .Concat(disableConfigurationDefines ? [] : [buildConfiguration.ToUpperInvariant()])
-            .Concat(declared).Distinct(StringComparer.Ordinal).OrderBy(value => value,
+            .Concat(disableDiagnosticTracing ? declared.Where(symbol => symbol != "TRACE") : declared)
+            .Distinct(StringComparer.Ordinal).OrderBy(value => value,
                 StringComparer.Ordinal).ToArray();
 
         static string[] SplitSymbols(string value) => value.Split(';',
@@ -505,13 +507,18 @@ internal static class StrictMutationEnumerator
 
     private static string ResolveStaticCompilePath(InputSnapshot snapshot, string projectPath, string include)
     {
-        if (include.Contains(';') || include.IndexOfAny(['*', '?']) >= 0 ||
-            include.Contains("$(", StringComparison.Ordinal) || include.Contains("@(", StringComparison.Ordinal) ||
-            Path.IsPathRooted(include))
+        var normalizedInclude = include.Replace('\\', '/');
+        var driveQualified = normalizedInclude.Length >= 2 && char.IsAsciiLetter(normalizedInclude[0]) &&
+            normalizedInclude[1] == ':';
+        if (normalizedInclude.Contains(';') || normalizedInclude.IndexOfAny(['*', '?']) >= 0 ||
+            normalizedInclude.Contains("$(", StringComparison.Ordinal) ||
+            normalizedInclude.Contains("@(", StringComparison.Ordinal) || driveQualified ||
+            normalizedInclude.StartsWith("//", StringComparison.Ordinal) ||
+            Path.IsPathRooted(normalizedInclude))
             throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
                 $"Dynamic or multi-value Compile Include is unsupported in enumeration v1: {include}.");
         var projectDirectory = Path.GetDirectoryName(CapturedPath(snapshot, projectPath))!;
-        var full = Path.GetFullPath(include.Replace('/', Path.DirectorySeparatorChar), projectDirectory);
+        var full = Path.GetFullPath(normalizedInclude.Replace('/', Path.DirectorySeparatorChar), projectDirectory);
         var relative = Path.GetRelativePath(snapshot.CaptureRoot, full).Replace('\\', '/');
         try { return SnapshotInputPolicy.NormalizeRelative(relative); }
         catch (SnapshotCaptureException ex)

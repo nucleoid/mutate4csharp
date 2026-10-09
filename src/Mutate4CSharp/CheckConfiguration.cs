@@ -10,8 +10,8 @@ internal sealed class CheckConfigurationException(string message, Exception? inn
     ArgumentException(message, inner);
 
 internal sealed record CheckProject(string Id, string Project, string TargetFramework,
-    string ParseContext, string LanguageVersion, string Nullable,
-    IReadOnlyList<string> DefineConstants, IReadOnlyList<string> Sources,
+    string ParseContext, string LanguageVersion, string? Nullable,
+    IReadOnlyList<string>? DefineConstants, IReadOnlyList<string> Sources,
     IReadOnlyList<string> SharedSources,
     IReadOnlyList<string> TestSuites);
 
@@ -186,14 +186,14 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
         if (languageVersion != "14.0")
             throw new ArgumentException(
                 $"Production project {id} languageVersion must use the version-1 C# 14.0 contract.");
-        var nullable = item.Nullable is null ? "disable" :
+        var nullable = item.Nullable is null ? null :
             Required(item.Nullable, $"projects[{index}].nullable", 32);
-        if (nullable is not ("enable" or "disable" or "annotations" or "warnings"))
+        if (nullable is not null and not ("enable" or "disable" or "annotations" or "warnings"))
             throw new ArgumentException(
                 $"Production project {id} nullable must be enable, disable, annotations, or warnings.");
-        var defineConstants = DistinctValues(item.DefineConstants ?? [], $"projects[{index}].defineConstants",
-            requireNonEmpty: false);
-        var invalidSymbol = defineConstants.FirstOrDefault(symbol => !PreprocessorSymbol.IsMatch(symbol));
+        var defineConstants = item.DefineConstants is null ? null : DistinctValues(item.DefineConstants,
+            $"projects[{index}].defineConstants", requireNonEmpty: false);
+        var invalidSymbol = defineConstants?.FirstOrDefault(symbol => !PreprocessorSymbol.IsMatch(symbol));
         if (invalidSymbol is not null)
             throw new ArgumentException(
                 $"Production project {id} has an invalid preprocessor symbol: {invalidSymbol}.");
