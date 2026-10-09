@@ -433,7 +433,8 @@ internal static class StrictMutationEnumerator
         {
             foreach (var name in new[]
                      {
-                         "Directory.Build.props", "Directory.Build.targets", "Directory.Build.rsp", "MSBuild.rsp"
+                         "Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props",
+                         "Directory.Build.rsp", "MSBuild.rsp"
                      })
             {
                 var path = directory.Length == 0 ? name : directory + "/" + name;

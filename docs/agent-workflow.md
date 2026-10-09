@@ -135,7 +135,9 @@ process exit, and it says `INCOMPLETE` / `4`. A supported plan must contain `EXE
 nonnegative `counts.enumerated`. A project outside the current semantic envelope may instead contain only an
 explicitly allowlisted semantic `ENUMERATION_*` condition or known scope/selection blocker and must keep
 `counts.enumerated` null. Retired placeholder, SDK/reference-pack, fingerprint, unknown, and integrity-related codes
-are not accepted merely because they share an `ENUMERATION_` prefix.
+are not accepted merely because they share an `ENUMERATION_` prefix. Configuration/snapshot mismatches, stale
+scope/source/span, duplicate/colliding identities, unavailable reference packs, and unexpected context exceptions
+are treated as orchestration refusals (exit `73`), not as supported-project limitations.
 Both are nonpassing results. A crash
 that merely exits 4, a malformed condition, or a contradictory count is refused as orchestration exit `73`.
 All orchestration refusals use exit `73`, distinct from tool usage exit `1` and strict incomplete exit `4`.

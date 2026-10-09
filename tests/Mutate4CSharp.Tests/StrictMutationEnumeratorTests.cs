@@ -707,19 +707,23 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
     [Theory]
     [InlineData("Directory.Build.rsp")]
     [InlineData("MSBuild.rsp")]
-    public async Task SnapshotBoundaryRefusesCapturedMsbuildResponseFiles(string responseFile)
+    [InlineData("Directory.Packages.props")]
+    public async Task SnapshotBoundaryRefusesCapturedInheritedBuildInputs(string inheritedInput)
     {
         WriteProject("src/App", "src/App/**/*.cs");
-        _repository.WriteText(responseFile, "-p:DefineConstants=HIDDEN\n");
+        var content = inheritedInput.EndsWith(".props", StringComparison.OrdinalIgnoreCase)
+            ? "<Project><PropertyGroup><Nullable>enable</Nullable></PropertyGroup></Project>\n"
+            : "-p:DefineConstants=HIDDEN\n";
+        _repository.WriteText(inheritedInput, content);
         _repository.WriteText("src/App/Flag.cs",
             "public sealed class Flag { public bool Value() => true; }\n");
         Commit();
-        if (responseFile == "Directory.Build.rsp")
+        if (inheritedInput == "Directory.Build.rsp")
         {
             var error = await Assert.ThrowsAsync<SnapshotCaptureException>(() =>
                 SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
                     SnapshotCaptureOptions.Default, CancellationToken.None));
-            Assert.Contains(responseFile, error.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(inheritedInput, error.Message, StringComparison.OrdinalIgnoreCase);
             return;
         }
 

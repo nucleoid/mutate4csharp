@@ -9,9 +9,10 @@ machine-readable contract is [`contracts/check-config-v1.schema.json`](contracts
 and the repository root contains a working example. Unknown properties, duplicate JSON properties or IDs,
 unsupported versions/runners, empty mappings, rooted or escaping paths, duplicate mappings, conflicting suite
 aliases, and accidental ambiguous source membership are rejected before any test process is launched. A linked
-source may intentionally belong to multiple project contexts only when every owner declares the same explicit
-pattern in both `sources` and `sharedSources`; broad or accidental overlapping globs remain ambiguous, including
-in plan mode.
+source may intentionally belong to multiple project contexts only when every owner declares the same exact
+path or glob pattern in both `sources` and `sharedSources`. Broad shared globs are an explicit opt-in to evaluate
+every matching file in every declaring context; overlaps without one identical shared pattern remain ambiguous,
+including in plan mode.
 
 Each production project declares a stable ID, repository-relative `.csproj`, target framework, parse-context
 identity, source globs, and one or more test-suite IDs. Optional `languageVersion` defaults to C# `14.0`.
@@ -71,7 +72,7 @@ accept platform-qualified TFMs for planning compatibility, but semantic enumerat
 additional compiler symbols and reference contracts are modelled. Version 1 uses an allowlist for project properties/items and refuses
 unmodelled project semantics, conditional project evaluation,
 `ProjectReference`/`PackageReference` resolution, explicit imports, inherited `Directory.Build.props`/`.targets`,
-captured `Directory.Build.rsp`/`MSBuild.rsp`,
+captured `Directory.Packages.props`/`Directory.Build.rsp`/`MSBuild.rsp`,
 build controls above the repository root, non-plain SDKs, Compile Remove/Update transforms, unresolved semantic
 diagnostics, and non-Git explicit-input
 enumeration rather than silently borrowing ambient MSBuild state. SDK semantics supply the upper-case configuration
