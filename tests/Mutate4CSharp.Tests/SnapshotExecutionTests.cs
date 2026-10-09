@@ -21,6 +21,32 @@ public sealed class SnapshotExecutionTests : IDisposable
             "Dependency preparation failed: ".Length);
     }
 
+    [Fact]
+    public void MalformedTrxAccountingReportsTheReadFailure()
+    {
+        var trx = Path.Combine(_repository.Root, "partial.trx");
+        File.WriteAllText(trx, "<TestRun>");
+
+        var failure = Assert.ThrowsAny<Exception>(() =>
+            VstestSuiteExecutor.AccountedMembers([trx]));
+
+        Assert.Equal("TrxAccountingException", failure.GetType().Name);
+        Assert.Contains("partial.trx", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MutantFailureDiagnosticRetainsNewestUnicodeSafeOutput()
+    {
+        var bound = typeof(StrictMutationExecutor).GetMethod("Bound",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var output = "old-output " + new string('x', 600) + " 😀FINAL_MUTANT_ERROR";
+
+        var diagnostic = Assert.IsType<string>(bound.Invoke(null, [output]));
+
+        Assert.Contains("FINAL_MUTANT_ERROR", diagnostic, StringComparison.Ordinal);
+        Assert.False(char.IsSurrogate(diagnostic[0]));
+    }
+
     private readonly SnapshotTestRepository _repository = new();
 
     [Fact]

@@ -3,6 +3,25 @@ namespace Mutate4CSharp.Tests;
 public sealed class EvaluationSchedulerTests
 {
     [Fact]
+    public async Task SchedulerBoundsEvidenceWithoutSplittingSurrogatePairs()
+    {
+        var split = new string('x', EvaluationEvidence.MaxDiagnosticLength - 1) + "😀tail";
+        var executor = new DelegateMutationExecutor((work, _, _) => Task.FromResult(
+            new ScheduledMutationResult(work.EvaluationUnitId, UnitDisposition.Error,
+                [new EvaluationEvidence(split, split, [split])] )));
+
+        var result = await new EvaluationScheduler(executor, TimeProvider.System).RunAsync(
+            [new ScheduledMutation("mutation:v1:" + new string('1', 64),
+                "evaluation:v1:" + new string('2', 64), ["unit"])],
+            1, TimeSpan.FromSeconds(10), DateTimeOffset.UtcNow.AddMinutes(1),
+            CancellationToken.None);
+
+        var evidence = Assert.Single(Assert.Single(result.Results).Evidence);
+        Assert.False(char.IsSurrogate(evidence.Summary[^1]));
+        Assert.False(char.IsSurrogate(Assert.Single(evidence.Diagnostics!)[^1]));
+    }
+
+    [Fact]
     public async Task SnapshotIntegrityFailuresEscapeUnitClassification()
     {
         var executor = new DelegateMutationExecutor((_, _, _) =>
