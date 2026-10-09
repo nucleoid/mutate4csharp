@@ -75,7 +75,10 @@ unmodelled project semantics, conditional project evaluation,
 captured `Directory.Packages.props`/`Directory.Build.rsp`/`MSBuild.rsp`,
 build controls above the repository root, non-plain SDKs, Compile Remove/Update transforms, unresolved semantic
 diagnostics, and non-Git explicit-input
-enumeration rather than silently borrowing ambient MSBuild state. SDK semantics supply the upper-case configuration
+enumeration rather than silently borrowing ambient MSBuild state. Project property names must use their canonical
+SDK casing; case variants are refused rather than risk modelling different semantics from case-insensitive MSBuild.
+Enumeration is bounded at 10,000 evaluation units; exceeding it is an explicit incomplete refusal with an unknown
+count, not a truncated plan. SDK semantics supply the upper-case configuration
 symbol (`DEBUG`, `RELEASE`, or the configured equivalent) unless `DisableImplicitConfigurationDefines` is true;
 `TRACE` is inherited unless a bare `DefineConstants` value replaces it or `DisableDiagnosticTracing` is true.
 User symbols are derived from captured project bytes; when the optional `defineConstants` assertion is supplied,

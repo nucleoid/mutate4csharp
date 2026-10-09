@@ -773,6 +773,79 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
         Assert.Single(result.Candidates);
     }
 
+    [Theory]
+    [InlineData("nullable", "enable")]
+    [InlineData("defineconstants", "$(DefineConstants);FEATURE")]
+    [InlineData("defaultitemexcludes", "generated/**")]
+    [InlineData("disableimplicitframeworkdefines", "false")]
+    public async Task RefusesNonCanonicalPropertyCasingInsteadOfMisreadingMsbuildSemantics(
+        string property, string value)
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/App.csproj", $"""
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><{property}>{value}</{property}></PropertyGroup>
+            </Project>
+            """);
+        _repository.WriteText("src/App/Flag.cs",
+            "public sealed class Flag { public bool Value() => true; }\n");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason => reason.Code == "ENUMERATION_PROPERTY_UNSUPPORTED" &&
+            reason.Message.Contains("casing", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task BoundedEnumerationRefusesInsteadOfPublishingATruncatedPlan()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        _repository.WriteText("src/App/Flag.cs", """
+            public sealed class Flag
+            {
+                public bool A() => true;
+                public bool B() => false;
+                public int C() => 1 + 2;
+            }
+            """);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot),
+            FullProjectScope(snapshot, "src/App/Flag.cs"), CancellationToken.None,
+            maxCandidates: 2);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason => reason.Code == "ENUMERATION_LIMIT_EXCEEDED");
+    }
+
+    [Fact]
+    public async Task EmptyCompileInventoryIsAValidatedEnumerationRefusal()
+    {
+        WriteProject("src/App", "src/App/**/*.cs");
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [new("src/App/App.csproj", ["tests/App.Tests/App.Tests.csproj"], [], "FULL_PROJECT")], [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot), scope,
+            CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons,
+            reason => reason.Code == "ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED");
+    }
+
     [Fact]
     public async Task RefusesCaptureBytesChangedAfterSnapshotIdentityWasEstablished()
     {
@@ -879,6 +952,31 @@ public sealed class StrictMutationEnumeratorTests : IDisposable
         Assert.Single(result.Candidates.Select(candidate => candidate.MutationId).Distinct(StringComparer.Ordinal));
         Assert.Equal(2, result.Candidates.Select(candidate => candidate.EvaluationUnitId)
             .Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
+    public async Task FullProjectExpansionRefusesOverlappingOwnershipWithoutSharedOptIn()
+    {
+        WriteSharedProjects();
+        var configurationPath = Path.Combine(_repository.Root, "mutate4csharp.json");
+        var configurationText = File.ReadAllText(configurationPath).Replace(
+            "\"sharedSources\":[\"shared/*.cs\"]", "\"sharedSources\":[]", StringComparison.Ordinal);
+        _repository.WriteText("mutate4csharp.json", configurationText);
+        Commit();
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, CancellationToken.None);
+        var scope = new ScopePlan("1", "base", ".", snapshot.Identity.BaseCommit, [], [],
+            [
+                new("src/One/One.csproj", ["tests/App.Tests/App.Tests.csproj"], ["shared/Flag.cs"], "FULL_PROJECT"),
+                new("src/Two/Two.csproj", ["tests/App.Tests/App.Tests.csproj"], ["shared/Flag.cs"], "FULL_PROJECT")
+            ], [], true);
+
+        var result = StrictMutationEnumerator.Enumerate(snapshot, LoadConfiguration(snapshot), scope,
+            CancellationToken.None);
+
+        Assert.False(result.IsComplete);
+        Assert.Empty(result.Candidates);
+        Assert.Contains(result.Reasons, reason => reason.Code == "AMBIGUOUS_PROJECT_OWNERSHIP");
     }
 
     [Fact]

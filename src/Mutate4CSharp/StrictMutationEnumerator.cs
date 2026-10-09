@@ -17,6 +17,7 @@ internal sealed record StrictMutationEnumerationResult(
 internal static class StrictMutationEnumerator
 {
     private const int MaxDiagnostics = 100;
+    internal const int MaxCandidates = 10_000;
     private static readonly ConcurrentDictionary<string, Lazy<ReferenceSet>> ReferenceSetCache =
         new(StringComparer.Ordinal);
     private static readonly HashSet<string> SupportedProjectProperties = new(
@@ -38,6 +39,8 @@ internal static class StrictMutationEnumerator
         "IncludeSymbols", "SymbolPackageFormat", "GeneratePackageOnBuild", "IsTestProject",
         "InvariantGlobalization"
     ], StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> CanonicalProjectProperties = new(
+        SupportedProjectProperties, StringComparer.Ordinal);
     private const string ImplicitUsingsSource = """
         global using global::System;
         global using global::System.Collections.Generic;
@@ -50,11 +53,12 @@ internal static class StrictMutationEnumerator
 
     public static StrictMutationEnumerationResult Enumerate(InputSnapshot snapshot,
         CheckConfiguration configuration, ScopePlan scopePlan, CancellationToken cancellationToken,
-        string? sdkVersion = null)
+        string? sdkVersion = null, int maxCandidates = MaxCandidates)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(scopePlan);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxCandidates, 1);
         if (!scopePlan.IsComplete)
             return Refused("ENUMERATION_SCOPE_INCOMPLETE",
                 "Semantic enumeration requires one complete captured scope plan.");
@@ -68,6 +72,8 @@ internal static class StrictMutationEnumerator
             cancellationToken.ThrowIfCancellationRequested();
             var captured = snapshot.Files.Where(file => file.Exists)
                 .ToDictionary(file => file.RelativePath, StringComparer.Ordinal);
+            var ambiguous = FindAmbiguousOwnership(captured.Keys, configuration);
+            if (ambiguous is not null) return Refused(ambiguous.Code, ambiguous.Message);
             var projects = configuration.Projects.ToDictionary(project => project.Project,
                 StringComparer.Ordinal);
             var candidates = new List<MutationCandidate>();
@@ -127,6 +133,9 @@ internal static class StrictMutationEnumerator
                             site.OperatorId, site.OperatorVersion, site.Replacement);
                         var evaluationId = EvaluationUnitIdentity.Compute(new(mutation.MutationId,
                             project.Project, project.TargetFramework, project.ParseContext));
+                        if (candidates.Count == maxCandidates)
+                            throw new EnumerationContextException("ENUMERATION_LIMIT_EXCEEDED",
+                                $"Semantic enumeration exceeds the bounded limit of {maxCandidates} evaluation units.");
                         candidates.Add(new(mutation.MutationId, evaluationId, mutation.Material,
                             project.Project, project.TargetFramework, project.ParseContext,
                             site.Start, site.Length));
@@ -182,17 +191,46 @@ internal static class StrictMutationEnumerator
         }
     }
 
+    private static EvaluationReason? FindAmbiguousOwnership(IEnumerable<string> capturedPaths,
+        CheckConfiguration configuration)
+    {
+        foreach (var path in capturedPaths.Where(path => path.EndsWith(".cs",
+                     StringComparison.OrdinalIgnoreCase) && !configuration.Exclusions.Any(exclusion =>
+                     ProjectOwnershipResolver.GlobMatches(path, exclusion.Path)))
+                 .OrderBy(path => path, StringComparer.Ordinal))
+        {
+            var owners = configuration.Projects.Where(project => project.Sources.Any(pattern =>
+                ProjectOwnershipResolver.GlobMatches(path, pattern))).ToArray();
+            if (owners.Length < 2) continue;
+            var explicitlyShared = owners.Select(owner => owner.SharedSources.Where(pattern =>
+                    ProjectOwnershipResolver.GlobMatches(path, pattern)).ToHashSet(StringComparer.Ordinal))
+                .Aggregate((left, right) =>
+                {
+                    left.IntersectWith(right);
+                    return left;
+                });
+            if (explicitlyShared.Count > 0) continue;
+            var shown = owners.Select(owner => owner.Project).OrderBy(project => project,
+                StringComparer.Ordinal).Take(20).ToArray();
+            return new("AMBIGUOUS_PROJECT_OWNERSHIP",
+                $"{path} is owned by multiple configured projects without one identical sharedSources " +
+                $"pattern in every context: {string.Join(", ", shown)}.");
+        }
+        return null;
+    }
+
     private static ProjectContext BuildContext(InputSnapshot snapshot,
         IReadOnlyDictionary<string, SnapshotFile> captured, CheckProject project,
         CheckConfiguration configuration, string? sdkVersion, CancellationToken cancellationToken)
     {
         if (!captured.ContainsKey(project.Project))
-            throw new EvaluationContractException($"Configured project is not captured: {project.Project}.");
+            throw new EnumerationContextException("ENUMERATION_PROJECT_UNMAPPED",
+                $"Configured project is not captured: {project.Project}.");
         var sourcePaths = captured.Keys.Where(path => path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) &&
                 project.Sources.Any(pattern => ProjectOwnershipResolver.GlobMatches(path, pattern)))
             .OrderBy(path => path, StringComparer.Ordinal).ToArray();
         if (sourcePaths.Length == 0)
-            throw new EvaluationContractException(
+            throw new EnumerationContextException("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
                 $"Configured project {project.Project} has no captured compile inputs.");
         var buildConfiguration = ResolveBuildConfiguration(configuration, project);
         var projectSemantics = ValidateProjectFile(snapshot, captured, project, sourcePaths,
@@ -322,6 +360,13 @@ internal static class StrictMutationEnumerator
         if (unsupportedProperty is not null)
             throw new EnumerationContextException("ENUMERATION_PROPERTY_UNSUPPORTED",
                 $"Project property {unsupportedProperty.Name.LocalName} is unsupported in enumeration v1: {project.Project}.");
+        var nonCanonicalProperty = root.Descendants().Where(element =>
+                element.Parent?.Name.LocalName == "PropertyGroup")
+            .FirstOrDefault(element => !CanonicalProjectProperties.Contains(element.Name.LocalName));
+        if (nonCanonicalProperty is not null)
+            throw new EnumerationContextException("ENUMERATION_PROPERTY_UNSUPPORTED",
+                $"Project property casing must be canonical in enumeration v1: " +
+                $"{nonCanonicalProperty.Name.LocalName} in {project.Project}.");
         if (SingleProperty(root, "DefaultItemExcludes") is not null)
             throw new EnumerationContextException("ENUMERATION_PROPERTY_UNSUPPORTED",
                 $"DefaultItemExcludes is unsupported in enumeration v1: {project.Project}.");
