@@ -57,6 +57,33 @@ public sealed class EvaluationSchedulerTests
         Assert.Equal(2, result.Attempts[first.EvaluationUnitId].Count);
         Assert.Equal(2, result.Attempts[second.EvaluationUnitId].Count);
     }
+
+    [Fact]
+    public async Task ContiguousAttemptsRetainCompletedEvidenceBeforeCancellationOmission()
+    {
+        using var cancel = new CancellationTokenSource();
+        var executor = new DelegateMutationExecutor((work, _, _) =>
+        {
+            cancel.Cancel();
+            return Task.FromResult(new ScheduledMutationResult(work.EvaluationUnitId,
+                UnitDisposition.Killed, [new("KILLED", "completed before cancellation")]));
+        });
+        var first = new ScheduledMutation("mutation:v1:" + new string('7', 64),
+            "evaluation:v1:" + new string('7', 64), ["unit"]);
+        var second = new ScheduledMutation("mutation:v1:" + new string('8', 64),
+            "evaluation:v1:" + new string('8', 64), ["unit"]);
+
+        var result = await StrictExecutionPipeline.RunContiguousAttemptsAsync(executor,
+            [first, second], 2, TimeSpan.FromSeconds(10), DateTimeOffset.UtcNow.AddMinutes(1),
+            TimeProvider.System, cancel.Token);
+
+        Assert.Equal([UnitDisposition.Killed, UnitDisposition.Omitted],
+            result.Attempts[first.EvaluationUnitId].Select(item => item.Disposition));
+        Assert.Equal(UnitDisposition.Omitted,
+            Assert.Single(result.Attempts[second.EvaluationUnitId]).Disposition);
+        Assert.Contains(result.IncompleteConditions, item => item.Code == "EXECUTION_CANCELLED");
+    }
+
     [Fact]
     public async Task SchedulerNeverExceedsWorkerBoundAndReturnsCanonicalOrder()
     {

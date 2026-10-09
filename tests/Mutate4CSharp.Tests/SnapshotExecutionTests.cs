@@ -943,7 +943,7 @@ public sealed class SnapshotExecutionTests : IDisposable
 
         try
         {
-            var error = Assert.Throws<SnapshotCaptureException>(() =>
+            var error = Assert.Throws<ExecutionBoundaryIntegrityException>(() =>
                 ExecutionEnvironment.ValidateResolvedPackageRoots(workspace, packages));
             Assert.Contains("unfrozen", error.Message, StringComparison.OrdinalIgnoreCase);
         }
@@ -981,7 +981,7 @@ public sealed class SnapshotExecutionTests : IDisposable
 
         try
         {
-            var error = Assert.Throws<SnapshotCaptureException>(() =>
+            var error = Assert.Throws<ExecutionBoundaryIntegrityException>(() =>
                 ExecutionEnvironment.ValidateResolvedPackageRoots(workspace, packages));
             Assert.Contains("source", error.Message, StringComparison.OrdinalIgnoreCase);
         }
@@ -1074,7 +1074,7 @@ public sealed class SnapshotExecutionTests : IDisposable
                     }
                 }));
 
-                var error = Assert.Throws<SnapshotCaptureException>(() =>
+                var error = Assert.Throws<ExecutionBoundaryIntegrityException>(() =>
                     ExecutionEnvironment.ValidateResolvedPackageRoots(workspace, packages, selectedConfig));
                 Assert.Contains("outside the selected NuGet.Config", error.Message,
                     StringComparison.OrdinalIgnoreCase);
@@ -1114,7 +1114,7 @@ public sealed class SnapshotExecutionTests : IDisposable
         try
         {
             ExecutionEnvironment.ValidateResolvedPackageRoots(workspace, packages);
-            var error = Assert.Throws<SnapshotCaptureException>(() =>
+            var error = Assert.Throws<ExecutionBoundaryIntegrityException>(() =>
                 ExecutionEnvironment.ValidateResolvedPackageRoots(workspace, packages, selectedConfig));
             Assert.Contains("source", error.Message, StringComparison.OrdinalIgnoreCase);
         }
@@ -1147,7 +1147,7 @@ public sealed class SnapshotExecutionTests : IDisposable
 
         try
         {
-            var error = Assert.Throws<SnapshotCaptureException>(() =>
+            var error = Assert.Throws<ExecutionBoundaryIntegrityException>(() =>
                 ExecutionEnvironment.ValidateResolvedPackageRoots(workspace, packages));
             Assert.Contains("sources", error.Message, StringComparison.OrdinalIgnoreCase);
         }
@@ -1185,7 +1185,7 @@ public sealed class SnapshotExecutionTests : IDisposable
 
         try
         {
-            var error = Assert.Throws<SnapshotCaptureException>(() =>
+            var error = Assert.Throws<ExecutionBoundaryIntegrityException>(() =>
                 ExecutionEnvironment.ValidateResolvedPackageRoots(workspace, packages));
             Assert.Contains("sources", error.Message, StringComparison.OrdinalIgnoreCase);
         }

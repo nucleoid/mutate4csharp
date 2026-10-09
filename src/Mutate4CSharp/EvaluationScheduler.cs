@@ -91,7 +91,10 @@ internal sealed class EvaluationScheduler
                     results[index] = Error(mutation, "Execution was cancelled after assignment.");
                     return;
                 }
-                catch (SnapshotCaptureException) { throw; }
+                catch (Exception ex) when (ex is SnapshotDivergedException or
+                                           ExecutionBoundaryIntegrityException or
+                                           SnapshotCleanupException or SnapshotLimitException)
+                { throw; }
                 catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
                 {
                     results[index] = Error(mutation, ex.Message);

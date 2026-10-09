@@ -662,7 +662,8 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
             var destination = Path.Combine(worker.Root, Path.GetRelativePath(GraphRoot, file));
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             if (File.Exists(destination) && !File.ReadAllBytes(destination).SequenceEqual(File.ReadAllBytes(file)))
-                throw new SnapshotCaptureException("Captured package lock differs from the prepared dependency lock.");
+                throw new ExecutionBoundaryIntegrityException(
+                    "Captured package lock differs from the prepared dependency lock.");
             if (!File.Exists(destination)) await SnapshotWorkspace.CopyFileAsync(file, destination, cancellationToken);
         }
         ExecutionEnvironment.ValidateExecutionAncestors(worker.Root);
@@ -961,7 +962,8 @@ internal static class ExecutionEnvironment
         {
             using var assets = JsonDocument.Parse(File.ReadAllBytes(assetsPath));
             if (!assets.RootElement.TryGetProperty("packageFolders", out var packageFolders))
-                throw new SnapshotCaptureException("Resolved dependency graph did not declare package folders.");
+                throw new ExecutionBoundaryIntegrityException(
+                    "Resolved dependency graph did not declare package folders.");
             var foundExpected = false;
             foreach (var folder in packageFolders.EnumerateObject())
             {
@@ -969,12 +971,13 @@ internal static class ExecutionEnvironment
                     Path.AltDirectorySeparatorChar);
                 if (!string.Equals(actual, expected, OperatingSystem.IsWindows()
                         ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-                    throw new SnapshotCaptureException(
+                    throw new ExecutionBoundaryIntegrityException(
                         $"Resolved dependency graph used an unfrozen package folder: {folder.Name}");
                 foundExpected = true;
             }
             if (!foundExpected)
-                throw new SnapshotCaptureException("Resolved dependency graph did not use the private package folder.");
+                throw new ExecutionBoundaryIntegrityException(
+                    "Resolved dependency graph did not use the private package folder.");
             if (allowedSources is null) continue;
             if (!assets.RootElement.TryGetProperty("project", out var project) ||
                 !project.TryGetProperty("restore", out var restore) ||
@@ -991,14 +994,15 @@ internal static class ExecutionEnvironment
                         downloads.ValueKind is JsonValueKind.Array or JsonValueKind.Object &&
                         (downloads.ValueKind == JsonValueKind.Object || downloads.GetArrayLength() > 0));
                 if (hasResolvedPackages || hasPackageDownloads)
-                    throw new SnapshotCaptureException("Resolved dependency graph did not declare restore sources.");
+                    throw new ExecutionBoundaryIntegrityException(
+                        "Resolved dependency graph did not declare restore sources.");
                 continue;
             }
             foreach (var source in sources.EnumerateObject())
             {
                 var normalized = NormalizePackageSource(source.Name, workspaceRoot);
                 if (!allowedSources.Contains(normalized) && !IsImplicitRuntimeLibraryPacksSource(normalized))
-                    throw new SnapshotCaptureException(
+                    throw new ExecutionBoundaryIntegrityException(
                         $"Resolved dependency graph used a source outside the selected NuGet.Config: {source.Name}");
             }
         }

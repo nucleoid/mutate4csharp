@@ -12,6 +12,10 @@ internal sealed record StrictExecutionOutcome(
     EvaluationReason Reason,
     IReadOnlyList<EvaluationEvidence> Evidence);
 
+internal sealed record ContiguousAttemptBatch(
+    IReadOnlyDictionary<string, IReadOnlyList<ScheduledMutationResult>> Attempts,
+    IReadOnlyList<EvaluationReason> IncompleteConditions);
+
 internal static class StrictExecutionPipeline
 {
     private static readonly TimeProvider Clock = TimeProvider.System;
@@ -172,23 +176,23 @@ internal static class StrictExecutionPipeline
                 item => aliases[item.Identity].Result.HealthyControl, StringComparer.Ordinal);
             var executor = new StrictMutationExecutor(snapshot, environment, plan.Selected,
                 configuration.ExecutionSuites, controls, Clock);
-            var attempts = scheduled.ToDictionary(item => item.EvaluationUnitId,
-                _ => new List<ScheduledMutationResult>(), StringComparer.Ordinal);
-            for (var repetition = 1; repetition <= policy.StabilityRepetitions; repetition++)
-            {
-                var run = await new EvaluationScheduler(executor, Clock).RunAsync(scheduled,
-                    MaxStrictWorkers, TimeSpan.FromSeconds(policy.MutantTimeoutSeconds), deadline,
-                    cancellationToken);
-                conditions.AddRange(run.IncompleteConditions);
-                foreach (var result in run.Results) attempts[result.EvaluationUnitId].Add(result);
-            }
+            var batch = await RunContiguousAttemptsAsync(executor, scheduled,
+                policy.StabilityRepetitions, TimeSpan.FromSeconds(policy.MutantTimeoutSeconds), deadline,
+                Clock, cancellationToken);
+            conditions.AddRange(batch.IncompleteConditions);
             foreach (var mutation in scheduled)
             {
-                var results = attempts[mutation.EvaluationUnitId];
+                var results = batch.Attempts[mutation.EvaluationUnitId];
                 if (results.Any(item => item.Disposition == UnitDisposition.Omitted))
                 {
+                    var partialEvidence = results.SelectMany(item => item.Evidence).Append(
+                        new EvaluationEvidence("PARTIAL_STABILITY_EVIDENCE",
+                            "The unit retained every completed stability attempt before execution stopped.",
+                            results.Select((item, index) =>
+                                $"attempt={index + 1};disposition={item.Disposition}").ToArray()))
+                        .ToArray();
                     completed.Add(plan.CompleteWithoutExecution(pending[mutation.EvaluationUnitId],
-                        UnitDisposition.Omitted, results.SelectMany(item => item.Evidence).ToArray()));
+                        UnitDisposition.Omitted, partialEvidence));
                     conditions.Add(new("MUTATION_ATTEMPT_OMITTED",
                         "At least one configured stability attempt was not assigned."));
                     continue;
@@ -207,6 +211,55 @@ internal static class StrictExecutionPipeline
             plan.OrderResults(completed), baselines.Status, suiteEvidence,
             conditions.Distinct().ToArray(), finalization, evidence);
         }
+    }
+
+    internal static async Task<ContiguousAttemptBatch> RunContiguousAttemptsAsync(
+        IIsolatedMutationExecutor executor, IReadOnlyList<ScheduledMutation> scheduled, int repetitions,
+        TimeSpan mutantTimeout, DateTimeOffset deadline, TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(executor);
+        ArgumentNullException.ThrowIfNull(scheduled);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        if (repetitions < 1) throw new ArgumentOutOfRangeException(nameof(repetitions));
+        if (mutantTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(mutantTimeout));
+
+        var ordered = scheduled.OrderBy(item => item.EvaluationUnitId, StringComparer.Ordinal).ToArray();
+        var duplicate = ordered.GroupBy(item => item.EvaluationUnitId, StringComparer.Ordinal)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+            throw new EvaluationContractException(
+                $"Duplicate scheduled evaluation unit: {duplicate.Key}.");
+
+        var attempts = ordered.ToDictionary(item => item.EvaluationUnitId,
+            _ => new List<ScheduledMutationResult>(), StringComparer.Ordinal);
+        var conditions = new List<EvaluationReason>();
+        var scheduler = new EvaluationScheduler(executor, timeProvider);
+        foreach (var mutation in ordered)
+        {
+            for (var repetition = 1; repetition <= repetitions; repetition++)
+            {
+                var run = await scheduler.RunAsync([mutation], MaxStrictWorkers, mutantTimeout,
+                    deadline, cancellationToken);
+                conditions.AddRange(run.IncompleteConditions);
+                var result = AssertSingleResult(run.Results, mutation.EvaluationUnitId);
+                attempts[mutation.EvaluationUnitId].Add(result);
+                if (result.Disposition == UnitDisposition.Omitted) break;
+            }
+        }
+        return new(attempts.ToDictionary(item => item.Key,
+                item => (IReadOnlyList<ScheduledMutationResult>)item.Value.ToArray(), StringComparer.Ordinal),
+            conditions.Distinct().ToArray());
+    }
+
+    private static ScheduledMutationResult AssertSingleResult(
+        IReadOnlyList<ScheduledMutationResult> results, string evaluationUnitId)
+    {
+        if (results.Count != 1 ||
+            !string.Equals(results[0].EvaluationUnitId, evaluationUnitId, StringComparison.Ordinal))
+            throw new EvaluationContractException(
+                "Contiguous stability scheduling returned invalid evaluation-unit accounting.");
+        return results[0];
     }
 
     private static TimeSpan Remaining(DateTimeOffset deadline)

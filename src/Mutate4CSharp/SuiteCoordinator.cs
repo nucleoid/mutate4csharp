@@ -128,7 +128,9 @@ internal sealed class SuiteCoordinator
                 AddCondition(conditions, "EXECUTION_CANCELLED", "Baseline execution was cancelled.");
                 break;
             }
-            catch (SnapshotCaptureException)
+            catch (Exception ex) when (ex is SnapshotDivergedException or
+                                       ExecutionBoundaryIntegrityException or
+                                       SnapshotCleanupException or SnapshotLimitException)
             {
                 if (unboundedResult is not null) await DisposeFailedResultAsync(unboundedResult);
                 throw;
