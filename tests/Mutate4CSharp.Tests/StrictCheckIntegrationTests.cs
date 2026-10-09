@@ -223,6 +223,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         var firstReport = Path.Combine(_directory, "full-plan.json");
         var targetedReport = Path.Combine(_directory, "targeted-plan.json");
         var staleReport = Path.Combine(_directory, "stale-targeted-plan.json");
+        var manyIdsReport = Path.Combine(_directory, "many-targeted-ids.json");
         var previous = Environment.CurrentDirectory;
         Environment.CurrentDirectory = repository.Root;
         try
@@ -253,8 +254,47 @@ public sealed class StrictCheckIntegrationTests : IDisposable
                 reason => reason.Code == "TARGET_SELECTION_INVALID");
             Assert.DoesNotContain(stale.Report.IncompleteConditions,
                 reason => reason.Code == "SNAPSHOT_VALIDATION_FAILED");
+
+            var manyIds = Enumerable.Range(0, 25)
+                .Select(index => $"mutation:v1:{index:x64}").ToArray();
+            var many = await coordinator.RunAsync(new(false, "HEAD", [], manyIdsReport,
+                "many-targeted-ids", MutationIds: manyIds,
+                PlanFingerprint: planFingerprint), CancellationToken.None);
+            var manyEvidence = Assert.Single(many.Report.Evidence,
+                item => item.Kind == "EXACT_ID_REQUEST");
+            Assert.True(File.Exists(manyIdsReport));
+            Assert.True(manyEvidence.Diagnostics!.Count <= EvaluationEvidence.MaxDiagnostics);
+            Assert.Contains(manyEvidence.Diagnostics,
+                item => item == "ids-truncated=6");
         }
         finally { Environment.CurrentDirectory = previous; }
+    }
+
+    [Fact]
+    public void LaterFailuresRetainPriorIntegrityAndCleanupWrappedStrictRefusals()
+    {
+        var cleanupReason = new EvaluationReason("SNAPSHOT_CLEANUP_FAILED", "cleanup failed");
+        var boundary = new EvaluationReason("EXECUTION_BOUNDARY_INTEGRITY", "boundary changed");
+        var divergence = new SnapshotCleanupException(
+            new SnapshotDivergedException("original tree changed"),
+            new IOException("cleanup also failed"));
+        var retained = EvaluationCoordinator.PreservedFailureReasons(
+            cleanupReason, [boundary], divergence);
+
+        var refusal = new StrictExecutionRefusalException(
+            new("BASELINE_ACCOUNTING_INCOMPLETE", "baseline accounting failed"),
+            [new("BASELINE_ACCOUNTING_INCOMPLETE", "baseline accounting failed")]);
+        var wrappedRefusal = new SnapshotCleanupException(refusal,
+            new IOException("environment cleanup failed"));
+        var refusalReasons = EvaluationCoordinator.PreservedFailureReasons(
+            cleanupReason, [], wrappedRefusal);
+        var refusalEvidence = EvaluationCoordinator.PreservedFailureEvidence(wrappedRefusal);
+
+        Assert.Contains(retained, item => item.Code == "EXECUTION_BOUNDARY_INTEGRITY");
+        Assert.Contains(retained, item => item.Code == "SNAPSHOT_DIVERGED");
+        Assert.Contains(refusalReasons, item => item.Code == "BASELINE_ACCOUNTING_INCOMPLETE");
+        Assert.Contains(refusalEvidence, item => item.Kind == "STRICT_EXECUTION_REFUSAL" &&
+            item.Diagnostics!.Contains("BASELINE_ACCOUNTING_INCOMPLETE: baseline accounting failed"));
     }
 
     [Fact]
