@@ -86,6 +86,21 @@ public sealed class CompilerEvidenceTests
     }
 
     [Fact]
+    public void WindowsRangedDiagnosticUsesExactFullPathAttribution()
+    {
+        var control = Run(0, string.Empty, true, true);
+        var ranged = Run(1,
+            @"C:\repo\src\Subject.cs(4,12,4,20): error CS0019: bad operator");
+
+        var evidence = CompilerEvidence.Evaluate(ranged, control,
+            @"C:\repo\src\Subject.cs", @"C:\repo");
+
+        Assert.True(evidence.IsCompileInvalid);
+        Assert.Single(evidence.Diagnostics);
+        Assert.Contains("CS0019", evidence.Diagnostics[0]);
+    }
+
+    [Fact]
     public void SuccessfulMutantCannotBeCompileInvalidFromConsoleText()
     {
         var successfulMutant = Run(0, "src/Subject.cs(1,1): error CS1002: printed text", true, true);
