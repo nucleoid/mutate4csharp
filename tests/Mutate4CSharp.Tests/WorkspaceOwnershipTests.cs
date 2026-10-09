@@ -264,7 +264,8 @@ public sealed class WorkspaceOwnershipTests
 
         ExecutionEnvironment.ValidateExecutionBoundary(clone.Root);
         File.Delete(Path.Combine(clone.OwnedRoot, "Directory.Build.targets"));
-        Assert.Throws<SnapshotCaptureException>(() => ExecutionEnvironment.ValidateExecutionBoundary(clone.Root));
+        Assert.Throws<ExecutionBoundaryIntegrityException>(() =>
+            ExecutionEnvironment.ValidateExecutionBoundary(clone.Root));
     }
 
     [Fact]
@@ -282,7 +283,7 @@ public sealed class WorkspaceOwnershipTests
                 CancellationToken.None);
             File.WriteAllText(Path.Combine(outer, ".globalconfig"), "is_global = true\n");
 
-            var error = Assert.Throws<SnapshotCaptureException>(() =>
+            var error = Assert.Throws<ExecutionBoundaryIntegrityException>(() =>
                 ExecutionEnvironment.ValidateExecutionBoundary(root));
             Assert.Contains(".globalconfig", error.Message, StringComparison.OrdinalIgnoreCase);
         }
