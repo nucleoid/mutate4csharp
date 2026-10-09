@@ -149,6 +149,26 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
         Assert.DoesNotContain("agent-gate:", result.Diagnostic, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("RED")]
+    [InlineData("EMPTY")]
+    public async Task GateAcceptsValidatedNonGreenBaselineExitTwo(string baseline)
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "The shipped workflow is a Bash integration.");
+        var target = Path.Combine(_root, "non-green-baseline-" + baseline.ToLowerInvariant());
+        await CreateRepositoryAsync(target);
+        var head = (await RunAsync(target, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
+        var fixture = await CreateToolFixtureAsync(
+            $"{{\"outcome\":\"INCOMPLETE\",\"exitCode\":2,\"baseline\":\"{baseline}\",\"incompleteConditions\":[{{\"code\":\"FINALIZATION_PENDING\"}}],\"counts\":{{\"enumerated\":1}},\"evidence\":[]}}", 2);
+
+        var result = await RunAsync(target, "bash", Path.Combine(RepositoryRoot, "scripts", "agent-gate.sh"),
+            "gate", target, fixture.Receipt, fixture.PackageSha, fixture.PayloadSha, fixture.ToolCommit,
+            head, head, Path.Combine(_root, "non-green-baseline-" + baseline + ".json"), "no-state");
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.DoesNotContain("agent-gate:", result.Diagnostic, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task GateRejectsSymlinkReportWithStableRefusal()
     {

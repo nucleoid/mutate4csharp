@@ -35,6 +35,21 @@ public sealed class SnapshotExecutionTests : IDisposable
     }
 
     [Fact]
+    public void PassingTrxWithoutStorageReportsTheMembershipFailure()
+    {
+        var trx = Path.Combine(_repository.Root, "missing-storage.trx");
+        File.WriteAllText(trx, """
+            <TestRun><TestDefinitions><UnitTest name="Suite.Passes" /></TestDefinitions></TestRun>
+            """);
+
+        var failure = Assert.Throws<TrxAccountingException>(() =>
+            VstestSuiteExecutor.AccountedMembers([trx]));
+
+        Assert.Contains("missing-storage.trx", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("storage", failure.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void MutantFailureDiagnosticRetainsNewestUnicodeSafeOutput()
     {
         var bound = typeof(StrictMutationExecutor).GetMethod("Bound",

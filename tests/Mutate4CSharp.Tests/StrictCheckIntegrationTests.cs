@@ -187,6 +187,9 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         Assert.Empty(result.Report.Units);
         Assert.Contains(result.Report.Reasons, reason => reason.Code == "SNAPSHOT_DIVERGED");
         Assert.DoesNotContain(result.Report.Evidence, item => item.Kind == "MUTATION_PLAN");
+        Assert.Equal(BaselineStatus.Unknown, result.Report.Baseline);
+        Assert.Empty(result.Report.Suites);
+        Assert.DoesNotContain(result.Report.Evidence, item => item.Kind == "DEPENDENCY_INPUT");
     }
 
     [Fact]
@@ -257,8 +260,12 @@ public sealed class StrictCheckIntegrationTests : IDisposable
                 PlanFingerprint: "sha256:" + new string('0', 64)), CancellationToken.None);
             Assert.Contains(stale.Report.IncompleteConditions,
                 reason => reason.Code == "TARGET_SELECTION_INVALID");
+            Assert.Contains(stale.Report.IncompleteConditions,
+                reason => reason.Code == "EXACT_ID_RERUN_UNAVAILABLE");
             Assert.DoesNotContain(stale.Report.IncompleteConditions,
                 reason => reason.Code == "SNAPSHOT_VALIDATION_FAILED");
+            Assert.Contains(stale.Report.Evidence, item => item.Kind == "EXACT_ID_REQUEST");
+            Assert.Contains(stale.Report.Evidence, item => item.Kind == "SCOPE_PLAN");
 
             var manyIds = full.Report.Units.Take(25).Select(item => item.UnitId).ToArray();
             var many = await coordinator.RunAsync(new(false, "HEAD", [], manyIdsReport,

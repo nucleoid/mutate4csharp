@@ -135,6 +135,31 @@ public sealed class StrictMutationExecutorTests : IDisposable
     }
 
     [Fact]
+    public void BaselineSuiteEvidencePublishesBoundedRunAndMemberDiagnostics()
+    {
+        var suite = new SuiteExecution("one", ["one"], "One.csproj", "vstest", "net10.0",
+            "Release", ["One.Tests.dll"]);
+        var run = new SuiteRunResult(SuiteRunDisposition.Error, TimeSpan.Zero, [], [],
+            Enumerable.Range(1, 25).Select(index => $"baseline-read-error-{index}").ToArray(), []);
+        var execution = new SuiteBaselineExecution("snapshot-key", ["one"], run);
+        var method = typeof(StrictExecutionPipeline).GetMethod("ToSuiteEvidence",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+
+        var suites = Assert.IsAssignableFrom<IReadOnlyList<SuiteEvidence>>(method.Invoke(null,
+            [new[] { suite }, new Dictionary<string, SuiteBaselineExecution>(StringComparer.Ordinal)
+                { [suite.Identity] = execution }]))!;
+
+        var evidence = Assert.Single(Assert.Single(suites).Evidence);
+        Assert.True(evidence.Diagnostics!.Count <= EvaluationEvidence.MaxDiagnostics);
+        Assert.Contains(evidence.Diagnostics, item => item == "accountedMembers=<none>");
+        Assert.Contains(evidence.Diagnostics, item => item == "expectedMembers=One.Tests.dll");
+        Assert.Contains(evidence.Diagnostics, item => item.StartsWith("baseline-read-error-",
+            StringComparison.Ordinal));
+        Assert.Contains(evidence.Diagnostics, item => item.StartsWith("diagnostics-truncated=",
+            StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void StrictExecutionRemainsSerialUntilParallelIsolationIsVerified() =>
         Assert.Equal(1, StrictExecutionPipeline.MaxStrictWorkers);
 
@@ -184,6 +209,45 @@ public sealed class StrictMutationExecutorTests : IDisposable
             Assert.Equal(original, File.ReadAllBytes(Path.Combine(_repository.Root, "src/App/Flag.cs")));
             Assert.False(Directory.Exists(Path.Combine(_repository.Root, "obj")));
             Assert.False(Directory.Exists(Path.Combine(_repository.Root, "bin")));
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            try { File.Delete(reportPath); } catch { }
+            try { File.Delete(ReportWriter.LockPath(reportPath)); } catch { }
+        }
+    }
+
+    [Fact(Timeout = 420_000)]
+    public async Task CoordinatorPublishesRedBaselineExitTwoAndOmitsEverySelectedMutation()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        WriteFixture();
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "baseline");
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag { public static bool Value() => false; }
+            """);
+        var reportPath = Path.Combine(Path.GetTempPath(), $"strict-red-{Guid.NewGuid():N}.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = _repository.Root;
+        try
+        {
+            var result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], reportPath, "strict-red", NoState: true), cancellationToken);
+
+            Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+            Assert.Equal(2, result.Report.ExitCode);
+            Assert.Equal(BaselineStatus.Red, result.Report.Baseline);
+            Assert.NotEmpty(result.Report.Units);
+            Assert.All(result.Report.Units, unit =>
+            {
+                Assert.Equal(UnitDisposition.Omitted, unit.Disposition);
+                Assert.Contains(unit.Evidence, item => item.Kind == "BASELINE_NOT_GREEN");
+            });
+            Assert.Contains(result.Report.IncompleteConditions,
+                item => item.Code == "FINALIZATION_PENDING");
         }
         finally
         {
