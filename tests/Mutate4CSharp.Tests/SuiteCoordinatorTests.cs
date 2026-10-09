@@ -82,6 +82,26 @@ public sealed class SuiteCoordinatorTests
     }
 
     [Fact]
+    public void CompileInvalidRequiresMatchingEvidenceFromEveryMappedSuite()
+    {
+        var mutationId = "mutation:v1:" + new string('d', 64);
+
+        var complete = SuiteCoordinator.AggregateMutant(mutationId, ["one", "two"],
+        [
+            new("one", SuiteRunDisposition.Error, [], ["CS0029 at src/App/A.cs"], true),
+            new("two", SuiteRunDisposition.Error, [], ["CS0029 at src/App/A.cs"], true)
+        ]);
+        var contradictory = SuiteCoordinator.AggregateMutant(mutationId, ["one", "two"],
+        [
+            new("one", SuiteRunDisposition.Error, [], ["CS0029 at src/App/A.cs"], true),
+            Mutant("two", SuiteRunDisposition.Survived)
+        ]);
+
+        Assert.Equal(UnitDisposition.CompileInvalid, complete.Disposition);
+        Assert.Equal(UnitDisposition.Error, contradictory.Disposition);
+    }
+
+    [Fact]
     public async Task DeadlineUsesRemainingTimeAndCancellationStopsLaterBaselines()
     {
         using var cancel = new CancellationTokenSource();

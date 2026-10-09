@@ -208,10 +208,10 @@ try:
     if any(isinstance(item, dict) and item.get("kind") == "SIDECAR_PUBLICATION_FAILURE" for item in evidence):
         raise ValueError("report contains SIDECAR_PUBLICATION_FAILURE")
     execution_pending = any(
-        isinstance(item, dict) and item.get("code") == "EXECUTION_NOT_IMPLEMENTED"
+        isinstance(item, dict) and item.get("code") == "FINALIZATION_PENDING"
         for item in conditions
     )
-    execution_codes = {"EXECUTION_NOT_IMPLEMENTED", "TARGETED_DIAGNOSTIC"}
+    execution_codes = {"FINALIZATION_PENDING", "TARGETED_DIAGNOSTIC"}
     enumeration_codes = {
         "ENUMERATION_ANCESTOR_BUILD_UNSUPPORTED",
         "ENUMERATION_COMPILE_INVENTORY_MISMATCH", "ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
@@ -429,7 +429,7 @@ with open(sys.argv[1], "rb") as stream:
 codes = [item.get("code") for item in report.get("incompleteConditions", [])
          if isinstance(item, dict)]
 enumerated = report.get("counts", {}).get("enumerated")
-if codes != ["EXECUTION_NOT_IMPLEMENTED"] or not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated <= 0:
+if codes != ["FINALIZATION_PENDING"] or not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated <= 0:
     print(f"unexpected strict example result: codes={codes!r}, enumerated={enumerated!r}", file=sys.stderr)
     raise SystemExit(1)
 PY

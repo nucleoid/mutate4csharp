@@ -77,9 +77,9 @@ ordinary dependencies to nuget.org. Use that example configuration only after ex
 checkout, the root and nested files are multiple applicable NuGet.Config files, which strict dependency
 preparation intentionally refuses rather than merging.
 
-The current public strict check **can never produce `PASS` or `FAIL` until mutation execution is connected**.
-For a supported Git-backed configuration-v1 context, `check` returns exit `4` with `INCOMPLETE` and the
-`EXECUTION_NOT_IMPLEMENTED` incomplete condition after publishing a bounded canonical mutation plan. Unsupported
+The current public strict check **cannot produce `PASS` until final verification is connected**.
+For a supported Git-backed configuration-v1 context, `check` runs fresh baseline/coverage and isolated mutants,
+then returns exit `4` with `INCOMPLETE` and the `FINALIZATION_PENDING` incomplete condition. Unsupported
 semantic contexts fail closed with a specific enumeration refusal and an unknown total. Usage rejection, snapshot
 refusal, and exception paths may stop earlier and may not publish a report. The PASS/FAIL handling below defines
 the stable contract for the future execution connection.
@@ -131,7 +131,7 @@ Missing or malformed receipt fields, duplicate or unknown keys, host/SDK mismatc
 symbolic repository boundaries, identity drift, non-commit baselines, existing/symlinked/internal report paths, or
 changed target `HEAD` fail before a result is accepted.
 The current gate accepts a tool result only when a newly created regular report parses, its `exitCode` equals the
-process exit, and it says `INCOMPLETE` / `4`. A supported plan must contain `EXECUTION_NOT_IMPLEMENTED` and a bounded
+process exit, and it says `INCOMPLETE` / `4`. A supported run must contain `FINALIZATION_PENDING` and a bounded
 nonnegative `counts.enumerated`. A project outside the current semantic envelope may instead contain only an
 explicitly allowlisted semantic `ENUMERATION_*` condition or known scope/selection blocker and must keep
 `counts.enumerated` null. Retired placeholder, SDK/reference-pack, fingerprint, unknown, and integrity-related codes
@@ -192,14 +192,12 @@ being confused with tool usage or a validated strict incomplete result. An accep
   "outcome": "INCOMPLETE",
   "exitCode": 4,
   "incompleteConditions": [
-    { "code": "EXECUTION_NOT_IMPLEMENTED" }
+    { "code": "FINALIZATION_PENDING" }
   ],
   "reasons": [
-    { "code": "EXECUTION_NOT_IMPLEMENTED" },
-    { "code": "BASELINE_UNKNOWN" },
-    { "code": "UNIT_OMITTED" }
+    { "code": "FINALIZATION_PENDING" }
   ],
-  "counts": { "enumerated": 1, "selected": 1, "executed": 0, "omitted": 1 }
+  "counts": { "enumerated": 1, "selected": 1, "executed": 1, "killed": 1 }
 }
 ```
 

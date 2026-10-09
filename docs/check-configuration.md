@@ -94,5 +94,5 @@ inside the frozen consumer snapshot; the SDK, pack version, and pack content ide
 fingerprint. Every project and source read is checked against the snapshot manifest length and SHA-256 before
 semantic analysis, so later capture-directory mutation cannot be bound as the original snapshot. Strict child execution clears
 the semantic MSBuild property environment named by this contract. Supported checks end
-at `EXECUTION_NOT_IMPLEMENTED` until baseline and mutant execution is connected by issue #3; no test process is
-launched at this boundary.
+at `FINALIZATION_PENDING` after fresh baseline, coverage and isolated mutant execution; final publication remains
+disabled at this boundary.
