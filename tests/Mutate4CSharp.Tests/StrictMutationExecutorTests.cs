@@ -405,8 +405,10 @@ public sealed class StrictMutationExecutorTests : IDisposable
         }
     }
 
-    [Fact(Timeout = 420_000)]
-    public async Task CoordinatorPublishesDiscoveryThenProvenForEligibleRealPass()
+    [Theory(Timeout = 420_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CoordinatorPublishesDiscoveryThenProvenForEligibleRealPass(bool failProvenPublication)
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         WriteFixture();
@@ -425,18 +427,25 @@ public sealed class StrictMutationExecutorTests : IDisposable
         Environment.CurrentDirectory = _repository.Root;
         try
         {
-            var result = await new EvaluationCoordinator().RunAsync(
+            var result = await new EvaluationCoordinator(beforePublication: phase =>
+            {
+                if (failProvenPublication && phase == EvaluationPublicationPhase.Proven)
+                    throw new IOException("Injected real coordinator proof publication failure.");
+            }).RunAsync(
                 new(false, "HEAD", [], reportPath, "strict-proven"), cancellationToken);
 
-            Assert.Equal(EvaluationOutcome.Pass, result.Report.Outcome);
+            Assert.Equal(failProvenPublication ? EvaluationOutcome.Incomplete : EvaluationOutcome.Pass,
+                result.Report.Outcome);
+            Assert.True(result.Report.Counts.Executed > 0);
+            Assert.True(result.Report.Counts.Killed > 0);
             var fingerprint = Assert.Single(result.Report.Evidence,
                     item => item.Kind == "MUTATION_PLAN").Diagnostics!
                 .Single(value => value.StartsWith("evaluationFingerprint=", StringComparison.Ordinal))[22..];
             var store = new SidecarStore(_repository.Root);
             var proven = store.ReadProvenForInspection(fingerprint);
-            Assert.True(proven.IsValid, proven.Error);
-            Assert.Equal(result.Report.RunId, proven.Record!.RunId);
-            Assert.True(File.Exists(store.ProvenPath(fingerprint)));
+            Assert.Equal(!failProvenPublication, proven.IsValid);
+            if (!failProvenPublication) Assert.Equal(result.Report.RunId, proven.Record!.RunId);
+            Assert.Equal(!failProvenPublication, File.Exists(store.ProvenPath(fingerprint)));
             Assert.Single(Directory.EnumerateFiles(
                 Path.Combine(_repository.Root, ".mutate4csharp", "discovery"), "*.json"));
         }
@@ -493,6 +502,91 @@ public sealed class StrictMutationExecutorTests : IDisposable
             Environment.CurrentDirectory = previous;
             try { File.Delete(reportPath); } catch { }
             try { File.Delete(ReportWriter.LockPath(reportPath)); } catch { }
+        }
+    }
+
+    [Theory(Timeout = 420_000)]
+    [InlineData("uncovered")]
+    [InlineData("compile-invalid")]
+    [InlineData("zero-site")]
+    public async Task CoordinatorAccountsForRealUncoveredCompileInvalidAndZeroSiteWork(string scenario)
+    {
+        WriteFixture();
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "baseline");
+        var source = scenario switch
+        {
+            "uncovered" => """
+                namespace App;
+                public static class Flag
+                {
+                    public static bool Covered(bool initial) => initial;
+                    public static bool Value() => true;
+                }
+                """,
+            "compile-invalid" => """
+                namespace App;
+                public static class Flag
+                {
+                    public static bool Value(bool initial)
+                    {
+                        bool value;
+                        return initial && (value = initial) ? value : initial;
+                    }
+                }
+                """,
+            _ => """
+                namespace App;
+                public static class Flag { public static bool Value(bool initial) => initial; }
+                """
+        };
+        _repository.WriteText("src/App/Flag.cs", source);
+        _repository.WriteText("tests/App.Tests/FlagTests.cs", scenario == "uncovered" ? """
+            using App;
+            using Xunit;
+            public sealed class FlagTests { [Fact] public void CoversOnlyOtherMethod() => Assert.True(Flag.Covered(true)); }
+            """ : """
+            using App;
+            using Xunit;
+            public sealed class FlagTests
+            {
+                [Fact] public void TrueInput() => Assert.True(Flag.Value(true));
+                [Fact] public void FalseInput() => Assert.False(Flag.Value(false));
+            }
+            """);
+        var report = Path.Combine(Path.GetTempPath(), $"strict-{scenario}-{Guid.NewGuid():N}.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = _repository.Root;
+        try
+        {
+            var result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], report, scenario, NoState: true), TestContext.Current.CancellationToken);
+            Assert.Equal(BaselineStatus.Green, result.Report.Baseline);
+            Assert.Empty(result.Report.IncompleteConditions);
+            if (scenario == "uncovered")
+            {
+                Assert.Equal(EvaluationOutcome.Fail, result.Report.Outcome);
+                Assert.Equal(3, result.Report.ExitCode);
+                Assert.True(result.Report.Counts.FreshUncovered == 1,
+                    string.Join("; ", result.Report.Suites.SelectMany(item => item.Evidence)
+                        .SelectMany(item => item.Diagnostics ?? [])));
+                Assert.Equal(0, result.Report.Counts.Executed);
+            }
+            else
+            {
+                Assert.Equal(EvaluationOutcome.NotApplicable, result.Report.Outcome);
+                Assert.Equal(5, result.Report.ExitCode);
+                Assert.Equal(0, result.Report.Counts.Killed);
+                Assert.Equal(scenario == "compile-invalid" ? 1 : 0, result.Report.Counts.CompileInvalid);
+                Assert.Equal(scenario == "compile-invalid" ? 1 : 0, result.Report.Counts.Enumerated);
+            }
+            Assert.False(Directory.Exists(Path.Combine(_repository.Root, ".mutate4csharp")));
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            File.Delete(report);
+            File.Delete(ReportWriter.LockPath(report));
         }
     }
 

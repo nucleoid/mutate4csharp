@@ -13,9 +13,14 @@ internal sealed record EvaluationRunResult(EvaluationReport Report, string Repor
 internal sealed class EvaluationCoordinator : IEvaluationCoordinator
 {
     private readonly SnapshotCaptureOptions _captureOptions;
+    private readonly Action<EvaluationPublicationPhase>? _beforePublication;
 
-    public EvaluationCoordinator(SnapshotCaptureOptions? captureOptions = null) =>
+    public EvaluationCoordinator(SnapshotCaptureOptions? captureOptions = null,
+        Action<EvaluationPublicationPhase>? beforePublication = null)
+    {
         _captureOptions = captureOptions ?? SnapshotCaptureOptions.Default;
+        _beforePublication = beforePublication;
+    }
 
     public async Task<EvaluationRunResult> RunAsync(StrictCheckOptions options,
         CancellationToken cancellationToken)
@@ -255,16 +260,18 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     var previousReason = reason;
                     var previousReasons = enumerationReasons;
                     reason = new("SNAPSHOT_CANCELLED", "Immutable capture validation was cancelled.");
-                    InvalidateSnapshotExecutionEvidence(evidence, ref baseline, ref reportSuites);
                     evidence.Add(new("SNAPSHOT_CANCELLATION",
-                        "Cancellation was observed before report publication."));
-                    snapshotId = null;
-                    enumerationCount = null;
-                    reportUnits = [];
-                    finalizingPlan = null;
+                        "Original-input revalidation was cancelled; captured execution facts cannot authorize success."));
+                    if (finalizingPlan is null)
+                    {
+                        InvalidateSnapshotExecutionEvidence(evidence, ref baseline, ref reportSuites);
+                        snapshotId = null;
+                        enumerationCount = null;
+                        reportUnits = [];
+                        scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
+                            new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot cancellation."));
+                    }
                     enumerationReasons = PreservedFailureReasons(previousReason, previousReasons, ex);
-                    scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
-                        new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot cancellation."));
                 }
                 catch (Exception ex)
                 {
@@ -376,51 +383,11 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             }
             if (fingerprintMaterialFailure is not null)
                 report = WithFingerprintFailure(report, facts, evidence, fingerprintMaterialFailure);
-            ReportWriter.Write(reportPath, report, options.Inputs);
+            report = EvaluationPublication.Publish(reportPath, options.Inputs, report, facts,
+                fingerprintMaterialFailure is null ? sidecarStore : null, snapshotId, fingerprintMaterial,
+                finalizingPlan, coverageProvenance, _beforePublication);
             if (fingerprintMaterialFailure is OperationCanceledException cancellation)
                 throw cancellation;
-            if (fingerprintMaterialFailure is null && sidecarStore is not null && fingerprintMaterial is not null &&
-                snapshotId is not null)
-            {
-                try
-                {
-                    var evaluationFingerprint = EvaluationFingerprint.Compute(fingerprintMaterial);
-                    var reportBytes = ReportWriter.Serialize(report);
-                    var discovery = new DiscoverySidecar("1", SidecarRecordKind.Discovery, runId,
-                        report.GeneratedAtUtc, evaluationFingerprint, snapshotId, report.Outcome,
-                        scopePlan.IsComplete,
-                        scopePlan.Exclusions.Select(item => $"{item.Path}:{item.ReasonCode}").ToArray(),
-                        Convert.ToHexString(SHA256.HashData(reportBytes)).ToLowerInvariant(),
-                        reportBytes.LongLength);
-                    sidecarStore.PublishDiscovery(discovery);
-                    if (report.Outcome == EvaluationOutcome.Pass)
-                    {
-                        if (finalizingPlan is null)
-                            throw new EvaluationContractException(
-                                "PASS publication requires the trusted finalizing mutation plan.");
-                        var provenFingerprint = EvaluationFingerprint.ComputeForProven(fingerprintMaterial);
-                        if (!string.Equals(provenFingerprint, evaluationFingerprint, StringComparison.Ordinal))
-                            throw new EvaluationContractException(
-                                "Discovery and proven evaluation fingerprints do not match.");
-                        var proven = new ProvenEvaluationSidecar("1", SidecarRecordKind.Proven, runId,
-                            report.GeneratedAtUtc, provenFingerprint, snapshotId,
-                            Convert.ToHexString(SHA256.HashData(reportBytes)).ToLowerInvariant(),
-                            reportBytes.LongLength, PolicyComplete: true, coverageProvenance, report.Counts);
-                        sidecarStore.PublishProven(proven, report, fingerprintMaterial, finalizingPlan);
-                    }
-                }
-                catch (OperationCanceledException ex)
-                {
-                    report = WithStatePublicationFailure(report, facts, evidence, ex);
-                    ReportWriter.Write(reportPath, report, options.Inputs);
-                    throw;
-                }
-                catch (Exception ex) when (!IsFatal(ex))
-                {
-                    report = WithStatePublicationFailure(report, facts, evidence, ex);
-                    ReportWriter.Write(reportPath, report, options.Inputs);
-                }
-            }
             return new(report, reportPath, snapshotId);
         }
         finally

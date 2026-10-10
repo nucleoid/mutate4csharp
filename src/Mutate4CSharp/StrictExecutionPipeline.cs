@@ -74,6 +74,7 @@ internal static class StrictExecutionPipeline
         SuiteBaselineResult? baselines = null;
         StrictExecutionOutcome? outcome = null;
         Exception? failure = null;
+        Func<Exception, StrictExecutionOutcome>? recoverInterruptedExecution = null;
         try
         {
         var enumeration = StrictMutationEnumerator.Enumerate(snapshot, configuration, scopePlan,
@@ -139,6 +140,21 @@ internal static class StrictExecutionPipeline
         if (baselines.Status == BaselineStatus.Green && !material.ProvenanceComplete)
             conditions.Add(new("COVERAGE_PROVENANCE_INCOMPLETE",
                 "Every configured suite must provide fresh valid coverage and exact baseline member accounting."));
+
+        recoverInterruptedExecution = error =>
+        {
+            var recovered = CompleteInterruptedLedger(plan, issued, completed, error);
+            var code = error is OperationCanceledException ? "EXECUTION_CANCELLED" : "MUTATION_EXECUTION_FAILED";
+            var interrupted = new EvaluationReason(code, "Mutation execution stopped before the complete ledger finished.");
+            var preserved = error is StrictExecutionRefusalException refusal ? refusal.Reasons : [];
+            return new(material, plan, semanticContext, environment.SdkVersion, issued.Count,
+                recovered, baselines.Status, suiteEvidence,
+                ToCoverageProvenance(runId, snapshotId, material, configuration.ExecutionSuites, aliases),
+                conditions.Concat(preserved).Append(interrupted).Distinct().ToArray(), null,
+                evidence.Append(new EvaluationEvidence("MUTATION_EXECUTION_INTERRUPTED",
+                    EvaluationTextBounds.Prefix($"{error.GetType().Name}: {error.Message}",
+                        EvaluationReason.MaxMessageLength))).ToArray());
+        };
 
         if (baselines.Status != BaselineStatus.Green)
         {
@@ -211,10 +227,26 @@ internal static class StrictExecutionPipeline
             plan.OrderResults(completed), baselines.Status, suiteEvidence, coverageProvenance,
             conditions.Distinct().ToArray(), null, evidence);
         }
+        catch (Exception ex) when (recoverInterruptedExecution is not null &&
+            ex is not (SnapshotCaptureException or OutOfMemoryException or StackOverflowException or AccessViolationException))
+        {
+            outcome = recoverInterruptedExecution(ex);
+        }
         catch (Exception ex) { failure = ex; }
         await AsyncDisposal.DisposeAllPreservingFailureAsync([baselines, environment], failure);
         return outcome ?? throw new EvaluationContractException(
             "Strict execution completed without an outcome or preserved failure.");
+    }
+
+    internal static IReadOnlyList<EvaluationUnitResult> CompleteInterruptedLedger(MutationSelectionPlan plan,
+        IReadOnlyList<EvaluationUnitResult> issued, IReadOnlyList<EvaluationUnitResult> completed, Exception failure)
+    {
+        var completedIds = completed.Select(item => item.EvaluationUnitId).ToHashSet(StringComparer.Ordinal);
+        var remaining = issued.Where(item => !completedIds.Contains(item.EvaluationUnitId)).Select(item =>
+            plan.CompleteWithoutExecution(item, UnitDisposition.Omitted,
+                [new("EXECUTION_INTERRUPTED", EvaluationTextBounds.Prefix(
+                    $"{failure.GetType().Name}: execution did not finish this unit.", EvaluationReason.MaxMessageLength))]));
+        return plan.OrderResults(completed.Concat(remaining).ToArray());
     }
 
     internal static IReadOnlyList<EvaluationEvidence> BuildPartialEvidence(

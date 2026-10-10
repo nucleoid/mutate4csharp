@@ -63,10 +63,26 @@ internal static class ReportWriter
         return fullPath;
     }
 
+    internal static void ValidateDestination(string path, IReadOnlyList<string> inputs) =>
+        _ = ValidateExistingDestination(ResolveSafeDestination(path, inputs));
+
     internal static string LockPath(string path)
     {
         var fullPath = Path.GetFullPath(path);
         return Path.Combine(Path.GetDirectoryName(fullPath)!, "." + Path.GetFileName(fullPath) + ".lock");
+    }
+
+    internal static void InvalidateCurrentRun(string path, string runId)
+    {
+        AtomicOwnedFile.Delete(path, LockPath(path), existing =>
+        {
+            var hash = ValidateExistingDestination(existing);
+            if (hash is null) return null;
+            using var document = JsonDocument.Parse(File.ReadAllBytes(existing));
+            if (document.RootElement.GetProperty("runId").GetString() != runId)
+                throw new IOException("Report invalidation cannot remove another run's artifact.");
+            return hash;
+        });
     }
 
     private static byte[]? ValidateExistingDestination(string path)

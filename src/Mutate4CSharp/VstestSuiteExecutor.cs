@@ -76,12 +76,13 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                 var disposition = ClassifyBaseline(run);
                 var rawCoverage = TestRunner.FindCoverage(results);
                 var coverageMap = disposition == SuiteRunDisposition.Passed
-                    ? CoverageMap.Load(rawCoverage, worker) : null;
+                    ? CoverageMap.Load(rawCoverage, worker, snapshot) : null;
                 coverage = disposition == SuiteRunDisposition.Passed
                     ? await PreserveOpenCoverReportsAsync(rawCoverage,
                         $"baseline-{Sanitize(suite.Aliases[0])}") : null;
                 var diagnostics = BaselineDiagnostics(run, disposition == SuiteRunDisposition.Passed &&
                     coverage is null, worker.Root, packages.Root).ToList();
+                diagnostics.AddRange(coverageMap?.ProjectionDiagnostics ?? []);
                 if (disposition == SuiteRunDisposition.Passed && coverage is null)
                     diagnostics.Add(CoverageInventory(results));
                 completed = new(disposition, _timeProvider.GetUtcNow() - started, AccountedMembers(run.TrxPaths),

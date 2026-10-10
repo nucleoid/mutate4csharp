@@ -83,4 +83,18 @@ internal static class AtomicOwnedFile
         if ((attributes & (FileAttributes.Directory | FileAttributes.Device | FileAttributes.ReparsePoint)) != 0)
             throw new IOException($"{kind} path must be a regular file.");
     }
+
+    internal static void Delete(string destination, string lockPath, Func<string, byte[]?> inspectExisting)
+    {
+        RejectSpecialPath(lockPath, "Lock");
+        Directory.CreateDirectory(Path.GetDirectoryName(lockPath)!);
+        using var held = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.Write,
+            FileShare.None, 1, FileOptions.WriteThrough);
+        var before = inspectExisting(destination);
+        if (before is null) return;
+        var after = inspectExisting(destination);
+        if (after is null || !CryptographicOperations.FixedTimeEquals(before, after))
+            throw new IOException("Owned destination changed before invalidation.");
+        File.Delete(destination);
+    }
 }

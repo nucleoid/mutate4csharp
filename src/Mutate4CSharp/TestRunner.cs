@@ -194,6 +194,7 @@ internal sealed class CoverageMap
     private readonly string _root;
     private readonly bool _incomplete;
     private readonly HashSet<string> _spanIncompleteFiles;
+    internal IReadOnlyList<string> ProjectionDiagnostics { get; private set; } = [];
 
     private CoverageMap(Dictionary<string, Dictionary<int, bool>> points,
         Dictionary<string, List<CoveragePoint>> spans, string root, bool incomplete,
@@ -215,8 +216,20 @@ internal sealed class CoverageMap
     public static CoverageMap? Load(IEnumerable<string> reports, SnapshotClone clone)
         => Load(reports, clone.Root, clone.ToCanonicalPath(clone.Root), clone.ToCanonicalPath);
 
+    public static CoverageMap? Load(IEnumerable<string> reports, SnapshotClone clone, InputSnapshot snapshot)
+    {
+        var diagnostics = new List<string>();
+        var map = Load(reports, clone.Root, clone.ToCanonicalPath(clone.Root), clone.ToCanonicalPath,
+            module => OpenCoverPortablePdb.Load(module, clone, snapshot, value =>
+            {
+                if (diagnostics.Count < 12) diagnostics.Add("coverage-span-map=" + value);
+            }));
+        if (map is not null) map.ProjectionDiagnostics = diagnostics;
+        return map;
+    }
+
     private static CoverageMap? Load(IEnumerable<string> reports, string parseRoot, string canonicalRoot,
-        Func<string, string>? canonicalize)
+        Func<string, string>? canonicalize, Func<XElement, OpenCoverPortablePdb?>? pdbResolver = null)
     {
         var paths = reports.Where(File.Exists).Distinct(StringComparer.Ordinal).ToArray();
         if (paths.Length == 0) return null;
@@ -236,7 +249,9 @@ internal sealed class CoverageMap
                 if (modules.Length == 0) { incomplete = true; continue; }
                 foreach (var module in modules)
                 {
+                    var portablePdb = pdbResolver?.Invoke(module);
                     var files = new Dictionary<string, string>(StringComparer.Ordinal);
+                    var cloneFiles = new Dictionary<string, string>(StringComparer.Ordinal);
                     foreach (var fileElement in module.Descendants().Where(x => x.Name.LocalName == "File"))
                     {
                         var uid = fileElement.Attribute("uid")?.Value;
@@ -246,6 +261,7 @@ internal sealed class CoverageMap
                         try
                         {
                             var normalized = Normalize(fullPath, parseRoot);
+                            cloneFiles.Add(uid, normalized);
                             files.Add(uid, canonicalize is null ? normalized : canonicalize(normalized));
                         }
                         catch { incomplete = true; }
@@ -273,7 +289,17 @@ internal sealed class CoverageMap
                                 continue;
                             }
                             if (startColumn == 1 && endLine == line && endColumn == 2)
-                                spanIncompleteFiles.Add(file);
+                            {
+                                var precise = portablePdb?.Resolve(method, point, cloneFiles[fileId], line);
+                                if (precise is null) spanIncompleteFiles.Add(file);
+                                else
+                                {
+                                    line = precise.StartLine;
+                                    startColumn = precise.StartColumn;
+                                    endLine = precise.EndLine;
+                                    endColumn = precise.EndColumn;
+                                }
+                            }
                             if (!spans.TryGetValue(file, out var fileSpans)) spans[file] = fileSpans = [];
                             fileSpans.Add(new(line, startColumn, endLine, endColumn, visits > 0));
                         }

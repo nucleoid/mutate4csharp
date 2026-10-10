@@ -38,6 +38,37 @@ internal sealed class SidecarStore
         return Publish("discovery", DiscoveryKey(record), record);
     }
 
+    internal string ReplaceDiscovery(DiscoverySidecar record)
+    {
+        ValidateDiscovery(record);
+        return Publish("discovery", DiscoveryKey(record), record, replaceExisting: true);
+    }
+
+    internal void InvalidateProven(string fingerprint)
+    {
+        if (!EvaluationFingerprint.IsFingerprint(fingerprint))
+            throw new EvaluationContractException("Invalid proven fingerprint for revocation.");
+        var directory = Path.Combine(_stateRoot, "proven");
+        if (!Directory.Exists(directory))
+        {
+            if (File.Exists(directory)) throw new IOException("Owned proven directory collides with a file.");
+            return;
+        }
+        EnsureOrdinaryDirectory(directory);
+        EnsureOrdinaryDirectory(Path.Combine(_stateRoot, "locks"));
+        var key = FingerprintKey(fingerprint);
+        AtomicOwnedFile.Delete(StatePath("proven", key), LockPath("proven", key), path =>
+        {
+            if (InspectExistingOwnedRecord(path) is null) return null;
+            var bytes = ReadBoundedRegular(path);
+            ValidateRawProvenSchema(bytes);
+            var previous = JsonSerializer.Deserialize<ProvenEvaluationSidecar>(bytes, JsonOptions)
+                ?? throw new EvaluationContractException("Existing proven state is empty.");
+            ValidateProvenEnvelope(previous, fingerprint);
+            return SHA256.HashData(bytes);
+        });
+    }
+
     public void PrepareForPublication()
     {
         EnsureOrdinaryDirectory(_stateRoot);
@@ -53,10 +84,16 @@ internal sealed class SidecarStore
     public string PublishProven(ProvenEvaluationSidecar record, EvaluationReport report,
         EvaluationFingerprintMaterial fingerprintMaterial, MutationSelectionPlan finalizingPlan)
     {
-        ArgumentNullException.ThrowIfNull(finalizingPlan);
-        finalizingPlan.RequireProvenPublicationEligibility(report, fingerprintMaterial);
-        ValidateProven(record, report, fingerprintMaterial);
+        ValidateProvenPublication(record, report, fingerprintMaterial, finalizingPlan);
         return Publish("proven", FingerprintKey(record.EvaluationFingerprint), record, replaceExisting: true);
+    }
+
+    internal static void ValidateProvenPublication(ProvenEvaluationSidecar record, EvaluationReport report,
+        EvaluationFingerprintMaterial material, MutationSelectionPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        plan.RequireProvenPublicationEligibility(report, material);
+        ValidateProven(record, report, material);
     }
 
     public SidecarReadResult<ProvenEvaluationSidecar> ReadProvenForInspection(string fingerprint)
@@ -103,6 +140,17 @@ internal sealed class SidecarStore
                 ValidateProvenEnvelope(previous, proposed.EvaluationFingerprint);
                 if (!CryptographicOperations.FixedTimeEquals(hash, SHA256.HashData(existingBytes)))
                     throw new IOException("Existing proven state changed during validation.");
+            }
+            else if (hash is not null && replaceExisting && record is DiscoverySidecar proposedDiscovery)
+            {
+                var previousBytes = ReadBoundedRegular(existing);
+                var previous = JsonSerializer.Deserialize<DiscoverySidecar>(previousBytes, JsonOptions)
+                    ?? throw new EvaluationContractException("Existing discovery state is empty.");
+                ValidateDiscovery(previous);
+                if (previous.RunId != proposedDiscovery.RunId ||
+                    previous.EvaluationFingerprint != proposedDiscovery.EvaluationFingerprint ||
+                    !CryptographicOperations.FixedTimeEquals(hash, SHA256.HashData(previousBytes)))
+                    throw new IOException("Discovery replacement requires the same owned run and fingerprint.");
             }
             return hash;
         }, replaceExisting);

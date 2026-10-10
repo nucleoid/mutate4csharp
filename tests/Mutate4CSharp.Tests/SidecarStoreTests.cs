@@ -170,6 +170,33 @@ public sealed class SidecarStoreTests : IDisposable
         Assert.Equal(nextReport.RunId, inspected.Record!.RunId);
     }
 
+    [Theory]
+    [InlineData((int)EvaluationPublicationPhase.Report)]
+    [InlineData((int)EvaluationPublicationPhase.Discovery)]
+    [InlineData((int)EvaluationPublicationPhase.Proven)]
+    public void PublicationFaultRevokesProofAndReconcilesCurrentDiscovery(int failedPhase)
+    {
+        var (store, report, record, material, plan) = ValidProven();
+        store.PublishProven(record, report, material, plan);
+        var path = Path.Combine(_directory, "publication-fault.json");
+        var facts = plan.FinalizeFacts(report.Baseline, report.Units, false, []);
+        var result = EvaluationPublication.Publish(path, [], report, facts, store, report.Evidence
+            .Single(item => item.Kind == "INPUT_SNAPSHOT").Diagnostics![0]["captureId=".Length..],
+            material, plan, record.Coverage, phase =>
+            {
+                if ((int)phase == failedPhase) throw new IOException("Injected publication failure.");
+            });
+
+        Assert.Equal(EvaluationOutcome.Incomplete, result.Outcome);
+        Assert.False(store.ReadProvenForInspection(record.EvaluationFingerprint).IsValid);
+        var bytes = File.ReadAllBytes(path);
+        var discoveryPath = Assert.Single(Directory.EnumerateFiles(Path.Combine(_directory, ".mutate4csharp", "discovery"), "*.json"));
+        using var discovery = JsonDocument.Parse(File.ReadAllBytes(discoveryPath));
+        Assert.Equal("INCOMPLETE", discovery.RootElement.GetProperty("evaluationOutcome").GetString());
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
+            discovery.RootElement.GetProperty("reportSha256").GetString());
+    }
+
     [Fact]
     public void FullyBoundPassPublishesAndReadsBack()
     {
@@ -453,9 +480,31 @@ public sealed class SidecarStoreTests : IDisposable
              "coverageSha256=" + Digest("coverage"), "coverageLength=8",
              "pathMap=baseline-clone-to-snapshot-v1"])]);
 
-    private static MutationCandidate Candidate()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void InterruptedExecutionPreservesCompletedUnitsAndExplicitlyAccountsForPendingUnits(bool cancelled)
     {
-        var identityMaterial = new MutationIdentityMaterial("src/A.cs", "Type.M", "site/1",
+        var material = ProvenMaterial();
+        var plan = MutationSelection.Plan(MutationSelection.Bind([Candidate(), Candidate("site/2")], material), material);
+        var issued = plan.CreatePendingLedger();
+        var killed = plan.Reduce(issued[0], [new(1, UnitDisposition.Killed,
+            [new("MUTANT_KILLED", "Completed execution evidence.")])]);
+        Exception failure = cancelled ? new OperationCanceledException() : new IOException("Executor failed.");
+
+        var ledger = StrictExecutionPipeline.CompleteInterruptedLedger(plan, issued, [killed], failure);
+        var facts = plan.FinalizeFacts(BaselineStatus.Green, ledger, false,
+            [new("EXECUTION_INTERRUPTED", "Interrupted execution cannot authorize success.")]);
+
+        Assert.Contains(ledger, item => item.Disposition == UnitDisposition.Killed);
+        Assert.Contains(ledger, item => item.Disposition == UnitDisposition.Omitted);
+        Assert.Equal(2, facts.EnumerationCount);
+        Assert.Equal(EvaluationOutcome.Incomplete, EvaluationReducer.Reduce(facts).Outcome);
+    }
+
+    private static MutationCandidate Candidate(string site = "site/1")
+    {
+        var identityMaterial = new MutationIdentityMaterial("src/A.cs", "Type.M", site,
             "test.operator", "1", "replacement");
         var mutationId = MutationIdentity.Compute(identityMaterial);
         const string project = "src/App.csproj";
