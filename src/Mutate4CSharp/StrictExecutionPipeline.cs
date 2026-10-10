@@ -2,6 +2,7 @@ namespace Mutate4CSharp;
 
 internal sealed record StrictExecutionOutcome(
     EvaluationFingerprintMaterial FingerprintMaterial,
+    MutationSelectionPlan FinalizingPlan,
     string SemanticContextIdentity,
     string SdkVersion,
     int EnumerationCount,
@@ -9,7 +10,7 @@ internal sealed record StrictExecutionOutcome(
     BaselineStatus Baseline,
     IReadOnlyList<SuiteEvidence> Suites,
     IReadOnlyList<EvaluationReason> IncompleteConditions,
-    EvaluationReason Reason,
+    EvaluationReason? Reason,
     IReadOnlyList<EvaluationEvidence> Evidence);
 
 internal sealed record ContiguousAttemptBatch(
@@ -200,13 +201,9 @@ internal static class StrictExecutionPipeline
             }
         }
 
-        var finalization = new EvaluationReason("FINALIZATION_PENDING",
-            "Fresh strict execution evidence is available, but issue #4 must complete final verification " +
-            "before strict PASS can be published.");
-        conditions.Add(finalization);
-        outcome = new(material, semanticContext, environment.SdkVersion, issued.Count,
+        outcome = new(material, plan, semanticContext, environment.SdkVersion, issued.Count,
             plan.OrderResults(completed), baselines.Status, suiteEvidence,
-            conditions.Distinct().ToArray(), finalization, evidence);
+            conditions.Distinct().ToArray(), null, evidence);
         }
         catch (Exception ex) { failure = ex; }
         await AsyncDisposal.DisposeAllPreservingFailureAsync([baselines, environment], failure);

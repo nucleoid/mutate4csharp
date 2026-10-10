@@ -39,6 +39,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         string? snapshotId = null;
         string? stateRoot = null;
         EvaluationFingerprintMaterial? fingerprintMaterial = null;
+        MutationSelectionPlan? finalizingPlan = null;
         Exception? fingerprintMaterialFailure = null;
         string? semanticContextIdentity = null;
         string? sdkVersion = null;
@@ -48,7 +49,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         IReadOnlyList<EvaluationReason> enumerationReasons = [];
         var baseline = BaselineStatus.Unknown;
         IReadOnlyList<SuiteEvidence> reportSuites = [];
-        EvaluationReason reason;
+        EvaluationReason? reason = null;
         var evidence = new List<EvaluationEvidence>();
         try
         {
@@ -122,6 +123,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 var execution = await StrictExecutionPipeline.RunAsync(snapshot, snapshotId!, scopePlan,
                     checkConfiguration, exactMutationIds, options.PlanFingerprint, cancellationToken);
                 fingerprintMaterial = execution.FingerprintMaterial;
+                finalizingPlan = execution.FinalizingPlan;
                 semanticContextIdentity = execution.SemanticContextIdentity;
                 sdkVersion = execution.SdkVersion;
                 enumerationCount = execution.EnumerationCount;
@@ -207,7 +209,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             evidence.Add(new("SNAPSHOT_VALIDATION_FAILURE", Bound($"{ex.GetType().Name}: {ex.Message}")));
         }
 
-        if (exactIdRequest && reason.Code != "FINALIZATION_PENDING" &&
+        if (exactIdRequest && reason?.Code != "FINALIZATION_PENDING" &&
             evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
         {
             enumerationReasons = enumerationReasons.Concat([
@@ -320,7 +322,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 }
                 snapshot = null;
             }
-            if (exactIdRequest && reason.Code != "FINALIZATION_PENDING" &&
+            if (exactIdRequest && reason?.Code != "FINALIZATION_PENDING" &&
                 evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
             {
                 enumerationReasons = enumerationReasons.Concat([
@@ -332,13 +334,17 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     EvaluationEvidence.BoundDiagnostics(exactMutationIds,
                         truncationLabel: "ids-truncated")));
             }
-            var incompleteConditions = new List<EvaluationReason> { reason };
+            var incompleteConditions = new List<EvaluationReason>();
+            if (reason is not null) incompleteConditions.Add(reason);
             incompleteConditions.AddRange(enumerationReasons);
             incompleteConditions.AddRange(scopePlan.Reasons.Concat(scopePlan.Files.SelectMany(file => file.Reasons))
                 .Where(item => ScopePlanner.IsBlockingCode(item.Code)));
-            var facts = new EvaluationFacts(baseline, enumerationCount, reportUnits,
-                checkConfiguration?.Policy.AllowNotApplicable ?? false,
-                incompleteConditions.Distinct().ToArray());
+            var distinctConditions = incompleteConditions.Distinct().ToArray();
+            var facts = finalizingPlan is not null
+                ? finalizingPlan.FinalizeFacts(baseline, reportUnits,
+                    checkConfiguration?.Policy.AllowNotApplicable ?? false, distinctConditions)
+                : new EvaluationFacts(baseline, enumerationCount, reportUnits,
+                    checkConfiguration?.Policy.AllowNotApplicable ?? false, distinctConditions);
             var decision = EvaluationReducer.Reduce(facts);
             var reportEvidence = decision.Evidence.Concat(evidence).ToArray();
             var report = new EvaluationReport("1", runId, DateTimeOffset.UtcNow,
@@ -528,13 +534,12 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
     };
 
     internal static IReadOnlyList<EvaluationReason> PreservedFailureReasons(
-        EvaluationReason currentReason, IReadOnlyList<EvaluationReason> existingReasons,
+        EvaluationReason? currentReason, IReadOnlyList<EvaluationReason> existingReasons,
         Exception latestFailure)
     {
-        ArgumentNullException.ThrowIfNull(currentReason);
         ArgumentNullException.ThrowIfNull(existingReasons);
         ArgumentNullException.ThrowIfNull(latestFailure);
-        return existingReasons.Prepend(currentReason).Where(IsIntegrityFailure)
+        return existingReasons.Concat(currentReason is null ? [] : [currentReason]).Where(IsIntegrityFailure)
             .Concat(FailureChain(latestFailure).Skip(1).SelectMany(FailureReasons))
             .Distinct().ToArray();
     }
