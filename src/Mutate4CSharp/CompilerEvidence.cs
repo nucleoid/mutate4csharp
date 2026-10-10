@@ -35,40 +35,47 @@ internal static partial class CompilerEvidence
             !mutated.TestsDiscovered && !mutated.HasFailedTests;
         if (!mutantFailedToBuild) return new(false, [], ["classifier-stage=not-failed-build"]);
 
-        var output = mutated.StandardOutput + "\n" + mutated.StandardError;
-        var normalizedOutput = AnsiEscapePattern().Replace(output, string.Empty);
-        var target = NormalizeFullPath(targetPath, workingDirectory, expandExistingWindowsPath);
-        var matches = DiagnosticPattern().Matches(normalizedOutput);
-        var candidates = matches
-            .Select(match => new
-            {
-                Path = TryNormalizeFullPath(match.Groups["path"].Value, workingDirectory,
-                    expandExistingWindowsPath),
-                Match = match
-            })
-            .ToArray();
-        var exact = candidates.Where(item => item.Path is not null &&
-            string.Equals(item.Path, target, PathComparison(target))).ToArray();
-        var diagnostics = exact
-            .Select(item => FormatDiagnostic(item.Match))
-            .Distinct(StringComparer.Ordinal)
-            .Take(MaxDiagnostics)
-            .ToArray();
-        var targetName = FileName(target);
-        var classification = new[]
+        try
         {
-            "classifier-stage=failed-build",
-            $"classifier-compiler-lines={CompilerLinePattern().Matches(normalizedOutput).Count}",
-            $"classifier-location-matches={matches.Count}",
-            $"classifier-normalized-paths={candidates.Count(item => item.Path is not null)}",
-            $"classifier-target-name-matches={candidates.Count(item => item.Path is not null && string.Equals(FileName(item.Path), targetName, PathComparison(target)))}",
-            $"classifier-exact-path-matches={exact.Length}",
-            $"classifier-node-prefix={NodePrefixPattern().IsMatch(normalizedOutput).ToString().ToLowerInvariant()}",
-            $"classifier-space-before-colon={SpaceBeforeColonPattern().IsMatch(normalizedOutput).ToString().ToLowerInvariant()}",
-            $"classifier-ansi={(!string.Equals(output, normalizedOutput, StringComparison.Ordinal)).ToString().ToLowerInvariant()}",
-            $"classifier-decoding-replacement={normalizedOutput.Contains('\uFFFD').ToString().ToLowerInvariant()}"
-        };
-        return new(diagnostics.Length > 0, diagnostics, classification);
+            var output = mutated.StandardOutput + "\n" + mutated.StandardError;
+            var normalizedOutput = AnsiEscapePattern().Replace(output, string.Empty);
+            var target = NormalizeFullPath(targetPath, workingDirectory, expandExistingWindowsPath);
+            var matches = DiagnosticPattern().Matches(normalizedOutput);
+            var candidates = matches
+                .Select(match => new
+                {
+                    Path = TryNormalizeFullPath(match.Groups["path"].Value, workingDirectory,
+                        expandExistingWindowsPath),
+                    Match = match
+                })
+                .ToArray();
+            var exact = candidates.Where(item => item.Path is not null &&
+                string.Equals(item.Path, target, PathComparison(target))).ToArray();
+            var diagnostics = exact
+                .Select(item => FormatDiagnostic(item.Match))
+                .Distinct(StringComparer.Ordinal)
+                .Take(MaxDiagnostics)
+                .ToArray();
+            var targetName = FileName(target);
+            var classification = new[]
+            {
+                "classifier-stage=failed-build",
+                $"classifier-compiler-lines={CompilerLinePattern().Matches(normalizedOutput).Count}",
+                $"classifier-location-matches={matches.Count}",
+                $"classifier-normalized-paths={candidates.Count(item => item.Path is not null)}",
+                $"classifier-target-name-matches={candidates.Count(item => item.Path is not null && string.Equals(FileName(item.Path), targetName, PathComparison(target)))}",
+                $"classifier-exact-path-matches={exact.Length}",
+                $"classifier-node-prefix={NodePrefixPattern().IsMatch(normalizedOutput).ToString().ToLowerInvariant()}",
+                $"classifier-space-before-colon={SpaceBeforeColonPattern().IsMatch(normalizedOutput).ToString().ToLowerInvariant()}",
+                $"classifier-ansi={(!string.Equals(output, normalizedOutput, StringComparison.Ordinal)).ToString().ToLowerInvariant()}",
+                $"classifier-decoding-replacement={normalizedOutput.Contains('\uFFFD').ToString().ToLowerInvariant()}"
+            };
+            return new(diagnostics.Length > 0, diagnostics, classification);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return new(false, [], ["classifier-stage=regex-timeout"]);
+        }
     }
 
     private static string? TryNormalizeFullPath(string value, string workingDirectory,
@@ -135,7 +142,7 @@ internal static partial class CompilerEvidence
         WindowsPathPattern().IsMatch(path) || OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
-    [GeneratedRegex(@"(?m)^[ \t]*(?:\d+>[ \t]*)?(?<path>(?:[A-Za-z]:)?[^\r\n(]+)\((?<line>\d+),(?<column>\d+)(?:,(?<endLine>\d+),(?<endColumn>\d+))?\)[ \t]*:[ \t]*error[ \t]+(?<code>CS\d{4})[ \t]*:[^\r\n]*$",
+    [GeneratedRegex(@"(?m)^[ \t]*(?:\d+>[ \t]*)?(?<path>(?:[A-Za-z]:)?[^\r\n(]+)\((?<line>\d+),(?<column>\d+)(?:,(?<endLine>\d+),(?<endColumn>\d+))?\)[ \t]*:[ \t]*error[ \t]+(?<code>CS\d{4})[ \t]*:[^\r\n]*\r?$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex DiagnosticPattern();
 

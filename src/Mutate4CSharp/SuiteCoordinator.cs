@@ -81,7 +81,7 @@ internal static class AsyncDisposal
 
 internal sealed record SuiteMutationEvidence(string SuiteId, SuiteRunDisposition Disposition,
     IReadOnlyList<string> FailedTestIds, IReadOnlyList<string> Diagnostics,
-    bool CompileInvalid = false);
+    bool CompileInvalid = false, int? DiagnosticCount = null);
 
 internal sealed record AggregatedMutation(UnitDisposition Disposition,
     IReadOnlyList<EvaluationEvidence> Evidence);
@@ -270,14 +270,32 @@ internal sealed class SuiteCoordinator
                 : UnitDisposition.Error;
         return new(disposition, retained);
 
-        static EvaluationEvidence ToEvidence(SuiteMutationEvidence item) =>
-            new("SUITE_MUTANT_RESULT",
+        static EvaluationEvidence ToEvidence(SuiteMutationEvidence item)
+        {
+            var diagnostics = item.Diagnostics.Take(MaxDiagnostics)
+                .Select(value => "diagnostic=" + Bound(value, 512)).ToArray();
+            var details = item.Disposition == SuiteRunDisposition.Error
+                ? diagnostics.Where(IsPriorityDiagnostic)
+                    .Concat(item.FailedTestIds.Take(MaxFailedTests).Select(value => "failed=" + Bound(value, 256)))
+                    .Concat(diagnostics.Where(value => !IsPriorityDiagnostic(value)))
+                : item.FailedTestIds.Take(MaxFailedTests).Select(value => "failed=" + Bound(value, 256))
+                    .Concat(diagnostics);
+            return new("SUITE_MUTANT_RESULT",
                 $"Suite {Bound(item.SuiteId, 128)} classified the mutant as {item.Disposition.ToString().ToUpperInvariant()}.",
                 EvaluationEvidence.BoundDiagnostics(
-                    new[] { $"failed-count={item.FailedTestIds.Count}", $"diagnostic-count={item.Diagnostics.Count}",
+                    new[] { $"failed-count={item.FailedTestIds.Count}",
+                        $"diagnostic-count={item.DiagnosticCount ?? item.Diagnostics.Count}",
                         $"compile-invalid={item.CompileInvalid.ToString().ToLowerInvariant()}" }
-                    .Concat(item.FailedTestIds.Take(MaxFailedTests).Select(value => "failed=" + Bound(value, 256)))
-                    .Concat(item.Diagnostics.Take(MaxDiagnostics).Select(value => "diagnostic=" + Bound(value, 512)))));
+                    .Concat(details)));
+        }
+
+        static bool IsPriorityDiagnostic(string value) =>
+            value.StartsWith("diagnostic=classifier-", StringComparison.Ordinal) ||
+            value.StartsWith("diagnostic=process-exit=", StringComparison.Ordinal) ||
+            value.StartsWith("diagnostic=trx-valid=", StringComparison.Ordinal) ||
+            value.StartsWith("diagnostic=tests-discovered=", StringComparison.Ordinal) ||
+            value.StartsWith("diagnostic=run-errors=", StringComparison.Ordinal) ||
+            value.StartsWith("diagnostic=diagnostics-truncated=", StringComparison.Ordinal);
     }
 
     public static EvaluationEvidence SurvivorEvidence(string mutationId, string path, int line,

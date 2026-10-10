@@ -152,11 +152,12 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
                     $"tests-discovered={run.TestsDiscovered.ToString().ToLowerInvariant()}",
                     $"run-errors={run.HasRunErrors.ToString().ToLowerInvariant()}"]
                 : []);
-        var diagnostics = priorityDiagnostics
+        var allDiagnostics = priorityDiagnostics
             .Concat(compile.IsCompileInvalid ? compile.Diagnostics : run.Diagnostics ?? [])
-            .Take(EvaluationEvidence.MaxDiagnostics).ToArray();
+            .ToArray();
+        var diagnostics = EvaluationEvidence.BoundDiagnostics(allDiagnostics);
         return new(suiteId, disposition, run.FailedTestIds ?? [], diagnostics,
-            compile.IsCompileInvalid);
+            compile.IsCompileInvalid, allDiagnostics.Length);
     }
 
     private static ScheduledMutationResult Timeout(ScheduledMutation mutation, string suiteId) =>
