@@ -87,6 +87,22 @@ public sealed class EvaluationFingerprintTests
         Assert.Throws<EvaluationContractException>(() => EvaluationFingerprint.ComputeForProven(Material()));
     }
 
+    [Fact]
+    public void ProvenMaterialRequiresCoverageCollectorAndPlanIdentity()
+    {
+        var incompleteRunner = Material() with { ProvenanceComplete = true };
+        var completeRunner = incompleteRunner with
+        {
+            RunnerIdentity = "runner=vstest;collector=coverlet-opencover-v1;" +
+                "coverage=sha256:" + new string('a', 64) + ";plan=sha256:" + new string('b', 64)
+        };
+
+        Assert.Throws<EvaluationContractException>(() =>
+            EvaluationFingerprint.ComputeForProven(incompleteRunner));
+        Assert.True(EvaluationFingerprint.IsFingerprint(
+            EvaluationFingerprint.ComputeForProven(completeRunner)));
+    }
+
     private static EvaluationFingerprintMaterial Material() => new(
         [
             Input("source", "src/A.cs", "source"),
