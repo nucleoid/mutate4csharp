@@ -8,10 +8,12 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
     private readonly IReadOnlyDictionary<string, SuiteExecution> _suites;
     private readonly IReadOnlyDictionary<string, bool> _healthyControls;
     private readonly TimeProvider _timeProvider;
+    private readonly Func<TestRunResult, bool, string, string, CompileEvidence> _compilerEvidenceEvaluator;
 
     public StrictMutationExecutor(InputSnapshot snapshot, FrozenExecutionEnvironment environment,
         IReadOnlyList<MutationCandidate> candidates, IReadOnlyList<SuiteExecution> suites,
-        IReadOnlyDictionary<string, bool> healthyControls, TimeProvider? timeProvider = null)
+        IReadOnlyDictionary<string, bool> healthyControls, TimeProvider? timeProvider = null,
+        Func<TestRunResult, bool, string, string, CompileEvidence>? compilerEvidenceEvaluator = null)
     {
         _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
         _environment = environment ?? throw new ArgumentNullException(nameof(environment));
@@ -22,6 +24,9 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
         _suites = suites.ToDictionary(item => item.Identity, StringComparer.Ordinal);
         _healthyControls = healthyControls;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _compilerEvidenceEvaluator = compilerEvidenceEvaluator ??
+            ((run, healthy, targetPath, workingDirectory) =>
+                CompilerEvidence.Evaluate(run, healthy, targetPath, workingDirectory));
     }
 
     public async Task<ScheduledMutationResult> ExecuteAsync(ScheduledMutation mutation, TimeSpan timeout,
@@ -98,7 +103,7 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
                             cancellationToken: cancellationToken), StringComparison.Ordinal))
                     throw new ExecutionBoundaryIntegrityException(
                         "Mutant execution changed its private frozen package-cache copy.");
-                var compile = CompilerEvidence.Evaluate(run,
+                var compile = _compilerEvidenceEvaluator(run,
                     _healthyControls.TryGetValue(suite.Identity, out var healthy) && healthy,
                     Path.Combine(ownedWorker.Root, candidate.Material.RepositoryPath.Replace('/',
                         Path.DirectorySeparatorChar)), ownedWorker.Root);
@@ -112,7 +117,7 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
                     StringComparer.OrdinalIgnoreCase).ToArray();
                 if (missing.Length > 0)
                 {
-                    evidence.Add(new(suite.Identity, SuiteRunDisposition.Error, [],
+                    evidence.Add(CreateSuiteEvidence(suite.Identity, run, compile, forceError: true,
                         [$"Mutant TRX omitted expected member(s): {string.Join(", ", missing.Take(20))}."]));
                     continue;
                 }
@@ -136,10 +141,13 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
     }
 
     private static SuiteMutationEvidence ToSuiteEvidence(string suiteId, TestRunResult run,
-        CompileEvidence compile)
+        CompileEvidence compile) => CreateSuiteEvidence(suiteId, run, compile, false, []);
+
+    private static SuiteMutationEvidence CreateSuiteEvidence(string suiteId, TestRunResult run,
+        CompileEvidence compile, bool forceError, IReadOnlyList<string> additionalDiagnostics)
     {
         SuiteRunDisposition disposition;
-        if (compile.IsCompileInvalid) disposition = SuiteRunDisposition.Error;
+        if (forceError || compile.IsCompileInvalid) disposition = SuiteRunDisposition.Error;
         else if (run.TimedOut) disposition = SuiteRunDisposition.TimedOut;
         else if (!run.TrxValid || run.HasRunErrors || !run.TestsDiscovered)
             disposition = SuiteRunDisposition.Error;
@@ -152,12 +160,16 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
                     $"tests-discovered={run.TestsDiscovered.ToString().ToLowerInvariant()}",
                     $"run-errors={run.HasRunErrors.ToString().ToLowerInvariant()}"]
                 : []);
-        var allDiagnostics = priorityDiagnostics
-            .Concat(compile.IsCompileInvalid ? compile.Diagnostics : run.Diagnostics ?? [])
-            .ToArray();
-        var diagnostics = EvaluationEvidence.BoundDiagnostics(allDiagnostics);
+        var retainedDiagnostics = (compile.IsCompileInvalid ? compile.Diagnostics : run.Diagnostics ?? [])
+            .Concat(additionalDiagnostics).ToArray();
+        var originalDiagnosticCount = priorityDiagnostics.Count() +
+            (compile.IsCompileInvalid ? compile.Diagnostics.Count : run.DiagnosticCount ?? run.Diagnostics?.Count ?? 0) +
+            additionalDiagnostics.Count;
+        var diagnostics = EvaluationEvidence.BoundDiagnostics(retainedDiagnostics,
+            originalDiagnosticCount - priorityDiagnostics.Count());
         return new(suiteId, disposition, run.FailedTestIds ?? [], diagnostics,
-            compile.IsCompileInvalid, allDiagnostics.Length);
+            compile.IsCompileInvalid, originalDiagnosticCount, priorityDiagnostics.ToArray(),
+            run.FailedTestCount ?? run.FailedTestIds?.Count ?? 0);
     }
 
     private static ScheduledMutationResult Timeout(ScheduledMutation mutation, string suiteId) =>

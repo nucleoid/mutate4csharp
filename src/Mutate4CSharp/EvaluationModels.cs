@@ -27,6 +27,20 @@ internal sealed record EvaluationEvidence(string Kind, string Summary,
             .Concat(tail).ToArray();
     }
 
+    public static IReadOnlyList<string> BoundDiagnostics(IEnumerable<string> retainedDiagnostics,
+        int originalCount, string truncationLabel = "diagnostics-truncated")
+    {
+        ArgumentNullException.ThrowIfNull(retainedDiagnostics);
+        var values = retainedDiagnostics.Select(Bound).ToArray();
+        if (originalCount < values.Length)
+            throw new EvaluationContractException("Original diagnostic count cannot be smaller than retained evidence.");
+        if (originalCount <= MaxDiagnostics) return values;
+        var retained = Math.Min(values.Length, MaxDiagnostics - 1);
+        return values.Take(retained)
+            .Append(Bound($"{truncationLabel}={originalCount - retained}"))
+            .ToArray();
+    }
+
     private static string Bound(string value)
     {
         ArgumentNullException.ThrowIfNull(value);

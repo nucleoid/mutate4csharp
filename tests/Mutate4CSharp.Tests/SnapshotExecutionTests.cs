@@ -62,16 +62,20 @@ public sealed class SnapshotExecutionTests : IDisposable
     }
 
     [Fact]
-    public void MutantFailureDiagnosticRetainsNewestUnicodeSafeOutput()
+    public void OriginalDiagnosticCountProducesTruthfulUnicodeSafeTruncationEvidence()
     {
-        var bound = typeof(StrictMutationExecutor).GetMethod("Bound",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-        var output = "old-output " + new string('x', 600) + " 😀FINAL_MUTANT_ERROR";
+        var retained = Enumerable.Range(1, EvaluationEvidence.MaxDiagnostics)
+            .Select(index => index == EvaluationEvidence.MaxDiagnostics - 1
+                ? new string('x', EvaluationEvidence.MaxDiagnosticLength - 1) + "😀tail"
+                : $"diagnostic-{index:D2}")
+            .ToArray();
 
-        var diagnostic = Assert.IsType<string>(bound.Invoke(null, [output]));
+        var diagnostics = EvaluationEvidence.BoundDiagnostics(retained, 25);
 
-        Assert.Contains("FINAL_MUTANT_ERROR", diagnostic, StringComparison.Ordinal);
-        Assert.False(char.IsSurrogate(diagnostic[0]));
+        Assert.Equal(EvaluationEvidence.MaxDiagnostics, diagnostics.Count);
+        Assert.Equal("diagnostics-truncated=6", diagnostics[^1]);
+        Assert.All(diagnostics, diagnostic =>
+            Assert.False(diagnostic.Length > 0 && char.IsHighSurrogate(diagnostic[^1])));
     }
 
     private readonly SnapshotTestRepository _repository = new();

@@ -165,6 +165,8 @@ public sealed class StrictMutationExecutorTests : IDisposable
         var diagnostics = Assert.Single(result.Evidence, item => item.Kind == "SUITE_MUTANT_RESULT").Diagnostics!;
 
         Assert.Equal(UnitDisposition.Error, result.Disposition);
+        Assert.Contains("failed-count=0", diagnostics);
+        Assert.Contains("diagnostic-count=6", diagnostics);
         Assert.Contains("diagnostic=classifier-stage=regex-timeout", diagnostics);
         Assert.Contains(diagnostics, value => value.StartsWith("diagnostic=process-exit=", StringComparison.Ordinal));
         Assert.Contains("diagnostic=trx-valid=false", diagnostics);
@@ -181,7 +183,7 @@ public sealed class StrictMutationExecutorTests : IDisposable
         var mutationId = "mutation:v1:" + new string('a', 64);
         var aggregate = SuiteCoordinator.AggregateMutant(mutationId, ["suite"],
         [
-            new("suite", SuiteRunDisposition.Error, [],
+            new("suite", SuiteRunDisposition.Error, [], [], PriorityDiagnostics:
             [
                 "classifier-stage=failed-build",
                 "classifier-location-matches=0",
@@ -230,7 +232,7 @@ public sealed class StrictMutationExecutorTests : IDisposable
         var failed = Enumerable.Range(1, 25).Select(index => $"Suite.Test{index:D2}").ToArray();
         var aggregate = SuiteCoordinator.AggregateMutant("mutation:v1:" + new string('c', 64),
             ["suite"],
-            [new("suite", SuiteRunDisposition.Error, failed,
+            [new("suite", SuiteRunDisposition.Error, failed, [], PriorityDiagnostics:
             [
                 "classifier-stage=failed-build",
                 "classifier-location-matches=0",
@@ -274,8 +276,10 @@ public sealed class StrictMutationExecutorTests : IDisposable
     public void ExecutorTruncationReportsRealOmittedAndDiagnosticCounts()
     {
         var run = new TestRunResult(1, TimeSpan.Zero, false, false, false, false,
-            string.Empty, string.Empty, [], true, [],
-            Enumerable.Range(1, 30).Select(index => $"run-diagnostic-{index}").ToArray());
+            string.Empty, string.Empty, [], true,
+            Enumerable.Range(1, 50).Select(index => $"failed-{index:D2}").ToArray(),
+            Enumerable.Range(1, 20).Select(index => $"run-diagnostic-{index}").ToArray(),
+            FailedTestCount: 80, DiagnosticCount: 30);
         var compile = new CompileEvidence(false, [], ["classifier-stage=not-failed-build"]);
         var method = typeof(StrictMutationExecutor).GetMethod("ToSuiteEvidence",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
@@ -286,11 +290,12 @@ public sealed class StrictMutationExecutorTests : IDisposable
         var diagnostics = Assert.Single(aggregate.Evidence).Diagnostics!;
 
         Assert.Equal(EvaluationEvidence.MaxDiagnostics, suite.Diagnostics.Count);
-        Assert.Contains("diagnostics-truncated=16", suite.Diagnostics);
+        Assert.Contains("diagnostics-truncated=11", suite.Diagnostics);
+        Assert.Contains("failed-count=80", diagnostics);
         Assert.Contains("diagnostic-count=35", diagnostics);
         Assert.Contains("diagnostic=classifier-stage=not-failed-build", diagnostics);
         Assert.Contains("diagnostic=process-exit=1", diagnostics);
-        Assert.Contains("diagnostic=diagnostics-truncated=16", diagnostics);
+        Assert.Contains("diagnostics-truncated=99", diagnostics);
     }
 
     [Fact]

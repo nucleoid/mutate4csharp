@@ -5,7 +5,7 @@ namespace Mutate4CSharp;
 
 internal sealed record TrxEvidence(bool Valid, bool TestsExecuted, bool HasFailedTests,
     IReadOnlyList<string> Paths, bool HasRunErrors, IReadOnlyList<string> FailedTestIds,
-    IReadOnlyList<string> Diagnostics);
+    IReadOnlyList<string> Diagnostics, int FailedTestCount, int DiagnosticCount);
 
 internal static class TestRunner
 {
@@ -49,11 +49,11 @@ internal static class TestRunner
         {
             return new(-1, run.Duration, true, evidence.TestsExecuted, evidence.HasFailedTests, evidence.Valid,
                 run.StandardOutput, run.StandardError, evidence.Paths, evidence.HasRunErrors, evidence.FailedTestIds,
-                evidence.Diagnostics);
+                evidence.Diagnostics, evidence.FailedTestCount, evidence.DiagnosticCount);
         }
         return new(run.ExitCode, run.Duration, false, evidence.TestsExecuted, evidence.HasFailedTests, evidence.Valid,
             run.StandardOutput, run.StandardError, evidence.Paths, evidence.HasRunErrors, evidence.FailedTestIds,
-            evidence.Diagnostics);
+            evidence.Diagnostics, evidence.FailedTestCount, evidence.DiagnosticCount);
     }
 
     private static IReadOnlyList<string> BuildArguments(string testPath, string resultsDirectory,
@@ -87,11 +87,13 @@ internal static class TestRunner
         var paths = Directory.Exists(directory)
             ? ProjectLocator.EnumerateFilesSafe(directory, "*.trx").OrderBy(x => x, StringComparer.Ordinal).ToArray()
             : [];
-        if (paths.Length == 0) return new(false, false, false, paths, false, [], []);
+        if (paths.Length == 0) return new(false, false, false, paths, false, [], [], 0, 0);
 
         var anyExecuted = false;
         var anyFailed = false;
         var anyRunErrors = false;
+        var failedTestCount = 0;
+        var diagnosticCount = 0;
         var failedTestIds = new List<string>();
         var diagnostics = new List<string>();
         foreach (var path in paths)
@@ -114,6 +116,7 @@ internal static class TestRunner
                 if (total < executed || executed != passed + failed || executed != actualExecuted ||
                     passed != actualPassed || failed != actualFailed)
                     return Invalid();
+                failedTestCount += actualFailed;
 
                 var summary = doc.Descendants().FirstOrDefault(x => x.Name.LocalName == "ResultSummary");
                 var summaryFailed = string.Equals(summary?.Attribute("outcome")?.Value, "Failed", StringComparison.OrdinalIgnoreCase);
@@ -129,7 +132,9 @@ internal static class TestRunner
                 {
                     var diagnostic = Bound(string.Join(' ', message.Value.Split((char[]?)null,
                         StringSplitOptions.RemoveEmptyEntries)), 512);
-                    if (diagnostic.Length > 0 && diagnostics.Count < 20) diagnostics.Add(diagnostic);
+                    if (diagnostic.Length == 0) continue;
+                    diagnosticCount++;
+                    if (diagnostics.Count < EvaluationEvidence.MaxDiagnostics) diagnostics.Add(diagnostic);
                 }
                 if ((summaryFailed || hasRunError) && actualFailed == 0)
                     return Invalid();
@@ -142,10 +147,12 @@ internal static class TestRunner
                 return Invalid();
             }
         }
-        return new(true, anyExecuted, anyFailed, paths, anyRunErrors, failedTestIds, diagnostics);
+        return Create(true);
 
-        TrxEvidence Invalid() => new(false, anyExecuted, anyFailed, paths, anyRunErrors,
-            failedTestIds, diagnostics);
+        TrxEvidence Invalid() => Create(false);
+        TrxEvidence Create(bool valid) => new(valid, anyExecuted, anyFailed, paths, anyRunErrors,
+            failedTestIds, EvaluationEvidence.BoundDiagnostics(diagnostics, diagnosticCount),
+            failedTestCount, diagnosticCount);
     }
 
     private static bool TryCounter(XElement counters, string name, out int value) =>
