@@ -202,6 +202,32 @@ public sealed class ReportContractTests : IDisposable
         }));
     }
 
+    [Theory]
+    [InlineData("tests=", "2")]
+    [InlineData("accountedMembers=", "Synthetic.Tests.dll,Synthetic.Tests.dll")]
+    [InlineData("expectedMembers=", "Synthetic.Tests.dll,Synthetic.Tests.dll")]
+    [InlineData("accountedMembers=", ",Synthetic.Tests.dll")]
+    [InlineData("expectedMembers=", "Synthetic.Tests.dll,")]
+    [InlineData("expectedMembers=", "Other.Tests.dll")]
+    [InlineData("coverageLength=", "0")]
+    [InlineData("coverageSha256=", "unbound")]
+    public void PassRejectsIncompleteOrAmbiguousSuiteAccounting(string prefix, string value)
+    {
+        var report = EvaluationReport.CreateSynthetic(EvaluationOutcome.Pass, "suite-accounting", "TEST_FIXTURE");
+        var suite = Assert.Single(report.Suites);
+        var baseline = Assert.Single(suite.Evidence);
+        var invalid = baseline with
+        {
+            Diagnostics = baseline.Diagnostics!.Select(item => item.StartsWith(prefix, StringComparison.Ordinal)
+                ? prefix + value : item).ToArray()
+        };
+
+        Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(report with
+        {
+            Suites = [suite with { Evidence = [invalid] }]
+        }));
+    }
+
     [Fact]
     public void SchemaRejectsSemanticallyContradictoryPass()
     {

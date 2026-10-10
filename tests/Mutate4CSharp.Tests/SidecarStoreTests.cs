@@ -182,8 +182,7 @@ public sealed class SidecarStoreTests : IDisposable
 
         var twoSuiteReport = report with
         {
-            Suites = report.Suites.Append(new SuiteEvidence("suite-b", BaselineStatus.Green,
-                [new("BASELINE_GREEN", "Second fresh baseline passed.")])).ToArray(),
+            Suites = report.Suites.Append(ValidSuite("suite-b")).ToArray(),
             Evidence = report.Evidence.Where(item => item.Kind != "CHECK_CONFIGURATION")
                 .Append(ReportWriter.ConfigurationSuiteEvidence(["suite-a", "suite-b"])).ToArray()
         };
@@ -407,7 +406,7 @@ public sealed class SidecarStoreTests : IDisposable
         var report = new EvaluationReport("1", "valid-pass-run", DateTimeOffset.UnixEpoch, "check",
             new("inputs", null, ["src/A.cs"]), ScopePlan.Empty("inputs", ".", null),
             EvaluationReport.DefaultPolicy, BaselineStatus.Green,
-            [new("suite-a", BaselineStatus.Green, [new("BASELINE_GREEN", "Fresh baseline passed.")])],
+            [ValidSuite("suite-a")],
             [unit], decision.Counts, [], decision.Reasons,
             decision.Evidence.Concat([
                 new EvaluationEvidence("INPUT_SNAPSHOT", "Frozen input snapshot.",
@@ -417,13 +416,19 @@ public sealed class SidecarStoreTests : IDisposable
         var bytes = ReportWriter.Serialize(report);
         var fingerprint = EvaluationFingerprint.ComputeForProven(material);
         var coverage = new CoverageProvenance("1", report.RunId, "suite-a", fingerprint, snapshotId,
-            BaselineStatus.Green, Digest("coverage"), 8, "path-map-v1", CompleteRunnerIdentity, true);
+            BaselineStatus.Green, Digest("coverage"), 8, "baseline-clone-to-snapshot-v1", CompleteRunnerIdentity, true);
         var record = new ProvenEvaluationSidecar("1", SidecarRecordKind.Proven, report.RunId,
             DateTimeOffset.UnixEpoch, fingerprint, snapshotId,
             Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), bytes.LongLength,
             true, [coverage], report.Counts);
         return (new SidecarStore(_directory), report, record, material, plan);
     }
+
+    private static SuiteEvidence ValidSuite(string identity) => new(identity, BaselineStatus.Green,
+        [new("SUITE_BASELINE", "Fixture baseline with complete coverage and member accounting.",
+            ["disposition=Passed", "tests=1", "accountedMembers=Tests.dll", "expectedMembers=Tests.dll",
+             "coverageSha256=" + Digest("coverage"), "coverageLength=8",
+             "pathMap=baseline-clone-to-snapshot-v1"])]);
 
     private static MutationCandidate Candidate()
     {

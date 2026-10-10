@@ -368,7 +368,9 @@ public sealed class StrictMutationExecutorTests : IDisposable
                 new(false, "HEAD", [], reportPath, "strict-execution", NoState: true),
                 cancellationToken);
 
-            Assert.Equal(EvaluationOutcome.Pass, result.Report.Outcome);
+            Assert.True(result.Report.Outcome == EvaluationOutcome.Pass,
+                string.Join("; ", result.Report.Reasons.Select(item => item.Code + ": " + item.Message)
+                    .Concat(result.Report.Evidence.Select(item => item.Kind + ": " + item.Summary))));
             Assert.Equal(0, result.Report.ExitCode);
             Assert.Equal(BaselineStatus.Green, result.Report.Baseline);
             Assert.NotNull(result.Report.Counts.Enumerated);
