@@ -114,7 +114,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         Assert.Equal(1, result.Report.Counts.Omitted);
         Assert.True(MutationIdentity.IsMutationId(unit.UnitId));
         Assert.True(EvaluationUnitIdentity.IsEvaluationUnitId(unit.EvaluationUnitId));
-        Assert.Contains(result.Report.Reasons, reason => reason.Code == "FINALIZATION_PENDING");
+        Assert.Contains(result.Report.Reasons, reason => reason.Code == "BASELINE_UNKNOWN");
         Assert.DoesNotContain(result.Report.Reasons, reason => reason.Code == "ENUMERATION_NOT_IMPLEMENTED");
         Assert.Contains(result.Report.Evidence, item => item.Kind == "MUTATION_PLAN" &&
             item.Diagnostics?.Any(value => value.StartsWith("planFingerprint=sha256:",
@@ -212,7 +212,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
 
         Assert.Equal(0, result.Report.Counts.Enumerated);
         Assert.Empty(result.Report.Units);
-        Assert.Contains(result.Report.Reasons, reason => reason.Code == "FINALIZATION_PENDING");
+        Assert.DoesNotContain(result.Report.Reasons, reason => reason.Code == "FINALIZATION_PENDING");
         Assert.DoesNotContain(result.Report.Reasons, reason => reason.Code == "ENUMERATION_INCOMPLETE");
     }
 

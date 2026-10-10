@@ -518,8 +518,7 @@ public sealed class StrictMutationExecutorTests : IDisposable
                 Assert.Equal(UnitDisposition.Omitted, unit.Disposition);
                 Assert.Contains(unit.Evidence, item => item.Kind == "BASELINE_NOT_GREEN");
             });
-            Assert.Contains(result.Report.IncompleteConditions,
-                item => item.Code == "FINALIZATION_PENDING");
+            Assert.Empty(result.Report.IncompleteConditions);
         }
         finally
         {

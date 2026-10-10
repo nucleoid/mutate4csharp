@@ -213,8 +213,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             evidence.Add(new("SNAPSHOT_VALIDATION_FAILURE", Bound($"{ex.GetType().Name}: {ex.Message}")));
         }
 
-        if (exactIdRequest && reason?.Code != "FINALIZATION_PENDING" &&
-            evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
+        if (exactIdRequest && evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
         {
             enumerationReasons = enumerationReasons.Concat([
                 new EvaluationReason("EXACT_ID_RERUN_UNAVAILABLE",
@@ -246,6 +245,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
+                    finalizingPlan = null;
                     enumerationReasons = PreservedFailureReasons(previousReason, previousReasons, ex);
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot divergence."));
@@ -261,6 +261,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
+                    finalizingPlan = null;
                     enumerationReasons = PreservedFailureReasons(previousReason, previousReasons, ex);
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot cancellation."));
@@ -277,6 +278,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
+                    finalizingPlan = null;
                     enumerationReasons = PreservedFailureReasons(previousReason, previousReasons, ex);
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot validation failure."));
@@ -284,7 +286,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             }
             if (snapshot is not null)
             {
-                if (!options.NoState && !options.Plan && !exactIdRequest && snapshotId is not null)
+                if (!options.Plan && !exactIdRequest && snapshotId is not null)
                 {
                     try
                     {
@@ -321,13 +323,13 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
+                    finalizingPlan = null;
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot cleanup failure."));
                 }
                 snapshot = null;
             }
-            if (exactIdRequest && reason?.Code != "FINALIZATION_PENDING" &&
-                evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
+            if (exactIdRequest && evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
             {
                 enumerationReasons = enumerationReasons.Concat([
                     new EvaluationReason("EXACT_ID_RERUN_UNAVAILABLE",

@@ -77,12 +77,11 @@ ordinary dependencies to nuget.org. Use that example configuration only after ex
 checkout, the root and nested files are multiple applicable NuGet.Config files, which strict dependency
 preparation intentionally refuses rather than merging.
 
-The current public strict check **cannot produce `PASS` until final verification is connected**.
 For a supported Git-backed configuration-v1 context, `check` runs fresh baseline/coverage and isolated mutants,
-then returns exit `4` with `INCOMPLETE` and the `FINALIZATION_PENDING` incomplete condition. Unsupported
-semantic contexts fail closed with a specific enumeration refusal and an unknown total. Usage rejection, snapshot
-refusal, and exception paths may stop earlier and may not publish a report. The PASS/FAIL handling below defines
-the stable contract for the future execution connection.
+reconciles the trusted ledger, revalidates the original tree, and cleans up owned resources before reduction.
+Complete work returns `PASS`, `FAIL`, or explicit `NOT_APPLICABLE`; partial or unstable work is `INCOMPLETE`.
+Unsupported semantic contexts fail closed with a specific enumeration refusal and an unknown total. Usage rejection,
+snapshot refusal, and exception paths may stop earlier and may not publish a report.
 
 The first enumeration envelope is deliberately narrow: an exact-`net10.0`, plain `Microsoft.NET.Sdk`,
 self-contained project with statically provable compile items and no project/package/framework references,
@@ -130,10 +129,10 @@ canonical payload directory. Package, payload, executable identity, target `HEAD
 Missing or malformed receipt fields, duplicate or unknown keys, host/SDK mismatch, hash drift, payload symlinks,
 symbolic repository boundaries, identity drift, non-commit baselines, existing/symlinked/internal report paths, or
 changed target `HEAD` fail before a result is accepted.
-The current gate accepts a tool result only when a newly created regular report parses, its `exitCode` equals the
-process exit, and it says `INCOMPLETE` / `2` or `4`. Exit `2` is accepted only with a reported `RED` or `EMPTY`
-baseline; those baseline states are rejected with exit `4`. A supported run must contain `FINALIZATION_PENDING` and a bounded
-nonnegative `counts.enumerated`. A supported execution may additionally retain named baseline, coverage,
+The current gate accepts a tool result only when a newly created regular report parses and its outcome exactly maps
+to the process exit: `PASS`/0, baseline `INCOMPLETE`/2, `FAIL`/3, infrastructure `INCOMPLETE`/4, or
+`NOT_APPLICABLE`/5. Conclusive results require an empty incomplete-condition set and a bounded enumeration count.
+An incomplete supported execution may retain named baseline, coverage,
 deadline, cancellation, or omitted-attempt conditions; these remain honest nonpassing evidence. Snapshot,
 boundary, sidecar, and other integrity failures are never allowlisted by the gate. Dependency preparation
 intentionally precedes semantic enumeration because the
@@ -196,20 +195,16 @@ being confused with tool usage or a validated strict incomplete result. An accep
 ```json
 {
   "schemaVersion": "1",
-  "outcome": "INCOMPLETE",
-  "exitCode": 4,
-  "incompleteConditions": [
-    { "code": "FINALIZATION_PENDING" }
-  ],
-  "reasons": [
-    { "code": "FINALIZATION_PENDING" }
-  ],
+  "outcome": "PASS",
+  "exitCode": 0,
+  "incompleteConditions": [],
+  "reasons": [],
   "counts": { "enumerated": 1, "selected": 1, "executed": 1, "killed": 1 }
 }
 ```
 
-`incompleteConditions[]` records the intrinsic blocker. `reasons[]` retains that blocker and the
-reducer-derived `BASELINE_UNKNOWN` and per-unit omission codes; do not require the two arrays to be identical.
+`incompleteConditions[]` records intrinsic blockers for incomplete work. `reasons[]` retains those blockers plus
+reducer-derived baseline and per-unit policy reasons; do not require the two arrays to be identical.
 
 Handle outcomes as follows:
 
