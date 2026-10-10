@@ -389,6 +389,50 @@ public sealed class StrictMutationExecutorTests : IDisposable
             Assert.Equal(original, File.ReadAllBytes(Path.Combine(_repository.Root, "src/App/Flag.cs")));
             Assert.False(Directory.Exists(Path.Combine(_repository.Root, "obj")));
             Assert.False(Directory.Exists(Path.Combine(_repository.Root, "bin")));
+            Assert.False(Directory.Exists(Path.Combine(_repository.Root, ".mutate4csharp")));
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            try { File.Delete(reportPath); } catch { }
+            try { File.Delete(ReportWriter.LockPath(reportPath)); } catch { }
+        }
+    }
+
+    [Fact(Timeout = 420_000)]
+    public async Task CoordinatorPublishesDiscoveryThenProvenForEligibleRealPass()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        WriteFixture();
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag { public static bool Value() => false; }
+            """);
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "baseline");
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag { public static bool Value() => true; }
+            """);
+        var reportPath = Path.Combine(Path.GetTempPath(), $"strict-proven-{Guid.NewGuid():N}.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = _repository.Root;
+        try
+        {
+            var result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], reportPath, "strict-proven"), cancellationToken);
+
+            Assert.Equal(EvaluationOutcome.Pass, result.Report.Outcome);
+            var fingerprint = Assert.Single(result.Report.Evidence,
+                    item => item.Kind == "MUTATION_PLAN").Diagnostics!
+                .Single(value => value.StartsWith("evaluationFingerprint=", StringComparison.Ordinal))[22..];
+            var store = new SidecarStore(_repository.Root);
+            var proven = store.ReadProvenForInspection(fingerprint);
+            Assert.True(proven.IsValid, proven.Error);
+            Assert.Equal(result.Report.RunId, proven.Record!.RunId);
+            Assert.True(File.Exists(store.ProvenPath(fingerprint)));
+            Assert.Single(Directory.EnumerateFiles(
+                Path.Combine(_repository.Root, ".mutate4csharp", "discovery"), "*.json"));
         }
         finally
         {
