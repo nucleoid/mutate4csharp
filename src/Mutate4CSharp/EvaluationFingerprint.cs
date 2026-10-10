@@ -77,6 +77,9 @@ internal static class EvaluationFingerprint
     public static string ComputeForProven(EvaluationFingerprintMaterial material)
     {
         if (!material.ProvenanceComplete || material.Inputs.All(input => input.Kind != "dependency") ||
+            !material.RunnerIdentity.Contains("collector=coverlet-opencover-v1", StringComparison.Ordinal) ||
+            !ContainsBoundIdentity(material.RunnerIdentity, "coverage") ||
+            !ContainsBoundIdentity(material.RunnerIdentity, "plan") ||
             new[] { material.Configuration, material.ToolVersion, material.OperatorVersion, material.SdkIdentity,
                     material.RuntimeIdentity, material.RunnerIdentity }
                 .Any(value => value.Contains("not-prepared", StringComparison.OrdinalIgnoreCase) ||
@@ -86,6 +89,16 @@ internal static class EvaluationFingerprint
             throw new EvaluationContractException(
                 "Proven state requires exact dependency, SDK, runtime, runner, tool, operator, and configuration identities.");
         return Compute(material);
+    }
+
+    private static bool ContainsBoundIdentity(string value, string label)
+    {
+        var marker = label + "=sha256:";
+        var start = value.IndexOf(marker, StringComparison.Ordinal);
+        if (start < 0) return false;
+        start += marker.Length;
+        return start + 64 <= value.Length && IsSha256(value.Substring(start, 64)) &&
+            (start + 64 == value.Length || value[start + 64] == ';');
     }
 
     public static string ToolIdentity(Assembly assembly)

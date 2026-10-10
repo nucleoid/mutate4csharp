@@ -278,10 +278,20 @@ internal sealed record EvaluationReport(
             : [];
         var facts = new EvaluationFacts(BaselineStatus.Green, units.Count, units, false, incompleteConditions);
         var decision = EvaluationReducer.Reduce(facts);
+        IReadOnlyList<SuiteEvidence> suites = outcome == EvaluationOutcome.Incomplete ? [] :
+            [new("synthetic-suite", BaselineStatus.Green,
+                [new("SUITE_BASELINE", "Synthetic green baseline evidence.",
+                    ["disposition=Passed", "tests=1", "accountedMembers=Synthetic.Tests.dll",
+                     "expectedMembers=Synthetic.Tests.dll", "coverageSha256=" + new string('a', 64),
+                     "coverageLength=1", "pathMap=baseline-clone-to-snapshot-v1"])])];
+        var evidence = decision.Evidence;
+        if (suites.Count > 0)
+            evidence = evidence.Concat([ReportWriter.ConfigurationSuiteEvidence(
+                suites.Select(suite => suite.SuiteId))]).ToArray();
         return new("1", runId, DateTimeOffset.UtcNow, "check",
             new("inputs", null, ["fixture.cs"]), ScopePlan.Empty("inputs", ".", null),
-            DefaultPolicy, facts.Baseline, [], facts.Units,
-            decision.Counts, facts.IncompleteConditions, decision.Reasons, decision.Evidence,
+            DefaultPolicy, facts.Baseline, suites, facts.Units,
+            decision.Counts, facts.IncompleteConditions, decision.Reasons, evidence,
             decision.Outcome, decision.ExitCode);
     }
 

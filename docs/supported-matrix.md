@@ -5,8 +5,8 @@ combinations probably work.
 
 | Mode/evidence | Verified contract |
 | --- | --- |
-| Packaged strict local-tool fixture | `net10.0`; SDK `10.0.103` with `rollForward: latestPatch`; locally verified Linux Bash prepare/verify/gate workflow and local-only manifest restore/invocation; Windows build/test is CI-configured, while package creation runs only through the Linux Bash prepare workflow; supported frozen execution returns exit `4` / `INCOMPLETE` / `FINALIZATION_PENDING`; strict `--no-state` source/index/status/state immutability is established only by a receipt captured around the same run |
-| In-repository strict fixtures | Snapshot, scope, configuration, canonical enumeration, fresh VSTest/TRX/xUnit/Coverlet baseline coverage, isolated mutants, deterministic selection, report, and fail-closed orchestration contracts. Final PASS publication remains disabled. |
+| Packaged strict local-tool fixture | `net10.0`; SDK `10.0.103` with `rollForward: latestPatch`; locally verified Linux Bash prepare/verify/gate workflow and local-only manifest restore/invocation; Windows build/test is CI-configured, while package creation runs only through the Linux Bash prepare workflow; the representative surviving-mutant fixture returns exit `3` / `FAIL`; strict `--no-state` source/index/status/state immutability is established by a receipt captured around the same run |
+| In-repository strict fixtures | Snapshot, scope, configuration, canonical enumeration, fresh VSTest/TRX/xUnit/Coverlet baseline coverage, isolated mutants, deterministic selection, PASS/FAIL/INCOMPLETE/NOT_APPLICABLE report reduction, and fail-closed discovery/proven publication contracts |
 | Legacy/in-repository real-process fixtures | VSTest runner with TRX; xUnit through `xunit.runner.visualstudio`; Coverlet `XPlat Code Coverage` in OpenCover format; `xUnit.MaxParallelThreads=1` for serialized real-process suites |
 
 Neither hosted OS is claimed successful until its CI run completes for the exact release candidate.
@@ -22,9 +22,9 @@ is intentionally refused on every platform.
 
 The packaged strict end-to-end fixture uses one changed production file and one mapped xUnit suite. It validates
 local restore, invocation, strict configuration/scope loading, fresh coverage, and isolated mutation execution.
-At the current integration boundary a supported self-contained project reports real unit dispositions and a
-nonzero executed count, but remains `INCOMPLETE` with `FINALIZATION_PENDING` until final verification is connected.
-That is a deliberate release boundary, not a claim that execution is absent.
+The representative changed expression has a surviving mutant, so the complete nonzero ledger returns `FAIL` / exit
+`3`. Separate in-repository fixtures prove an all-killed `PASS`, incomplete execution, and explicit zero-effective
+`NOT_APPLICABLE` reduction.
 Coverlet 6.0.4 OpenCover reports are line-granular (`sc=1`, `ec=2` placeholders), so strict execution treats
 their exact-span coverage as unknown and executes those mutants conservatively. Strict `Uncovered` evidence is
 available only from a collector that supplies non-placeholder complete sequence-point spans; the tool never falls

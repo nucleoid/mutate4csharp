@@ -344,7 +344,7 @@ public sealed class StrictMutationExecutorTests : IDisposable
         Assert.Equal(1, StrictExecutionPipeline.MaxStrictWorkers);
 
     [Fact(Timeout = 420_000)]
-    public async Task CoordinatorRunsFreshBaselineCoverageAndMutantBeforeFinalizationGate()
+    public async Task CoordinatorFinalizesRealAllKilledRunAsPass()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         WriteFixture();
@@ -368,14 +368,14 @@ public sealed class StrictMutationExecutorTests : IDisposable
                 new(false, "HEAD", [], reportPath, "strict-execution", NoState: true),
                 cancellationToken);
 
-            Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+            Assert.Equal(EvaluationOutcome.Pass, result.Report.Outcome);
+            Assert.Equal(0, result.Report.ExitCode);
             Assert.Equal(BaselineStatus.Green, result.Report.Baseline);
             Assert.NotNull(result.Report.Counts.Enumerated);
             Assert.True(result.Report.Counts.Executed > 0);
             Assert.True(result.Report.Counts.Killed > 0);
             Assert.Contains(result.Report.Units, item => item.Disposition == UnitDisposition.Killed);
-            Assert.Contains(result.Report.IncompleteConditions,
-                item => item.Code == "FINALIZATION_PENDING");
+            Assert.Empty(result.Report.IncompleteConditions);
             Assert.DoesNotContain(result.Report.IncompleteConditions,
                 item => item.Code == "EXECUTION_NOT_IMPLEMENTED");
             Assert.Single(result.Report.Suites);
@@ -389,6 +389,98 @@ public sealed class StrictMutationExecutorTests : IDisposable
             Assert.Equal(original, File.ReadAllBytes(Path.Combine(_repository.Root, "src/App/Flag.cs")));
             Assert.False(Directory.Exists(Path.Combine(_repository.Root, "obj")));
             Assert.False(Directory.Exists(Path.Combine(_repository.Root, "bin")));
+            Assert.False(Directory.Exists(Path.Combine(_repository.Root, ".mutate4csharp")));
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            try { File.Delete(reportPath); } catch { }
+            try { File.Delete(ReportWriter.LockPath(reportPath)); } catch { }
+        }
+    }
+
+    [Fact(Timeout = 420_000)]
+    public async Task CoordinatorPublishesDiscoveryThenProvenForEligibleRealPass()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        WriteFixture();
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag { public static bool Value() => false; }
+            """);
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "baseline");
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag { public static bool Value() => true; }
+            """);
+        var reportPath = Path.Combine(Path.GetTempPath(), $"strict-proven-{Guid.NewGuid():N}.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = _repository.Root;
+        try
+        {
+            var result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], reportPath, "strict-proven"), cancellationToken);
+
+            Assert.Equal(EvaluationOutcome.Pass, result.Report.Outcome);
+            var fingerprint = Assert.Single(result.Report.Evidence,
+                    item => item.Kind == "MUTATION_PLAN").Diagnostics!
+                .Single(value => value.StartsWith("evaluationFingerprint=", StringComparison.Ordinal))[22..];
+            var store = new SidecarStore(_repository.Root);
+            var proven = store.ReadProvenForInspection(fingerprint);
+            Assert.True(proven.IsValid, proven.Error);
+            Assert.Equal(result.Report.RunId, proven.Record!.RunId);
+            Assert.True(File.Exists(store.ProvenPath(fingerprint)));
+            Assert.Single(Directory.EnumerateFiles(
+                Path.Combine(_repository.Root, ".mutate4csharp", "discovery"), "*.json"));
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            try { File.Delete(reportPath); } catch { }
+            try { File.Delete(ReportWriter.LockPath(reportPath)); } catch { }
+        }
+    }
+
+    [Fact(Timeout = 420_000)]
+    public async Task CoordinatorFinalizesRealSurvivorRunAsFail()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        WriteFixture();
+        _repository.WriteText("tests/App.Tests/FlagTests.cs", """
+            using Xunit;
+            public sealed class FlagTests
+            {
+                [Fact] public void WeakTest() => Assert.True(true);
+            }
+            """);
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag { public static bool Value() => false; }
+            """);
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "baseline");
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag { public static bool Value() => true; }
+            """);
+        var reportPath = Path.Combine(Path.GetTempPath(), $"strict-survivor-{Guid.NewGuid():N}.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = _repository.Root;
+        try
+        {
+            var result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], reportPath, "strict-survivor", NoState: true),
+                cancellationToken);
+
+            Assert.Equal(EvaluationOutcome.Fail, result.Report.Outcome);
+            Assert.Equal(3, result.Report.ExitCode);
+            Assert.Equal(BaselineStatus.Green, result.Report.Baseline);
+            Assert.NotNull(result.Report.Counts.Enumerated);
+            Assert.True(result.Report.Counts.Executed > 0);
+            Assert.True(result.Report.Counts.Survived > 0);
+            Assert.Contains(result.Report.Units, item => item.Disposition == UnitDisposition.Survived);
+            Assert.Empty(result.Report.IncompleteConditions);
         }
         finally
         {
@@ -426,8 +518,7 @@ public sealed class StrictMutationExecutorTests : IDisposable
                 Assert.Equal(UnitDisposition.Omitted, unit.Disposition);
                 Assert.Contains(unit.Evidence, item => item.Kind == "BASELINE_NOT_GREEN");
             });
-            Assert.Contains(result.Report.IncompleteConditions,
-                item => item.Code == "FINALIZATION_PENDING");
+            Assert.Empty(result.Report.IncompleteConditions);
         }
         finally
         {

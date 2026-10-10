@@ -69,7 +69,7 @@ reruns, fixed execution-policy defaults, and stability repetitions are specified
 
 ## Snapshot status
 
-The strict report contract records bounded immutable working-tree capture in `INPUT_SNAPSHOT` evidence; see [snapshot-inputs.md](snapshot-inputs.md). Capture refusal or drift writes a current-run `INCOMPLETE` report when the report destination itself remains writable. Supported Git-backed configuration-v1 contexts enumerate a deterministic bound plan, run fresh baselines and coverage, and execute selected units in isolated clones. Reports retain `FINALIZATION_PENDING` until issue #4 adds the final completeness and original-tree gate, so public strict invocations cannot manufacture `PASS` from partial evidence.
+The strict report contract records bounded immutable working-tree capture in `INPUT_SNAPSHOT` evidence; see [snapshot-inputs.md](snapshot-inputs.md). Capture refusal or drift writes a current-run `INCOMPLETE` report when the report destination itself remains writable. Supported Git-backed configuration-v1 contexts enumerate a deterministic bound plan, run fresh baselines and coverage, execute selected units in isolated clones, revalidate the original tree, and clean up owned resources before final reduction. Discovery is published after the atomic report; reusable proven state is published last and only for an eligible full-scope canonical `PASS`.
 
 An execution-time package-root, restore-source, lock-file, worker-root, or private package-cache escape is reported
 as `EXECUTION_BOUNDARY_INTEGRITY`, not as an unsupported capture or ordinary mutant error. It aborts the run and

@@ -166,6 +166,43 @@ public sealed class ReportContractTests : IDisposable
     }
 
     [Fact]
+    public void SuccessCapableReportsRequireExactUniqueGreenSuiteEvidence()
+    {
+        var original = EvaluationReport.CreateSynthetic(EvaluationOutcome.Pass, "suite-contract", "TEST_FIXTURE");
+        var suite = new SuiteEvidence("configured-suite", BaselineStatus.Green,
+            [new("SUITE_BASELINE", "Fresh baseline passed.",
+                ["disposition=Passed", "tests=1", "accountedMembers=Tests.dll",
+                 "expectedMembers=Tests.dll", "coverageSha256=" + new string('a', 64),
+                 "coverageLength=1", "pathMap=baseline-clone-to-snapshot-v1"])]);
+
+        var pass = original with
+        {
+            Suites = [suite],
+            Evidence = original.Evidence.Where(item => item.Kind != "CHECK_CONFIGURATION")
+                .Append(ReportWriter.ConfigurationSuiteEvidence([suite.SuiteId])).ToArray()
+        };
+
+        Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(pass with { Suites = [] }));
+        Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(pass with
+        {
+            Suites = [suite, suite]
+        }));
+        Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(pass with
+        {
+            Suites = [suite],
+            Evidence = original.Evidence.Where(item => item.Kind != "CHECK_CONFIGURATION")
+                .Append(ReportWriter.ConfigurationSuiteEvidence(["other-suite"])).ToArray()
+        }));
+        Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(pass with
+        {
+            Suites = [suite with
+            {
+                Evidence = [new EvaluationEvidence("BASELINE_GREEN", "Unbound baseline prose.")]
+            }]
+        }));
+    }
+
+    [Fact]
     public void SchemaRejectsSemanticallyContradictoryPass()
     {
         var pass = EvaluationReport.CreateSynthetic(EvaluationOutcome.Pass, "schema-pass", "TEST_FIXTURE");

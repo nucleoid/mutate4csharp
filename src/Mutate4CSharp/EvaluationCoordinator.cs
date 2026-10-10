@@ -39,6 +39,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         string? snapshotId = null;
         string? stateRoot = null;
         EvaluationFingerprintMaterial? fingerprintMaterial = null;
+        MutationSelectionPlan? finalizingPlan = null;
         Exception? fingerprintMaterialFailure = null;
         string? semanticContextIdentity = null;
         string? sdkVersion = null;
@@ -48,7 +49,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         IReadOnlyList<EvaluationReason> enumerationReasons = [];
         var baseline = BaselineStatus.Unknown;
         IReadOnlyList<SuiteEvidence> reportSuites = [];
-        EvaluationReason reason;
+        IReadOnlyList<CoverageProvenance> coverageProvenance = [];
+        EvaluationReason? reason = null;
         var evidence = new List<EvaluationEvidence>();
         try
         {
@@ -71,7 +73,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 if (checkConfiguration is not null)
                 {
                     ValidateConfiguredScope(checkConfiguration, scopePlan);
-                    evidence.Add(new("CHECK_CONFIGURATION",
+                    evidence.Add(ReportWriter.ConfigurationSuiteEvidence(
+                        checkConfiguration.ExecutionSuites.Select(item => item.Identity),
                         $"Validated configuration v{checkConfiguration.SchemaVersion}: " +
                         $"{checkConfiguration.Projects.Count} project(s), " +
                         $"{checkConfiguration.ExecutionSuites.Count} distinct suite execution(s)."));
@@ -90,7 +93,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 if (checkConfiguration is not null)
                 {
                     ValidateConfiguredScope(checkConfiguration, scopePlan);
-                    evidence.Add(new("CHECK_CONFIGURATION",
+                    evidence.Add(ReportWriter.ConfigurationSuiteEvidence(
+                        checkConfiguration.ExecutionSuites.Select(item => item.Identity),
                         $"Validated configuration v{checkConfiguration.SchemaVersion}: " +
                         $"{checkConfiguration.Projects.Count} project(s), " +
                         $"{checkConfiguration.ExecutionSuites.Count} distinct suite execution(s)."));
@@ -119,15 +123,17 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             }
             else
             {
-                var execution = await StrictExecutionPipeline.RunAsync(snapshot, snapshotId!, scopePlan,
+                var execution = await StrictExecutionPipeline.RunAsync(snapshot, snapshotId!, runId, scopePlan,
                     checkConfiguration, exactMutationIds, options.PlanFingerprint, cancellationToken);
                 fingerprintMaterial = execution.FingerprintMaterial;
+                finalizingPlan = execution.FinalizingPlan;
                 semanticContextIdentity = execution.SemanticContextIdentity;
                 sdkVersion = execution.SdkVersion;
                 enumerationCount = execution.EnumerationCount;
                 reportUnits = execution.Units;
                 baseline = execution.Baseline;
                 reportSuites = execution.Suites;
+                coverageProvenance = execution.Coverage;
                 enumerationReasons = execution.IncompleteConditions;
                 reason = execution.Reason;
                 var dependency = execution.FingerprintMaterial.Inputs.Single(input =>
@@ -207,8 +213,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             evidence.Add(new("SNAPSHOT_VALIDATION_FAILURE", Bound($"{ex.GetType().Name}: {ex.Message}")));
         }
 
-        if (exactIdRequest && reason.Code != "FINALIZATION_PENDING" &&
-            evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
+        if (exactIdRequest && evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
         {
             enumerationReasons = enumerationReasons.Concat([
                 new EvaluationReason("EXACT_ID_RERUN_UNAVAILABLE",
@@ -240,6 +245,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
+                    finalizingPlan = null;
                     enumerationReasons = PreservedFailureReasons(previousReason, previousReasons, ex);
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot divergence."));
@@ -255,6 +261,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
+                    finalizingPlan = null;
                     enumerationReasons = PreservedFailureReasons(previousReason, previousReasons, ex);
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot cancellation."));
@@ -271,6 +278,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
+                    finalizingPlan = null;
                     enumerationReasons = PreservedFailureReasons(previousReason, previousReasons, ex);
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot validation failure."));
@@ -278,7 +286,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             }
             if (snapshot is not null)
             {
-                if (!options.NoState && !options.Plan && !exactIdRequest && snapshotId is not null)
+                if (!options.Plan && !exactIdRequest && snapshotId is not null)
                 {
                     try
                     {
@@ -315,13 +323,13 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
+                    finalizingPlan = null;
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot cleanup failure."));
                 }
                 snapshot = null;
             }
-            if (exactIdRequest && reason.Code != "FINALIZATION_PENDING" &&
-                evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
+            if (exactIdRequest && evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
             {
                 enumerationReasons = enumerationReasons.Concat([
                     new EvaluationReason("EXACT_ID_RERUN_UNAVAILABLE",
@@ -332,13 +340,17 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     EvaluationEvidence.BoundDiagnostics(exactMutationIds,
                         truncationLabel: "ids-truncated")));
             }
-            var incompleteConditions = new List<EvaluationReason> { reason };
+            var incompleteConditions = new List<EvaluationReason>();
+            if (reason is not null) incompleteConditions.Add(reason);
             incompleteConditions.AddRange(enumerationReasons);
             incompleteConditions.AddRange(scopePlan.Reasons.Concat(scopePlan.Files.SelectMany(file => file.Reasons))
                 .Where(item => ScopePlanner.IsBlockingCode(item.Code)));
-            var facts = new EvaluationFacts(baseline, enumerationCount, reportUnits,
-                checkConfiguration?.Policy.AllowNotApplicable ?? false,
-                incompleteConditions.Distinct().ToArray());
+            var distinctConditions = incompleteConditions.Distinct().ToArray();
+            var facts = finalizingPlan is not null
+                ? finalizingPlan.FinalizeFacts(baseline, reportUnits,
+                    checkConfiguration?.Policy.AllowNotApplicable ?? false, distinctConditions)
+                : new EvaluationFacts(baseline, enumerationCount, reportUnits,
+                    checkConfiguration?.Policy.AllowNotApplicable ?? false, distinctConditions);
             var decision = EvaluationReducer.Reduce(facts);
             var reportEvidence = decision.Evidence.Concat(evidence).ToArray();
             var report = new EvaluationReport("1", runId, DateTimeOffset.UtcNow,
@@ -380,6 +392,21 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                         Convert.ToHexString(SHA256.HashData(reportBytes)).ToLowerInvariant(),
                         reportBytes.LongLength);
                     sidecarStore.PublishDiscovery(discovery);
+                    if (report.Outcome == EvaluationOutcome.Pass)
+                    {
+                        if (finalizingPlan is null)
+                            throw new EvaluationContractException(
+                                "PASS publication requires the trusted finalizing mutation plan.");
+                        var provenFingerprint = EvaluationFingerprint.ComputeForProven(fingerprintMaterial);
+                        if (!string.Equals(provenFingerprint, evaluationFingerprint, StringComparison.Ordinal))
+                            throw new EvaluationContractException(
+                                "Discovery and proven evaluation fingerprints do not match.");
+                        var proven = new ProvenEvaluationSidecar("1", SidecarRecordKind.Proven, runId,
+                            report.GeneratedAtUtc, provenFingerprint, snapshotId,
+                            Convert.ToHexString(SHA256.HashData(reportBytes)).ToLowerInvariant(),
+                            reportBytes.LongLength, PolicyComplete: true, coverageProvenance, report.Counts);
+                        sidecarStore.PublishProven(proven, report, fingerprintMaterial, finalizingPlan);
+                    }
                 }
                 catch (OperationCanceledException ex)
                 {
@@ -528,13 +555,12 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
     };
 
     internal static IReadOnlyList<EvaluationReason> PreservedFailureReasons(
-        EvaluationReason currentReason, IReadOnlyList<EvaluationReason> existingReasons,
+        EvaluationReason? currentReason, IReadOnlyList<EvaluationReason> existingReasons,
         Exception latestFailure)
     {
-        ArgumentNullException.ThrowIfNull(currentReason);
         ArgumentNullException.ThrowIfNull(existingReasons);
         ArgumentNullException.ThrowIfNull(latestFailure);
-        return existingReasons.Prepend(currentReason).Where(IsIntegrityFailure)
+        return existingReasons.Concat(currentReason is null ? [] : [currentReason]).Where(IsIntegrityFailure)
             .Concat(FailureChain(latestFailure).Skip(1).SelectMany(FailureReasons))
             .Distinct().ToArray();
     }
@@ -625,7 +651,9 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         InputSnapshot snapshot, string snapshotId, ScopePlan scopePlan, EvaluationPolicy policy,
         string semanticContextIdentity, string sdkVersion,
         FrozenExecutionEnvironment? environment = null,
-        IReadOnlyList<SuiteExecution>? suites = null)
+        IReadOnlyList<SuiteExecution>? suites = null,
+        IReadOnlyDictionary<string, SuiteBaselineExecution>? baselines = null,
+        IReadOnlyList<MutationCandidate>? candidates = null)
     {
         var inputs = snapshot.Files.Select(file => new FingerprintInput(Classify(file.RelativePath),
             file.RelativePath, file.Length, file.Sha256, file.Exists, file.IsTracked)).ToList();
@@ -636,16 +664,49 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         var runtimeIdentity = $"framework={RuntimeInformation.FrameworkDescription};" +
             $"rid={RuntimeInformation.RuntimeIdentifier};os={RuntimeInformation.OSDescription};" +
             $"osArch={RuntimeInformation.OSArchitecture};processArch={RuntimeInformation.ProcessArchitecture}";
-        var runnerIdentity = suites is null ? "runner:not-executed" :
-            "strict-vstest-coverlet-v1:" + MutationIdentity.ComputeDigest("runner-suites",
-                suites.OrderBy(item => item.Identity, StringComparer.Ordinal)
-                    .Select((item, index) => ($"suite.{index}", item.Identity)).ToArray());
+        var runnerIdentity = BuildRunnerIdentity(suites, baselines, candidates);
+        var provenanceComplete = suites is { Count: > 0 } && baselines is not null && candidates is not null &&
+            suites.All(suite => baselines.TryGetValue(suite.Identity, out var execution) &&
+                execution.Result.Disposition == SuiteRunDisposition.Passed &&
+                execution.Result.CoverageSha256 is not null && execution.Result.CoverageLength > 0 &&
+                !suite.ExpectedMembers.Except(execution.Result.AccountedMembers,
+                    StringComparer.OrdinalIgnoreCase).Any());
         return new EvaluationFingerprintMaterial(inputs, snapshotId, scope,
             $"strict-configuration-contract-v2;semantic={semanticContextIdentity}",
             EvaluationFingerprint.ToolIdentity(typeof(EvaluationCoordinator).Assembly), "operator-registry-v1",
             $"dotnet-sdk={sdkVersion};dependencies={environment?.Fingerprint ?? "not-prepared"}",
             runtimeIdentity, runnerIdentity,
-            policy, ProvenanceComplete: false);
+            policy, ProvenanceComplete: provenanceComplete);
+
+        static string BuildRunnerIdentity(IReadOnlyList<SuiteExecution>? suites,
+            IReadOnlyDictionary<string, SuiteBaselineExecution>? baselines,
+            IReadOnlyList<MutationCandidate>? candidates)
+        {
+            if (suites is null || baselines is null || candidates is null) return "runner:not-executed";
+            var suiteDigest = MutationIdentity.ComputeDigest("runner-suites",
+                suites.OrderBy(item => item.Identity, StringComparer.Ordinal)
+                    .Select((item, index) => ($"suite-{index:D8}", item.Identity)).ToArray());
+            var coverageComponents = suites.OrderBy(item => item.Identity, StringComparer.Ordinal)
+                .SelectMany((suite, index) =>
+                {
+                    baselines.TryGetValue(suite.Identity, out var execution);
+                    return new (string Label, string Value)[]
+                    {
+                        ($"suite-{index:D8}-identity", suite.Identity),
+                        ($"suite-{index:D8}-coverage", execution?.Result.CoverageSha256 ?? "missing"),
+                        ($"suite-{index:D8}-coverage-length", (execution?.Result.CoverageLength ?? 0)
+                            .ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                        ($"suite-{index:D8}-members", execution is null ? "missing" :
+                            string.Join(',', execution.Result.AccountedMembers.Order(StringComparer.OrdinalIgnoreCase)))
+                    };
+                }).ToArray();
+            var coverageDigest = MutationIdentity.ComputeDigest("coverage-provenance", coverageComponents);
+            var planDigest = MutationIdentity.ComputeDigest("mutation-plan-inputs",
+                candidates.OrderBy(item => item.EvaluationUnitId, StringComparer.Ordinal)
+                    .Select((item, index) => ($"candidate-{index:D8}", item.EvaluationUnitId)).ToArray());
+            return $"runner=strict-vstest-v1;suites=sha256:{suiteDigest};" +
+                   $"collector=coverlet-opencover-v1;coverage=sha256:{coverageDigest};plan=sha256:{planDigest}";
+        }
 
         static string Classify(string path)
         {

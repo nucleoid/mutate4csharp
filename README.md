@@ -54,9 +54,10 @@ captured working-tree bytes, including staged, unstaged, and eligible untracked 
 duplicating paths. Explicit repeated inputs also work outside Git for scope planning, but strict semantic enumeration
 requires a Git-backed project snapshot. Suite orchestration prepares frozen dependencies, runs fresh
 baseline/coverage evidence, and executes selected mutants in isolated clones with bounded scheduling.
-Public strict `check` cannot produce `PASS` until final verification is connected. A supported capture publishes
-the bound nonzero or known-zero enumeration and observed unit evidence, then returns exit `4` with `INCOMPLETE`
-and the `FINALIZATION_PENDING` incomplete condition. Unsupported semantic contexts publish precise enumeration
+Public strict `check` reconciles the complete trusted unit ledger after original-tree revalidation and owned-resource
+cleanup. Complete nonzero all-killed work returns `PASS`; survivors or conclusively uncovered mutations return
+`FAIL`; known zero effective work follows the explicit `NOT_APPLICABLE` policy. Partial, unstable, cancelled, or
+errored work remains `INCOMPLETE`. Unsupported semantic contexts publish precise enumeration
 refusals with an unknown count. Usage rejection,
 snapshot refusal, and exception paths differ and may not reach enumeration or report publication. The strict interface writes an
 atomic JSON report and uses fail-closed outcomes. Its report schema,

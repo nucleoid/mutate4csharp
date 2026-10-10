@@ -150,13 +150,13 @@ public sealed class ToolPackagingIntegrationTests : IDisposable
         Assert.Equal(payloadIdentity, HashDirectory(toolPath));
         var check = await RunAsync(consumer, toolCommand, "check", "--base", "HEAD", "--no-state",
             "--report", report);
-        Assert.Equal(4, check.ExitCode);
+        Assert.Equal(3, check.ExitCode);
         Assert.DoesNotContain("SNAPSHOT_REFUSED", check.Diagnostic, StringComparison.Ordinal);
         Assert.DoesNotContain("UNSUPPORTED_CHANGED_INPUT", check.Diagnostic, StringComparison.Ordinal);
         using var parsed = JsonDocument.Parse(File.ReadAllBytes(report));
-        Assert.Equal("INCOMPLETE", parsed.RootElement.GetProperty("outcome").GetString());
+        Assert.Equal("FAIL", parsed.RootElement.GetProperty("outcome").GetString());
         Assert.Contains(parsed.RootElement.GetProperty("reasons").EnumerateArray(),
-            reason => reason.GetProperty("code").GetString() == "FINALIZATION_PENDING");
+            reason => reason.GetProperty("code").GetString() == "SURVIVED_MUTATION");
         var enumerated = parsed.RootElement.GetProperty("counts").GetProperty("enumerated");
         Assert.Equal(JsonValueKind.Number, enumerated.ValueKind);
         Assert.True(enumerated.GetInt32() > 0);
@@ -170,7 +170,7 @@ public sealed class ToolPackagingIntegrationTests : IDisposable
         Assert.Equal(payloadIdentity, HashDirectory(toolPath));
         var defaultCheck = await RunAsync(consumer, toolCommand, "check", "--base", "HEAD",
             "--report", defaultReport);
-        Assert.Equal(4, defaultCheck.ExitCode);
+        Assert.Equal(3, defaultCheck.ExitCode);
         Assert.DoesNotContain("SNAPSHOT_REFUSED", defaultCheck.Diagnostic, StringComparison.Ordinal);
         Assert.DoesNotContain("UNSUPPORTED_CHANGED_INPUT", defaultCheck.Diagnostic, StringComparison.Ordinal);
         Assert.Equal(sourceBefore, File.ReadAllBytes(source));

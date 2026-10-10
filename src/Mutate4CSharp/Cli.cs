@@ -22,9 +22,8 @@ Strict evaluation:
   --mutation-id ID          Diagnostic exact-ID rerun (repeatable; requires --plan-fingerprint)
   --plan-fingerprint ID     Refuse a stale exact-ID rerun plan
 
-  PREVIEW: check cannot produce PASS before final verification is connected.
   Supported Git/configuration contexts run frozen baselines, coverage, and isolated mutants,
-  then return exit 4 INCOMPLETE/FINALIZATION_PENDING with observed unit evidence.
+  then reduce complete ledgers to PASS, FAIL, or NOT_APPLICABLE. Partial or unstable work is INCOMPLETE.
   Usage, snapshot refusal, and exception paths can stop earlier and may not publish a report.
 
 Modes:

@@ -192,15 +192,16 @@ try:
         raise ValueError("report root must be an object")
     if report.get("exitCode") != process_exit:
         raise ValueError("report exitCode does not match process result")
-    if process_exit not in (2, 4) or report.get("outcome") != "INCOMPLETE":
-        raise ValueError("current gate requires exit 2 or 4 with outcome INCOMPLETE")
+    expected_outcomes = {0: "PASS", 2: "INCOMPLETE", 3: "FAIL", 4: "INCOMPLETE", 5: "NOT_APPLICABLE"}
+    if expected_outcomes.get(process_exit) != report.get("outcome"):
+        raise ValueError("report outcome does not match its strict process result")
     baseline = report.get("baseline")
     if process_exit == 2 and baseline not in ("RED", "EMPTY"):
         raise ValueError("exit 2 requires a RED or EMPTY baseline")
     if process_exit == 4 and baseline in ("RED", "EMPTY"):
         raise ValueError("RED or EMPTY baseline requires exit 2")
     conditions = report.get("incompleteConditions")
-    if not isinstance(conditions, list) or not conditions or not all(
+    if not isinstance(conditions, list) or not all(
         isinstance(item, dict) and isinstance(item.get("code"), str)
         for item in conditions
     ):
@@ -212,10 +213,6 @@ try:
         raise ValueError("report evidence is not an array")
     if any(isinstance(item, dict) and item.get("kind") == "SIDECAR_PUBLICATION_FAILURE" for item in evidence):
         raise ValueError("report contains SIDECAR_PUBLICATION_FAILURE")
-    execution_pending = any(
-        isinstance(item, dict) and item.get("code") == "FINALIZATION_PENDING"
-        for item in conditions
-    )
     execution_codes = {
         "FINALIZATION_PENDING", "TARGETED_DIAGNOSTIC",
         "OVERALL_DEADLINE_EXCEEDED", "EXECUTION_CANCELLED",
@@ -248,23 +245,33 @@ try:
     environment_refusal_codes = {
         "DEPENDENCY_INPUT_UNAVAILABLE", "EXECUTION_ENVIRONMENT_UNAVAILABLE",
     }
-    execution_valid = execution_pending and all(item["code"] in execution_codes for item in conditions)
-    enumeration_refusal = not execution_pending and all(
+    execution_valid = bool(conditions) and all(item["code"] in execution_codes for item in conditions)
+    enumeration_refusal = bool(conditions) and all(
         item["code"] in enumeration_codes or item["code"] in scope_refusal_codes or
         item["code"] in environment_refusal_codes
         for item in conditions
     )
-    if not execution_valid and not enumeration_refusal:
-        raise ValueError("report lacks an accepted execution or enumeration incomplete condition")
     counts = report.get("counts")
     if not isinstance(counts, dict):
         raise ValueError("report counts is not an object")
     enumerated = counts.get("enumerated")
-    if execution_pending:
+    if report.get("outcome") == "INCOMPLETE":
+        if not conditions:
+            raise ValueError("report lacks valid incomplete conditions")
+        if not execution_valid and not enumeration_refusal:
+            raise ValueError("report lacks an accepted execution or enumeration incomplete condition")
+        if execution_valid:
+            if not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated < 0:
+                raise ValueError("report lacks a bounded nonnegative enumeration count")
+        elif enumerated is not None:
+            raise ValueError("enumeration refusal must retain unknown enumeration count")
+    else:
+        if conditions:
+            raise ValueError("conclusive strict result contains incomplete conditions")
         if not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated < 0:
             raise ValueError("report lacks a bounded nonnegative enumeration count")
-    elif enumerated is not None:
-        raise ValueError("enumeration refusal must retain unknown enumeration count")
+        if report.get("outcome") in ("PASS", "FAIL") and enumerated <= 0:
+            raise ValueError("PASS and FAIL require a nonzero enumerated ledger")
     if state_mode == "default-state":
         with open(path, "rb") as stream:
             report_bytes = stream.read()
@@ -284,6 +291,30 @@ try:
                 break
         if not matched:
             raise ValueError("default-state report lacks a report-bound discovery record")
+        if report.get("outcome") == "PASS":
+            plan_evidence = [item for item in evidence
+                             if isinstance(item, dict) and item.get("kind") == "MUTATION_PLAN"]
+            diagnostics = plan_evidence[0].get("diagnostics", []) if len(plan_evidence) == 1 else []
+            fingerprints = [item.split("=", 1)[1] for item in diagnostics
+                            if isinstance(item, str) and item.startswith("evaluationFingerprint=sha256:")]
+            if len(fingerprints) != 1:
+                raise ValueError("PASS report lacks one exact evaluation fingerprint")
+            proven_directory = os.path.join(repository, ".mutate4csharp", "proven")
+            proven_matches = []
+            for candidate in glob.glob(os.path.join(proven_directory, "*.json")):
+                candidate_metadata = os.lstat(candidate)
+                if not stat.S_ISREG(candidate_metadata.st_mode):
+                    continue
+                with open(candidate, "rb") as stream:
+                    proven = json.load(stream)
+                if (isinstance(proven, dict) and proven.get("recordKind") == "PROVEN" and
+                        proven.get("evaluationFingerprint") == fingerprints[0] and
+                        proven.get("runId") == report.get("runId") and
+                        proven.get("reportSha256") == expected_hash and
+                        proven.get("reportLength") == len(report_bytes)):
+                    proven_matches.append(candidate)
+            if len(proven_matches) != 1:
+                raise ValueError("PASS report lacks exactly one report-bound proven record")
     if sdk_receipt:
         matches = [item for item in evidence
                    if isinstance(item, dict) and item.get("kind") == "TOOL_INTERNAL_SDK"]
@@ -443,7 +474,8 @@ with open(sys.argv[1], "rb") as stream:
 codes = [item.get("code") for item in report.get("incompleteConditions", [])
          if isinstance(item, dict)]
 enumerated = report.get("counts", {}).get("enumerated")
-if codes != ["FINALIZATION_PENDING"] or not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated <= 0:
+if (report.get("outcome") != "FAIL" or report.get("exitCode") != 3 or codes or
+        not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated <= 0):
     print(f"unexpected strict example result: codes={codes!r}, enumerated={enumerated!r}", file=sys.stderr)
     raise SystemExit(1)
 PY
@@ -614,8 +646,8 @@ PY
   TOOL_SDK_RECEIPT=$tool_sdk_resolution
   if gate "$target_repository" "$receipt" "$package_sha" "$payload_sha" "$tool_commit" "$task_start" "$target_head" "$report_directory/default-state.json" default-state; then default_state_exit=0; else default_state_exit=$?; fi
   TOOL_SDK_RECEIPT=
-  [[ "$no_state_exit" -eq 4 ]] || fail "strict no-state example did not return expected incomplete exit 4"
-  [[ "$default_state_exit" -eq 4 ]] || fail "strict default-state example did not return expected incomplete exit 4"
+  [[ "$no_state_exit" -eq 3 ]] || fail "strict no-state example did not return expected survivor exit 3"
+  [[ "$default_state_exit" -eq 3 ]] || fail "strict default-state example did not return expected survivor exit 3"
   require_supported_example_enumeration "$report_directory/no-state.json"
   require_supported_example_enumeration "$report_directory/default-state.json"
 }

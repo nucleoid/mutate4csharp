@@ -2,14 +2,16 @@ namespace Mutate4CSharp;
 
 internal sealed record StrictExecutionOutcome(
     EvaluationFingerprintMaterial FingerprintMaterial,
+    MutationSelectionPlan FinalizingPlan,
     string SemanticContextIdentity,
     string SdkVersion,
     int EnumerationCount,
     IReadOnlyList<EvaluationUnitResult> Units,
     BaselineStatus Baseline,
     IReadOnlyList<SuiteEvidence> Suites,
+    IReadOnlyList<CoverageProvenance> Coverage,
     IReadOnlyList<EvaluationReason> IncompleteConditions,
-    EvaluationReason Reason,
+    EvaluationReason? Reason,
     IReadOnlyList<EvaluationEvidence> Evidence);
 
 internal sealed record ContiguousAttemptBatch(
@@ -21,7 +23,7 @@ internal static class StrictExecutionPipeline
     private static readonly TimeProvider Clock = TimeProvider.System;
     internal const int MaxStrictWorkers = 1;
 
-    public static async Task<StrictExecutionOutcome> RunAsync(InputSnapshot snapshot, string snapshotId,
+    public static async Task<StrictExecutionOutcome> RunAsync(InputSnapshot snapshot, string snapshotId, string runId,
         ScopePlan scopePlan, CheckConfiguration configuration, IReadOnlyList<string> exactMutationIds,
         string? expectedPlanFingerprint, CancellationToken cancellationToken)
     {
@@ -83,9 +85,14 @@ internal static class StrictExecutionPipeline
                 enumeration.Reasons);
         var semanticContext = enumeration.SemanticContextIdentity ??
             throw new EvaluationContractException("Complete semantic enumeration requires one context identity.");
+        baselines = await new SuiteCoordinator(new VstestSuiteExecutor(snapshot, environment),
+            Clock).RunBaselinesAsync(snapshotId, configuration.ExecutionSuites,
+            TimeSpan.FromSeconds(policy.BaselineTimeoutSeconds), deadline, cancellationToken);
+        var aliases = MapBaselineExecutions(configuration.ExecutionSuites, baselines.Executions);
+        var suiteEvidence = ToSuiteEvidence(configuration.ExecutionSuites, aliases);
         var material = EvaluationCoordinator.BuildEvaluationFingerprintMaterial(snapshot, snapshotId,
             scopePlan, policy, semanticContext, environment.SdkVersion, environment,
-            configuration.ExecutionSuites);
+            configuration.ExecutionSuites, aliases, enumeration.Candidates);
         BoundMutationPlan bound;
         try { bound = MutationSelection.Bind(enumeration.Candidates, material); }
         catch (Exception ex) when (ex is EvaluationContractException or ArgumentException)
@@ -114,11 +121,6 @@ internal static class StrictExecutionPipeline
             .ToDictionary(item => item.EvaluationUnitId, StringComparer.Ordinal);
         var completed = issued.Where(item => item.Disposition != UnitDisposition.Pending).ToList();
 
-        baselines = await new SuiteCoordinator(new VstestSuiteExecutor(snapshot, environment),
-            Clock).RunBaselinesAsync(snapshotId, configuration.ExecutionSuites,
-            TimeSpan.FromSeconds(policy.BaselineTimeoutSeconds), deadline, cancellationToken);
-        var aliases = MapBaselineExecutions(configuration.ExecutionSuites, baselines.Executions);
-        var suiteEvidence = ToSuiteEvidence(configuration.ExecutionSuites, aliases);
         var evidence = new List<EvaluationEvidence>
         {
             new("DEPENDENCY_INPUT", "Prepared one frozen package graph and run-private worker caches.",
@@ -200,13 +202,11 @@ internal static class StrictExecutionPipeline
             }
         }
 
-        var finalization = new EvaluationReason("FINALIZATION_PENDING",
-            "Fresh strict execution evidence is available, but issue #4 must complete final verification " +
-            "before strict PASS can be published.");
-        conditions.Add(finalization);
-        outcome = new(material, semanticContext, environment.SdkVersion, issued.Count,
-            plan.OrderResults(completed), baselines.Status, suiteEvidence,
-            conditions.Distinct().ToArray(), finalization, evidence);
+        var coverageProvenance = ToCoverageProvenance(runId, snapshotId, material,
+            configuration.ExecutionSuites, aliases);
+        outcome = new(material, plan, semanticContext, environment.SdkVersion, issued.Count,
+            plan.OrderResults(completed), baselines.Status, suiteEvidence, coverageProvenance,
+            conditions.Distinct().ToArray(), null, evidence);
         }
         catch (Exception ex) { failure = ex; }
         await AsyncDisposal.DisposeAllPreservingFailureAsync([baselines, environment], failure);
@@ -360,6 +360,25 @@ internal static class StrictExecutionPipeline
                     EvaluationEvidence.BoundDiagnostics(run.Diagnostics, details,
                         "diagnostics-truncated"))]);
         }).ToArray();
+
+    private static IReadOnlyList<CoverageProvenance> ToCoverageProvenance(string runId, string snapshotId,
+        EvaluationFingerprintMaterial material, IReadOnlyList<SuiteExecution> suites,
+        IReadOnlyDictionary<string, SuiteBaselineExecution> baselines)
+    {
+        var fingerprint = EvaluationFingerprint.Compute(material);
+        return suites.OrderBy(item => item.Identity, StringComparer.Ordinal)
+            .Where(suite => baselines.TryGetValue(suite.Identity, out var execution) &&
+                            execution.Result.CoverageSha256 is not null &&
+                            execution.Result.CoverageLength > 0)
+            .Select(suite =>
+            {
+                var run = baselines[suite.Identity].Result;
+                return new CoverageProvenance("1", runId, suite.Identity, fingerprint, snapshotId,
+                    run.Disposition == SuiteRunDisposition.Passed ? BaselineStatus.Green : BaselineStatus.Unknown,
+                    run.CoverageSha256!, run.CoverageLength, "baseline-clone-to-snapshot-v1",
+                    material.RunnerIdentity, CollectedFresh: true);
+            }).ToArray();
+    }
 }
 
 internal sealed class StrictExecutionRefusalException(EvaluationReason reason,
