@@ -136,6 +136,49 @@ public sealed class CompilerEvidenceTests
         Assert.Single(evidence.Diagnostics);
     }
 
+    [Fact]
+    public void SeparateStTerminatedOscSequencesDoNotConsumeInterveningDiagnostic()
+    {
+        var control = Run(0, string.Empty, true, true);
+        var output = "\u001b]9;4;1;10\u001b\\\n" +
+            @"C:\repo\src\Subject.cs(4,12): error CS0019: bad operator" + "\n" +
+            "\u001b]9;4;0\u001b\\";
+
+        var evidence = CompilerEvidence.Evaluate(Run(1, output), control,
+            @"C:\repo\src\Subject.cs", @"C:\repo");
+
+        Assert.True(evidence.IsCompileInvalid);
+        Assert.Single(evidence.Diagnostics);
+    }
+
+    [Fact]
+    public void UnterminatedOscDoesNotConsumeDiagnosticOnFollowingLine()
+    {
+        var control = Run(0, string.Empty, true, true);
+        var output = "\u001b]9;4;1;10\n" +
+            @"C:\repo\src\Subject.cs(4,12): error CS0019: bad operator";
+
+        var evidence = CompilerEvidence.Evaluate(Run(1, output), control,
+            @"C:\repo\src\Subject.cs", @"C:\repo");
+
+        Assert.True(evidence.IsCompileInvalid);
+        Assert.Single(evidence.Diagnostics);
+    }
+
+    [Fact]
+    public void DiagnosticSeparatorsCannotCrossLineBoundaries()
+    {
+        var control = Run(0, string.Empty, true, true);
+        var output = @"C:\repo\src\Subject.cs(4,12)" + "\n" +
+            ": error CS0019: bad operator";
+
+        var evidence = CompilerEvidence.Evaluate(Run(1, output), control,
+            @"C:\repo\src\Subject.cs", @"C:\repo");
+
+        Assert.False(evidence.IsCompileInvalid);
+        Assert.Empty(evidence.Diagnostics);
+    }
+
     [Theory]
     [InlineData("1>C:\\repo\\other\\Subject.cs(4,12,4,20): error CS0019: bad operator")]
     [InlineData("\u001b[31mC:\\repo\\other\\Subject.cs(4,12,4,20): error CS0019: bad operator\u001b[0m")]

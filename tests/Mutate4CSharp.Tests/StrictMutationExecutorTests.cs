@@ -112,12 +112,7 @@ public sealed class StrictMutationExecutorTests : IDisposable
             invalid.EvaluationUnitId, [suite.Identity]), TimeSpan.FromMinutes(2), cancellationToken);
 
         Assert.Equal(UnitDisposition.Survived, survivedResult.Disposition);
-        var safeClassificationEvidence = string.Join("; ", invalidResult.Evidence.Select(item =>
-            $"{item.Kind}[{string.Join(",", (item.Diagnostics ?? []).Where(value =>
-                value.StartsWith("failed-count=", StringComparison.Ordinal) ||
-                value.StartsWith("diagnostic-count=", StringComparison.Ordinal) ||
-                value.StartsWith("compile-invalid=", StringComparison.Ordinal) ||
-                value.StartsWith("classifier-", StringComparison.Ordinal)))}]"));
+        var safeClassificationEvidence = SafeClassificationEvidence(invalidResult.Evidence);
         Assert.True(invalidResult.Disposition == UnitDisposition.CompileInvalid,
             $"Expected CompileInvalid but received {invalidResult.Disposition}. Safe evidence: {safeClassificationEvidence}");
         Assert.Contains(invalidResult.Evidence, item => item.Kind == "SUITE_MUTANT_RESULT" &&
@@ -126,6 +121,55 @@ public sealed class StrictMutationExecutorTests : IDisposable
             value => value.Contains(Path.GetTempPath(),
                 OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
         Assert.Equal(source, File.ReadAllText(Path.Combine(_repository.Root, "src/App/Flag.cs")));
+    }
+
+    [Fact]
+    public void SafeFailureEvidenceExposesWrappedClassifierAndProcessFlags()
+    {
+        var mutationId = "mutation:v1:" + new string('a', 64);
+        var aggregate = SuiteCoordinator.AggregateMutant(mutationId, ["suite"],
+        [
+            new("suite", SuiteRunDisposition.Error, [],
+            [
+                "classifier-stage=failed-build",
+                "classifier-location-matches=0",
+                "process-exit=1",
+                "trx-valid=false",
+                "tests-discovered=false",
+                "run-errors=false"
+            ])
+        ]);
+
+        var message = SafeClassificationEvidence(aggregate.Evidence);
+
+        Assert.Contains("classifier-location-matches=0", message, StringComparison.Ordinal);
+        Assert.Contains("process-exit=1", message, StringComparison.Ordinal);
+        Assert.Contains("trx-valid=false", message, StringComparison.Ordinal);
+        Assert.Contains("tests-discovered=false", message, StringComparison.Ordinal);
+        Assert.Contains("run-errors=false", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ClassifierAndProcessFlagsSurviveTwentyRunDiagnosticsWithinEvidenceLimit()
+    {
+        var run = new TestRunResult(1, TimeSpan.Zero, false, false, false, false,
+            string.Empty, string.Empty, [], true, [],
+            Enumerable.Range(1, 20).Select(index => $"run-diagnostic-{index}").ToArray());
+        var compile = new CompileEvidence(false, [], ["classifier-stage=not-failed-build"]);
+        var method = typeof(StrictMutationExecutor).GetMethod("ToSuiteEvidence",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+
+        var suite = Assert.IsType<SuiteMutationEvidence>(method.Invoke(null, ["suite", run, compile]));
+        var aggregate = SuiteCoordinator.AggregateMutant("mutation:v1:" + new string('b', 64),
+            ["suite"], [suite]);
+        var diagnostics = Assert.Single(aggregate.Evidence).Diagnostics!;
+
+        Assert.True(diagnostics.Count <= EvaluationEvidence.MaxDiagnostics);
+        Assert.Contains("diagnostic=classifier-stage=not-failed-build", diagnostics);
+        Assert.Contains("diagnostic=process-exit=1", diagnostics);
+        Assert.Contains("diagnostic=trx-valid=false", diagnostics);
+        Assert.Contains("diagnostic=tests-discovered=false", diagnostics);
+        Assert.Contains("diagnostic=run-errors=true", diagnostics);
     }
 
     [Fact]
@@ -365,4 +409,16 @@ public sealed class StrictMutationExecutorTests : IDisposable
             File.Copy(matches[0], Path.Combine(destination, archive));
         }
     }
+
+    private static string SafeClassificationEvidence(IReadOnlyList<EvaluationEvidence> evidence) =>
+        string.Join("; ", evidence.Select(item =>
+            $"{item.Kind}[{string.Join(",", (item.Diagnostics ?? []).Where(value =>
+                value.StartsWith("failed-count=", StringComparison.Ordinal) ||
+                value.StartsWith("diagnostic-count=", StringComparison.Ordinal) ||
+                value.StartsWith("compile-invalid=", StringComparison.Ordinal) ||
+                value.StartsWith("classifier-", StringComparison.Ordinal) ||
+                value.StartsWith("process-exit=", StringComparison.Ordinal) ||
+                value.StartsWith("trx-valid=", StringComparison.Ordinal) ||
+                value.StartsWith("tests-discovered=", StringComparison.Ordinal) ||
+                value.StartsWith("run-errors=", StringComparison.Ordinal)))}]"));
 }
