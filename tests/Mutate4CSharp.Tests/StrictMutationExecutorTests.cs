@@ -412,7 +412,11 @@ public sealed class StrictMutationExecutorTests : IDisposable
 
     private static string SafeClassificationEvidence(IReadOnlyList<EvaluationEvidence> evidence) =>
         string.Join("; ", evidence.Select(item =>
-            $"{item.Kind}[{string.Join(",", (item.Diagnostics ?? []).Where(value =>
+            $"{item.Kind}[{string.Join(",", (item.Diagnostics ?? [])
+                .Select(value => value.StartsWith("diagnostic=", StringComparison.Ordinal)
+                    ? value["diagnostic=".Length..]
+                    : value)
+                .Where(value =>
                 value.StartsWith("failed-count=", StringComparison.Ordinal) ||
                 value.StartsWith("diagnostic-count=", StringComparison.Ordinal) ||
                 value.StartsWith("compile-invalid=", StringComparison.Ordinal) ||

@@ -135,21 +135,21 @@ internal static partial class CompilerEvidence
         WindowsPathPattern().IsMatch(path) || OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
-    [GeneratedRegex(@"(?m)^\s*(?:\d+>\s*)?(?<path>(?:[A-Za-z]:)?[^\r\n(]+)\((?<line>\d+),(?<column>\d+)(?:,(?<endLine>\d+),(?<endColumn>\d+))?\)\s*:\s*error\s+(?<code>CS\d{4})\s*:[^\r\n]*$",
+    [GeneratedRegex(@"(?m)^[ \t]*(?:\d+>[ \t]*)?(?<path>(?:[A-Za-z]:)?[^\r\n(]+)\((?<line>\d+),(?<column>\d+)(?:,(?<endLine>\d+),(?<endColumn>\d+))?\)[ \t]*:[ \t]*error[ \t]+(?<code>CS\d{4})[ \t]*:[^\r\n]*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex DiagnosticPattern();
 
-    [GeneratedRegex(@"(?im)error\s+CS\d{4}\s*:", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(?im)error[ \t]+CS\d{4}[ \t]*:", RegexOptions.CultureInvariant)]
     private static partial Regex CompilerLinePattern();
 
-    [GeneratedRegex(@"(?m)^\s*\d+>\s*(?:[A-Za-z]:)?[^\r\n(]+\(\d+,\d+", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(?m)^[ \t]*\d+>[ \t]*(?:[A-Za-z]:)?[^\r\n(]+\(\d+,\d+", RegexOptions.CultureInvariant)]
     private static partial Regex NodePrefixPattern();
 
-    [GeneratedRegex(@"\)\s+:", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\)[ \t]+:", RegexOptions.CultureInvariant)]
     private static partial Regex SpaceBeforeColonPattern();
 
-    [GeneratedRegex("\\x1B(?:\\[[0-?]*[ -/]*[@-~]|\\][^\\x07]*(?:\\x07|\\x1B\\\\))",
-        RegexOptions.CultureInvariant)]
+    [GeneratedRegex("\\x1B(?:\\[[0-?]*[ -/]*[@-~]|\\][^\\x07\\x1B\\r\\n]{0,256}(?:\\x07|\\x1B\\\\))",
+        RegexOptions.CultureInvariant, 1000)]
     private static partial Regex AnsiEscapePattern();
 
     [GeneratedRegex(@"^[A-Za-z]:/", RegexOptions.CultureInvariant)]

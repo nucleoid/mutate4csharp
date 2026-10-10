@@ -146,14 +146,15 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
         else if (run.ExitCode != 0 && run.HasFailedTests) disposition = SuiteRunDisposition.Killed;
         else if (run.ExitCode == 0 && !run.HasFailedTests) disposition = SuiteRunDisposition.Survived;
         else disposition = SuiteRunDisposition.Error;
-        var diagnostics = (compile.IsCompileInvalid ? compile.Diagnostics : run.Diagnostics ?? [])
-            .Concat(compile.ClassificationDiagnostics)
+        var priorityDiagnostics = compile.ClassificationDiagnostics
             .Concat(disposition == SuiteRunDisposition.Error
                 ? [$"process-exit={run.ExitCode}", $"trx-valid={run.TrxValid.ToString().ToLowerInvariant()}",
                     $"tests-discovered={run.TestsDiscovered.ToString().ToLowerInvariant()}",
                     $"run-errors={run.HasRunErrors.ToString().ToLowerInvariant()}"]
-                : [])
-            .Take(20).ToArray();
+                : []);
+        var diagnostics = priorityDiagnostics
+            .Concat(compile.IsCompileInvalid ? compile.Diagnostics : run.Diagnostics ?? [])
+            .Take(EvaluationEvidence.MaxDiagnostics).ToArray();
         return new(suiteId, disposition, run.FailedTestIds ?? [], diagnostics,
             compile.IsCompileInvalid);
     }

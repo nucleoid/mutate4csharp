@@ -273,11 +273,11 @@ internal sealed class SuiteCoordinator
         static EvaluationEvidence ToEvidence(SuiteMutationEvidence item) =>
             new("SUITE_MUTANT_RESULT",
                 $"Suite {Bound(item.SuiteId, 128)} classified the mutant as {item.Disposition.ToString().ToUpperInvariant()}.",
-                new[] { $"failed-count={item.FailedTestIds.Count}", $"diagnostic-count={item.Diagnostics.Count}",
+                EvaluationEvidence.BoundDiagnostics(
+                    new[] { $"failed-count={item.FailedTestIds.Count}", $"diagnostic-count={item.Diagnostics.Count}",
                         $"compile-invalid={item.CompileInvalid.ToString().ToLowerInvariant()}" }
                     .Concat(item.FailedTestIds.Take(MaxFailedTests).Select(value => "failed=" + Bound(value, 256)))
-                    .Concat(item.Diagnostics.Take(MaxDiagnostics).Select(value => "diagnostic=" + Bound(value, 512)))
-                    .ToArray());
+                    .Concat(item.Diagnostics.Take(MaxDiagnostics).Select(value => "diagnostic=" + Bound(value, 512)))));
     }
 
     public static EvaluationEvidence SurvivorEvidence(string mutationId, string path, int line,
