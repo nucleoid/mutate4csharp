@@ -7,6 +7,11 @@ namespace Mutate4CSharp.Tests;
 
 public sealed class SidecarStoreTests : IDisposable
 {
+    private const string CompleteRunnerIdentity = "runner=vstest;suites=sha256:" +
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc;" +
+        "collector=coverlet-opencover-v1;coverage=sha256:" +
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;" +
+        "plan=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "mutate4csharp-sidecar",
         Guid.NewGuid().ToString("N"));
 
@@ -231,7 +236,7 @@ public sealed class SidecarStoreTests : IDisposable
         var material = ProvenMaterial();
         var fingerprint = EvaluationFingerprint.ComputeForProven(material);
         var coverage = new CoverageProvenance("1", report.RunId, "suite", fingerprint, Digest("snapshot"),
-            BaselineStatus.Green, Digest("coverage"), 8, "path-map-v1", "vstest-v1", true);
+            BaselineStatus.Green, Digest("coverage"), 8, "path-map-v1", CompleteRunnerIdentity, true);
         var record = new ProvenEvaluationSidecar("1", SidecarRecordKind.Proven, report.RunId,
             DateTimeOffset.UtcNow, fingerprint, Digest("snapshot"),
             Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), bytes.LongLength,
@@ -248,7 +253,7 @@ public sealed class SidecarStoreTests : IDisposable
     {
         var fingerprint = Fingerprint();
         var valid = new CoverageProvenance("1", "run", "suite", fingerprint, Digest("snapshot"),
-            BaselineStatus.Green, Digest("coverage"), 8, "path-map-v1", "vstest-v1", true);
+            BaselineStatus.Green, Digest("coverage"), 8, "path-map-v1", CompleteRunnerIdentity, true);
 
         valid.Validate(fingerprint, valid.SnapshotId, valid.RunId, valid.SuiteId);
         Assert.Throws<EvaluationContractException>(() => valid.Validate(Fingerprint("other"), valid.SnapshotId,
@@ -412,7 +417,7 @@ public sealed class SidecarStoreTests : IDisposable
         var bytes = ReportWriter.Serialize(report);
         var fingerprint = EvaluationFingerprint.ComputeForProven(material);
         var coverage = new CoverageProvenance("1", report.RunId, "suite-a", fingerprint, snapshotId,
-            BaselineStatus.Green, Digest("coverage"), 8, "path-map-v1", "vstest-v1", true);
+            BaselineStatus.Green, Digest("coverage"), 8, "path-map-v1", CompleteRunnerIdentity, true);
         var record = new ProvenEvaluationSidecar("1", SidecarRecordKind.Proven, report.RunId,
             DateTimeOffset.UnixEpoch, fingerprint, snapshotId,
             Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), bytes.LongLength,
@@ -440,7 +445,7 @@ public sealed class SidecarStoreTests : IDisposable
         snapshotId ?? Digest("snapshot"),
         ReportWriter.SerializeCanonicalScope(scopePlan ?? ScopePlan.Empty("inputs", ".", null)),
         "configuration-v1", "tool-v1", "operator-v1", "sdk-v1", "runtime-v1",
-        "vstest-v1", EvaluationReport.DefaultPolicy, ProvenanceComplete: true);
+        CompleteRunnerIdentity, EvaluationReport.DefaultPolicy, ProvenanceComplete: true);
 
     private static string Fingerprint(string value = "fingerprint") => "sha256:" + Digest(value);
     private static string Digest(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))

@@ -49,6 +49,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         IReadOnlyList<EvaluationReason> enumerationReasons = [];
         var baseline = BaselineStatus.Unknown;
         IReadOnlyList<SuiteEvidence> reportSuites = [];
+        IReadOnlyList<CoverageProvenance> coverageProvenance = [];
         EvaluationReason? reason = null;
         var evidence = new List<EvaluationEvidence>();
         try
@@ -122,7 +123,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             }
             else
             {
-                var execution = await StrictExecutionPipeline.RunAsync(snapshot, snapshotId!, scopePlan,
+                var execution = await StrictExecutionPipeline.RunAsync(snapshot, snapshotId!, runId, scopePlan,
                     checkConfiguration, exactMutationIds, options.PlanFingerprint, cancellationToken);
                 fingerprintMaterial = execution.FingerprintMaterial;
                 finalizingPlan = execution.FinalizingPlan;
@@ -132,6 +133,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 reportUnits = execution.Units;
                 baseline = execution.Baseline;
                 reportSuites = execution.Suites;
+                coverageProvenance = execution.Coverage;
                 enumerationReasons = execution.IncompleteConditions;
                 reason = execution.Reason;
                 var dependency = execution.FingerprintMaterial.Inputs.Single(input =>
@@ -388,6 +390,21 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                         Convert.ToHexString(SHA256.HashData(reportBytes)).ToLowerInvariant(),
                         reportBytes.LongLength);
                     sidecarStore.PublishDiscovery(discovery);
+                    if (report.Outcome == EvaluationOutcome.Pass)
+                    {
+                        if (finalizingPlan is null)
+                            throw new EvaluationContractException(
+                                "PASS publication requires the trusted finalizing mutation plan.");
+                        var provenFingerprint = EvaluationFingerprint.ComputeForProven(fingerprintMaterial);
+                        if (!string.Equals(provenFingerprint, evaluationFingerprint, StringComparison.Ordinal))
+                            throw new EvaluationContractException(
+                                "Discovery and proven evaluation fingerprints do not match.");
+                        var proven = new ProvenEvaluationSidecar("1", SidecarRecordKind.Proven, runId,
+                            report.GeneratedAtUtc, provenFingerprint, snapshotId,
+                            Convert.ToHexString(SHA256.HashData(reportBytes)).ToLowerInvariant(),
+                            reportBytes.LongLength, PolicyComplete: true, coverageProvenance, report.Counts);
+                        sidecarStore.PublishProven(proven, report, fingerprintMaterial, finalizingPlan);
+                    }
                 }
                 catch (OperationCanceledException ex)
                 {
@@ -632,7 +649,9 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         InputSnapshot snapshot, string snapshotId, ScopePlan scopePlan, EvaluationPolicy policy,
         string semanticContextIdentity, string sdkVersion,
         FrozenExecutionEnvironment? environment = null,
-        IReadOnlyList<SuiteExecution>? suites = null)
+        IReadOnlyList<SuiteExecution>? suites = null,
+        IReadOnlyDictionary<string, SuiteBaselineExecution>? baselines = null,
+        IReadOnlyList<MutationCandidate>? candidates = null)
     {
         var inputs = snapshot.Files.Select(file => new FingerprintInput(Classify(file.RelativePath),
             file.RelativePath, file.Length, file.Sha256, file.Exists, file.IsTracked)).ToList();
@@ -643,16 +662,49 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         var runtimeIdentity = $"framework={RuntimeInformation.FrameworkDescription};" +
             $"rid={RuntimeInformation.RuntimeIdentifier};os={RuntimeInformation.OSDescription};" +
             $"osArch={RuntimeInformation.OSArchitecture};processArch={RuntimeInformation.ProcessArchitecture}";
-        var runnerIdentity = suites is null ? "runner:not-executed" :
-            "strict-vstest-coverlet-v1:" + MutationIdentity.ComputeDigest("runner-suites",
-                suites.OrderBy(item => item.Identity, StringComparer.Ordinal)
-                    .Select((item, index) => ($"suite.{index}", item.Identity)).ToArray());
+        var runnerIdentity = BuildRunnerIdentity(suites, baselines, candidates);
+        var provenanceComplete = suites is { Count: > 0 } && baselines is not null && candidates is not null &&
+            suites.All(suite => baselines.TryGetValue(suite.Identity, out var execution) &&
+                execution.Result.Disposition == SuiteRunDisposition.Passed &&
+                execution.Result.CoverageSha256 is not null && execution.Result.CoverageLength > 0 &&
+                !suite.ExpectedMembers.Except(execution.Result.AccountedMembers,
+                    StringComparer.OrdinalIgnoreCase).Any());
         return new EvaluationFingerprintMaterial(inputs, snapshotId, scope,
             $"strict-configuration-contract-v2;semantic={semanticContextIdentity}",
             EvaluationFingerprint.ToolIdentity(typeof(EvaluationCoordinator).Assembly), "operator-registry-v1",
             $"dotnet-sdk={sdkVersion};dependencies={environment?.Fingerprint ?? "not-prepared"}",
             runtimeIdentity, runnerIdentity,
-            policy, ProvenanceComplete: false);
+            policy, ProvenanceComplete: provenanceComplete);
+
+        static string BuildRunnerIdentity(IReadOnlyList<SuiteExecution>? suites,
+            IReadOnlyDictionary<string, SuiteBaselineExecution>? baselines,
+            IReadOnlyList<MutationCandidate>? candidates)
+        {
+            if (suites is null || baselines is null || candidates is null) return "runner:not-executed";
+            var suiteDigest = MutationIdentity.ComputeDigest("runner-suites",
+                suites.OrderBy(item => item.Identity, StringComparer.Ordinal)
+                    .Select((item, index) => ($"suite-{index:D8}", item.Identity)).ToArray());
+            var coverageComponents = suites.OrderBy(item => item.Identity, StringComparer.Ordinal)
+                .SelectMany((suite, index) =>
+                {
+                    baselines.TryGetValue(suite.Identity, out var execution);
+                    return new (string Label, string Value)[]
+                    {
+                        ($"suite-{index:D8}-identity", suite.Identity),
+                        ($"suite-{index:D8}-coverage", execution?.Result.CoverageSha256 ?? "missing"),
+                        ($"suite-{index:D8}-coverage-length", (execution?.Result.CoverageLength ?? 0)
+                            .ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                        ($"suite-{index:D8}-members", execution is null ? "missing" :
+                            string.Join(',', execution.Result.AccountedMembers.Order(StringComparer.OrdinalIgnoreCase)))
+                    };
+                }).ToArray();
+            var coverageDigest = MutationIdentity.ComputeDigest("coverage-provenance", coverageComponents);
+            var planDigest = MutationIdentity.ComputeDigest("mutation-plan-inputs",
+                candidates.OrderBy(item => item.EvaluationUnitId, StringComparer.Ordinal)
+                    .Select((item, index) => ($"candidate-{index:D8}", item.EvaluationUnitId)).ToArray());
+            return $"runner=strict-vstest-v1;suites=sha256:{suiteDigest};" +
+                   $"collector=coverlet-opencover-v1;coverage=sha256:{coverageDigest};plan=sha256:{planDigest}";
+        }
 
         static string Classify(string path)
         {
