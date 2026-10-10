@@ -123,6 +123,58 @@ public sealed class StrictMutationExecutorTests : IDisposable
         Assert.Equal(source, File.ReadAllText(Path.Combine(_repository.Root, "src/App/Flag.cs")));
     }
 
+    [Fact(Timeout = 420_000)]
+    public async Task FailedBuildMissingMemberRetainsClassifierProcessTrxAndOmissionEvidence()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        WriteFixture();
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "failed-build-fixture");
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, cancellationToken);
+        await using var environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
+            ["tests/App.Tests/App.Tests.csproj"],
+            DependencyPreparationOptions.Default with { Timeout = TimeSpan.FromMinutes(2) },
+            cancellationToken);
+        var suite = new SuiteExecution("suite-identity", ["unit"],
+            "tests/App.Tests/App.Tests.csproj", "vstest", "net10.0", "Release",
+            ["App.Tests.dll"]);
+        await using var baseline = await new VstestSuiteExecutor(snapshot, environment)
+            .RunBaselineAsync(suite, TimeSpan.FromMinutes(2), cancellationToken);
+        Assert.Equal(SuiteRunDisposition.Passed, baseline.Disposition);
+
+        var source = File.ReadAllText(Path.Combine(_repository.Root, "src/App/Flag.cs"));
+        var tree = CSharpSyntaxTree.ParseText(SourceText.From(source), path: "src/App/Flag.cs",
+            cancellationToken: cancellationToken);
+        var root = tree.GetRoot(cancellationToken);
+        var token = root.DescendantTokens().Single(item => item.ValueText == "true");
+        var mutation = MutationIdentity.Create("src/App/Flag.cs", root, token.Span,
+            "literal.boolean", MutationIdentity.OperatorContractVersion, "42");
+        var evaluationId = EvaluationUnitIdentity.Compute(new(mutation.MutationId,
+            "src/App/App.csproj", "net10.0", "net10-csharp14"));
+        var candidate = new MutationCandidate(mutation.MutationId, evaluationId, mutation.Material,
+            "src/App/App.csproj", "net10.0", "net10-csharp14", token.SpanStart, token.Span.Length,
+            token.Text, 1);
+        var executor = new StrictMutationExecutor(snapshot, environment, [candidate], [suite],
+            new Dictionary<string, bool>(StringComparer.Ordinal) { [suite.Identity] = true },
+            compilerEvidenceEvaluator: (_, _, _, _) =>
+                new(false, [], ["classifier-stage=regex-timeout"]));
+
+        var result = await executor.ExecuteAsync(new(candidate.MutationId,
+            candidate.EvaluationUnitId, [suite.Identity]), TimeSpan.FromMinutes(2), cancellationToken);
+        var diagnostics = Assert.Single(result.Evidence, item => item.Kind == "SUITE_MUTANT_RESULT").Diagnostics!;
+
+        Assert.Equal(UnitDisposition.Error, result.Disposition);
+        Assert.Contains("diagnostic=classifier-stage=regex-timeout", diagnostics);
+        Assert.Contains(diagnostics, value => value.StartsWith("diagnostic=process-exit=", StringComparison.Ordinal));
+        Assert.Contains("diagnostic=trx-valid=false", diagnostics);
+        Assert.Contains("diagnostic=tests-discovered=false", diagnostics);
+        Assert.Contains("diagnostic=run-errors=false", diagnostics);
+        Assert.Contains(diagnostics, value => value.Contains("Mutant TRX omitted expected member(s): App.Tests.dll.",
+            StringComparison.Ordinal));
+        Assert.Equal(source, File.ReadAllText(Path.Combine(_repository.Root, "src/App/Flag.cs")));
+    }
+
     [Fact]
     public void SafeFailureEvidenceExposesWrappedClassifierAndProcessFlags()
     {
@@ -199,6 +251,23 @@ public sealed class StrictMutationExecutorTests : IDisposable
         Assert.Contains("diagnostic=run-errors=true", diagnostics);
         Assert.Contains("failed=Suite.Test01", diagnostics);
         Assert.Contains(diagnostics, value => value.StartsWith("diagnostics-truncated=", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ErrorAggregationDoesNotPromoteTestControlledDiagnosticPrefixes()
+    {
+        var aggregate = SuiteCoordinator.AggregateMutant("mutation:v1:" + new string('e', 64),
+            ["suite"],
+            [new("suite", SuiteRunDisposition.Error, ["Suite.RealFailure"],
+                ["process-exit=0"], PriorityDiagnostics: ["process-exit=1", "trx-valid=true"])]);
+
+        var diagnostics = Assert.Single(aggregate.Evidence).Diagnostics!.ToList();
+        var failedIndex = diagnostics.IndexOf("failed=Suite.RealFailure");
+        var spoofedIndex = diagnostics.IndexOf("diagnostic=process-exit=0");
+
+        Assert.Contains("diagnostic=process-exit=1", diagnostics);
+        Assert.True(failedIndex >= 0 && spoofedIndex > failedIndex,
+            "Test-controlled TRX text must not receive trusted priority ordering.");
     }
 
     [Fact]

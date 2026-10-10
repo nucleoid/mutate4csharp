@@ -75,6 +75,35 @@ public sealed class CompilerEvidenceTests
     }
 
     [Fact]
+    public void TrxEvidenceCarriesOriginalTotalsBeyondRetainedBounds()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "mutate4csharp-trx", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var results = string.Join(string.Empty, Enumerable.Range(1, 60)
+                .Select(index => $"<UnitTestResult testName=\"Suite.Fails{index:D2}\" outcome=\"Failed\" />"));
+            var messages = string.Join(string.Empty, Enumerable.Range(1, 25)
+                .Select(index => $"<Message>diagnostic-{index:D2}</Message>"));
+            File.WriteAllText(Path.Combine(directory, "results.trx"), $"""
+                <TestRun><Results>{results}</Results>
+                <ResultSummary outcome="Failed"><Counters total="60" executed="60" passed="0" failed="60" />
+                <Output>{messages}</Output></ResultSummary></TestRun>
+                """);
+
+            var evidence = TestRunner.AnalyzeTrx(directory);
+
+            Assert.True(evidence.Valid);
+            Assert.Equal(60, evidence.FailedTestCount);
+            Assert.Equal(25, evidence.DiagnosticCount);
+            Assert.Equal(50, evidence.FailedTestIds.Count);
+            Assert.Equal(EvaluationEvidence.MaxDiagnostics, evidence.Diagnostics.Count);
+            Assert.Contains("diagnostics-truncated=6", evidence.Diagnostics);
+        }
+        finally { try { Directory.Delete(directory, true); } catch { } }
+    }
+
+    [Fact]
     public void WindowsDiagnosticUsesExactFullPathAttribution()
     {
         var control = Run(0, string.Empty, true, true);
