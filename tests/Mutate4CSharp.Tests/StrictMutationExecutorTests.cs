@@ -344,7 +344,7 @@ public sealed class StrictMutationExecutorTests : IDisposable
         Assert.Equal(1, StrictExecutionPipeline.MaxStrictWorkers);
 
     [Fact(Timeout = 420_000)]
-    public async Task CoordinatorRunsFreshBaselineCoverageAndMutantBeforeFinalizationGate()
+    public async Task CoordinatorFinalizesRealAllKilledRunAsPass()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         WriteFixture();
@@ -368,14 +368,14 @@ public sealed class StrictMutationExecutorTests : IDisposable
                 new(false, "HEAD", [], reportPath, "strict-execution", NoState: true),
                 cancellationToken);
 
-            Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+            Assert.Equal(EvaluationOutcome.Pass, result.Report.Outcome);
+            Assert.Equal(0, result.Report.ExitCode);
             Assert.Equal(BaselineStatus.Green, result.Report.Baseline);
             Assert.NotNull(result.Report.Counts.Enumerated);
             Assert.True(result.Report.Counts.Executed > 0);
             Assert.True(result.Report.Counts.Killed > 0);
             Assert.Contains(result.Report.Units, item => item.Disposition == UnitDisposition.Killed);
-            Assert.Contains(result.Report.IncompleteConditions,
-                item => item.Code == "FINALIZATION_PENDING");
+            Assert.Empty(result.Report.IncompleteConditions);
             Assert.DoesNotContain(result.Report.IncompleteConditions,
                 item => item.Code == "EXECUTION_NOT_IMPLEMENTED");
             Assert.Single(result.Report.Suites);
@@ -389,6 +389,54 @@ public sealed class StrictMutationExecutorTests : IDisposable
             Assert.Equal(original, File.ReadAllBytes(Path.Combine(_repository.Root, "src/App/Flag.cs")));
             Assert.False(Directory.Exists(Path.Combine(_repository.Root, "obj")));
             Assert.False(Directory.Exists(Path.Combine(_repository.Root, "bin")));
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            try { File.Delete(reportPath); } catch { }
+            try { File.Delete(ReportWriter.LockPath(reportPath)); } catch { }
+        }
+    }
+
+    [Fact(Timeout = 420_000)]
+    public async Task CoordinatorFinalizesRealSurvivorRunAsFail()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        WriteFixture();
+        _repository.WriteText("tests/App.Tests/FlagTests.cs", """
+            using Xunit;
+            public sealed class FlagTests
+            {
+                [Fact] public void WeakTest() => Assert.True(true);
+            }
+            """);
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag { public static bool Value() => false; }
+            """);
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "baseline");
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag { public static bool Value() => true; }
+            """);
+        var reportPath = Path.Combine(Path.GetTempPath(), $"strict-survivor-{Guid.NewGuid():N}.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = _repository.Root;
+        try
+        {
+            var result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], reportPath, "strict-survivor", NoState: true),
+                cancellationToken);
+
+            Assert.Equal(EvaluationOutcome.Fail, result.Report.Outcome);
+            Assert.Equal(3, result.Report.ExitCode);
+            Assert.Equal(BaselineStatus.Green, result.Report.Baseline);
+            Assert.NotNull(result.Report.Counts.Enumerated);
+            Assert.True(result.Report.Counts.Executed > 0);
+            Assert.True(result.Report.Counts.Survived > 0);
+            Assert.Contains(result.Report.Units, item => item.Disposition == UnitDisposition.Survived);
+            Assert.Empty(result.Report.IncompleteConditions);
         }
         finally
         {
