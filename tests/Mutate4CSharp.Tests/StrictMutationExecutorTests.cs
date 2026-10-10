@@ -173,6 +173,58 @@ public sealed class StrictMutationExecutorTests : IDisposable
     }
 
     [Fact]
+    public void ErrorAggregationRetainsPriorityFactsAndUsefulFailedIdsWithinEvidenceLimit()
+    {
+        var failed = Enumerable.Range(1, 25).Select(index => $"Suite.Test{index:D2}").ToArray();
+        var aggregate = SuiteCoordinator.AggregateMutant("mutation:v1:" + new string('c', 64),
+            ["suite"],
+            [new("suite", SuiteRunDisposition.Error, failed,
+            [
+                "classifier-stage=failed-build",
+                "classifier-location-matches=0",
+                "process-exit=1",
+                "trx-valid=true",
+                "tests-discovered=true",
+                "run-errors=true"
+            ])]);
+
+        var diagnostics = Assert.Single(aggregate.Evidence).Diagnostics!;
+
+        Assert.True(diagnostics.Count <= EvaluationEvidence.MaxDiagnostics);
+        Assert.Contains("diagnostic=classifier-stage=failed-build", diagnostics);
+        Assert.Contains("diagnostic=classifier-location-matches=0", diagnostics);
+        Assert.Contains("diagnostic=process-exit=1", diagnostics);
+        Assert.Contains("diagnostic=trx-valid=true", diagnostics);
+        Assert.Contains("diagnostic=tests-discovered=true", diagnostics);
+        Assert.Contains("diagnostic=run-errors=true", diagnostics);
+        Assert.Contains("failed=Suite.Test01", diagnostics);
+        Assert.Contains(diagnostics, value => value.StartsWith("diagnostics-truncated=", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ExecutorTruncationReportsRealOmittedAndDiagnosticCounts()
+    {
+        var run = new TestRunResult(1, TimeSpan.Zero, false, false, false, false,
+            string.Empty, string.Empty, [], true, [],
+            Enumerable.Range(1, 30).Select(index => $"run-diagnostic-{index}").ToArray());
+        var compile = new CompileEvidence(false, [], ["classifier-stage=not-failed-build"]);
+        var method = typeof(StrictMutationExecutor).GetMethod("ToSuiteEvidence",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+
+        var suite = Assert.IsType<SuiteMutationEvidence>(method.Invoke(null, ["suite", run, compile]));
+        var aggregate = SuiteCoordinator.AggregateMutant("mutation:v1:" + new string('d', 64),
+            ["suite"], [suite]);
+        var diagnostics = Assert.Single(aggregate.Evidence).Diagnostics!;
+
+        Assert.Equal(EvaluationEvidence.MaxDiagnostics, suite.Diagnostics.Count);
+        Assert.Contains("diagnostics-truncated=16", suite.Diagnostics);
+        Assert.Contains("diagnostic-count=35", diagnostics);
+        Assert.Contains("diagnostic=classifier-stage=not-failed-build", diagnostics);
+        Assert.Contains("diagnostic=process-exit=1", diagnostics);
+        Assert.Contains("diagnostic=diagnostics-truncated=16", diagnostics);
+    }
+
+    [Fact]
     public void PartialBaselineAccountingRetainsCompletedSuitesWithoutForgingMissingOnes()
     {
         var one = new SuiteExecution("one", ["one"], "One.csproj", "vstest", "net10.0",

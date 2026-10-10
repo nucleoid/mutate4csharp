@@ -86,6 +86,48 @@ public sealed class CompilerEvidenceTests
     }
 
     [Fact]
+    public void CrLfTerminatedWindowsDiagnosticRetainsExactTargetAttribution()
+    {
+        var control = Run(0, string.Empty, true, true);
+        var exact = Run(1,
+            "C:\\repo\\src\\Subject.cs(4,12): error CS0019: bad operator\r\n");
+
+        var evidence = CompilerEvidence.Evaluate(exact, control,
+            @"C:\repo\src\Subject.cs", @"C:\repo");
+
+        Assert.True(evidence.IsCompileInvalid);
+        Assert.Single(evidence.Diagnostics);
+    }
+
+    [Fact]
+    public void CrLfTerminatedNumericNodePrefixRetainsExactTargetAttribution()
+    {
+        var control = Run(0, string.Empty, true, true);
+        var exact = Run(1,
+            "1>C:\\repo\\src\\Subject.cs(4,12): error CS0019: bad operator\r\n");
+
+        var evidence = CompilerEvidence.Evaluate(exact, control,
+            @"C:\repo\src\Subject.cs", @"C:\repo");
+
+        Assert.True(evidence.IsCompileInvalid);
+        Assert.Single(evidence.Diagnostics);
+    }
+
+    [Fact]
+    public void CrLfTerminatedSiblingDiagnosticDoesNotAttributeTarget()
+    {
+        var control = Run(0, string.Empty, true, true);
+        var sibling = Run(1,
+            "C:\\repo\\other\\Subject.cs(4,12): error CS0019: bad operator\r\n");
+
+        var evidence = CompilerEvidence.Evaluate(sibling, control,
+            @"C:\repo\src\Subject.cs", @"C:\repo");
+
+        Assert.False(evidence.IsCompileInvalid);
+        Assert.Empty(evidence.Diagnostics);
+    }
+
+    [Fact]
     public void WindowsRangedDiagnosticUsesExactFullPathAttribution()
     {
         var control = Run(0, string.Empty, true, true);
@@ -177,6 +219,52 @@ public sealed class CompilerEvidenceTests
 
         Assert.False(evidence.IsCompileInvalid);
         Assert.Empty(evidence.Diagnostics);
+    }
+
+    [Fact]
+    public void DiagnosticSeparatorsCannotCrossCrLfBoundaries()
+    {
+        var control = Run(0, string.Empty, true, true);
+        var output = @"C:\repo\src\Subject.cs(4,12)" + "\r\n" +
+            ": error CS0019: bad operator\r\n";
+
+        var evidence = CompilerEvidence.Evaluate(Run(1, output), control,
+            @"C:\repo\src\Subject.cs", @"C:\repo");
+
+        Assert.False(evidence.IsCompileInvalid);
+        Assert.Empty(evidence.Diagnostics);
+    }
+
+    [Fact]
+    public void RegexTimeoutFailsClosedWithBoundedNonSensitiveEvidence()
+    {
+        var control = Run(0, string.Empty, true, true);
+        var mutated = Run(1,
+            @"C:\repo\src\Subject.cs(4,12): error CS0019: private compiler text");
+
+        var evidence = CompilerEvidence.Evaluate(mutated, control,
+            @"C:\repo\src\Subject.cs", @"C:\repo",
+            _ => throw new System.Text.RegularExpressions.RegexMatchTimeoutException());
+
+        Assert.False(evidence.IsCompileInvalid);
+        Assert.Empty(evidence.Diagnostics);
+        Assert.Equal(["classifier-stage=regex-timeout"], evidence.ClassificationDiagnostics);
+    }
+
+    [Fact]
+    public void OscDecorationLongerThan256CharactersRemainsFailClosed()
+    {
+        var control = Run(0, string.Empty, true, true);
+        var output = "\u001b]8;;file://" + new string('x', 257) + "\u0007" +
+            @"C:\repo\src\Subject.cs(4,12): error CS0019: bad operator";
+
+        var evidence = CompilerEvidence.Evaluate(Run(1, output), control,
+            @"C:\repo\src\Subject.cs", @"C:\repo");
+
+        Assert.False(evidence.IsCompileInvalid);
+        Assert.Empty(evidence.Diagnostics);
+        Assert.Contains("classifier-compiler-lines=1", evidence.ClassificationDiagnostics);
+        Assert.Contains("classifier-exact-path-matches=0", evidence.ClassificationDiagnostics);
     }
 
     [Theory]
