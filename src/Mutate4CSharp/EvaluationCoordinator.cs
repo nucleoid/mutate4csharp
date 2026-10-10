@@ -72,7 +72,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 if (checkConfiguration is not null)
                 {
                     ValidateConfiguredScope(checkConfiguration, scopePlan);
-                    evidence.Add(new("CHECK_CONFIGURATION",
+                    evidence.Add(ReportWriter.ConfigurationSuiteEvidence(
+                        checkConfiguration.ExecutionSuites.Select(item => item.Identity),
                         $"Validated configuration v{checkConfiguration.SchemaVersion}: " +
                         $"{checkConfiguration.Projects.Count} project(s), " +
                         $"{checkConfiguration.ExecutionSuites.Count} distinct suite execution(s)."));
@@ -91,7 +92,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 if (checkConfiguration is not null)
                 {
                     ValidateConfiguredScope(checkConfiguration, scopePlan);
-                    evidence.Add(new("CHECK_CONFIGURATION",
+                    evidence.Add(ReportWriter.ConfigurationSuiteEvidence(
+                        checkConfiguration.ExecutionSuites.Select(item => item.Identity),
                         $"Validated configuration v{checkConfiguration.SchemaVersion}: " +
                         $"{checkConfiguration.Projects.Count} project(s), " +
                         $"{checkConfiguration.ExecutionSuites.Count} distinct suite execution(s)."));

@@ -178,7 +178,9 @@ public sealed class SidecarStoreTests : IDisposable
         var twoSuiteReport = report with
         {
             Suites = report.Suites.Append(new SuiteEvidence("suite-b", BaselineStatus.Green,
-                [new("BASELINE_GREEN", "Second fresh baseline passed.")])).ToArray()
+                [new("BASELINE_GREEN", "Second fresh baseline passed.")])).ToArray(),
+            Evidence = report.Evidence.Where(item => item.Kind != "CHECK_CONFIGURATION")
+                .Append(ReportWriter.ConfigurationSuiteEvidence(["suite-a", "suite-b"])).ToArray()
         };
         var twoSuiteBytes = ReportWriter.Serialize(twoSuiteReport);
         var oneCoverageRecord = record with
@@ -402,8 +404,11 @@ public sealed class SidecarStoreTests : IDisposable
             EvaluationReport.DefaultPolicy, BaselineStatus.Green,
             [new("suite-a", BaselineStatus.Green, [new("BASELINE_GREEN", "Fresh baseline passed.")])],
             [unit], decision.Counts, [], decision.Reasons,
-            decision.Evidence.Concat([new EvaluationEvidence("INPUT_SNAPSHOT", "Frozen input snapshot.",
-                [$"captureId={snapshotId}"])]).ToArray(), decision.Outcome, decision.ExitCode);
+            decision.Evidence.Concat([
+                new EvaluationEvidence("INPUT_SNAPSHOT", "Frozen input snapshot.",
+                    [$"captureId={snapshotId}"]),
+                ReportWriter.ConfigurationSuiteEvidence(["suite-a"])
+            ]).ToArray(), decision.Outcome, decision.ExitCode);
         var bytes = ReportWriter.Serialize(report);
         var fingerprint = EvaluationFingerprint.ComputeForProven(material);
         var coverage = new CoverageProvenance("1", report.RunId, "suite-a", fingerprint, snapshotId,

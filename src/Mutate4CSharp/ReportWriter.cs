@@ -27,6 +27,17 @@ internal static class ReportWriter
     public static string SerializeCanonicalScope(ScopePlan scopePlan) =>
         JsonSerializer.Serialize(scopePlan, JsonOptions);
 
+    internal static EvaluationEvidence ConfigurationSuiteEvidence(IEnumerable<string> suiteIds,
+        string summary = "Validated strict configuration suite identities.")
+    {
+        var ids = suiteIds.OrderBy(value => value, StringComparer.Ordinal).ToArray();
+        if (ids.Length == 0 || ids.Any(string.IsNullOrWhiteSpace) ||
+            ids.Distinct(StringComparer.Ordinal).Count() != ids.Length)
+            throw new EvaluationContractException("Configured execution identities must be non-empty and unique.");
+        return new("CHECK_CONFIGURATION", summary,
+            [$"suiteCount={ids.Length}", $"suiteSet={SuiteSetIdentity(ids)}"]);
+    }
+
     public static void Write(string path, EvaluationReport report, IReadOnlyList<string>? inputs = null)
     {
         var fullPath = ResolveSafeDestination(path, inputs ?? []);
@@ -141,6 +152,32 @@ internal static class ReportWriter
         }
         if (report.Suites.Any(suite => string.IsNullOrWhiteSpace(suite.SuiteId) || suite.Evidence.Count == 0))
             throw new EvaluationContractException("Every suite requires an ID and evidence.");
+        var suiteIds = report.Suites.Select(suite => suite.SuiteId).ToArray();
+        if (suiteIds.Distinct(StringComparer.Ordinal).Count() != suiteIds.Length)
+            throw new EvaluationContractException("Report contains duplicate suite execution identities.");
+        if (report.Outcome != EvaluationOutcome.Incomplete)
+        {
+            var configurationEvidence = report.Evidence.Where(item => item.Kind == "CHECK_CONFIGURATION").ToArray();
+            if (configurationEvidence.Length != 1 || configurationEvidence[0].Diagnostics is null)
+                throw new EvaluationContractException(
+                    "Conclusive reports require exactly one configured suite identity set.");
+            var configuredCount = SingleDiagnostic(configurationEvidence[0], "suiteCount=");
+            var configuredSet = SingleDiagnostic(configurationEvidence[0], "suiteSet=");
+            if (!int.TryParse(configuredCount, System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out var count) || count != suiteIds.Length ||
+                configuredSet != SuiteSetIdentity(suiteIds))
+                throw new EvaluationContractException(
+                    "Report suites do not match the configured execution identities exactly.");
+            if (report.Baseline == BaselineStatus.Green &&
+                report.Suites.Any(suite => suite.Baseline != BaselineStatus.Green))
+                throw new EvaluationContractException(
+                    "Green report baseline requires every configured suite baseline to be green.");
+        }
+        if (report.Outcome == EvaluationOutcome.Pass &&
+            (report.Counts.Enumerated is not > 0 || report.Counts.Selected == 0 ||
+             report.Counts.Executed == 0 || report.Counts.Killed == 0 || report.Suites.Count == 0))
+            throw new EvaluationContractException(
+                "PASS requires nonzero enumerated, selected, executed, killed, and suite evidence.");
         var expected = EvaluationReducer.Reduce(new(report.Baseline, report.Counts.Enumerated,
             report.Units, report.Policy.AllowNotApplicable, report.IncompleteConditions));
         if (report.Outcome != expected.Outcome || report.ExitCode != expected.ExitCode)
@@ -149,6 +186,22 @@ internal static class ReportWriter
             throw new EvaluationContractException("Report reasons do not match its evaluation facts.");
         if (report.Mode == "plan" && report.Outcome == EvaluationOutcome.Pass)
             throw new EvaluationContractException("Plan reports cannot represent reusable success.");
+    }
+
+    private static string SingleDiagnostic(EvaluationEvidence evidence, string prefix)
+    {
+        var values = evidence.Diagnostics!.Where(value => value.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(value => value[prefix.Length..]).ToArray();
+        if (values.Length != 1)
+            throw new EvaluationContractException("Configured suite identity evidence is incomplete or ambiguous.");
+        return values[0];
+    }
+
+    private static string SuiteSetIdentity(IEnumerable<string> suiteIds)
+    {
+        var ids = suiteIds.OrderBy(value => value, StringComparer.Ordinal).ToArray();
+        var components = ids.Select((value, index) => ($"suite-{index:D8}", value)).ToArray();
+        return "sha256:" + MutationIdentity.ComputeDigest("configured-suite-set", components);
     }
 
     private static void ValidateText(string code, string message, string kind)
