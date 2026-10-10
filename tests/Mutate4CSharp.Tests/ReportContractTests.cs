@@ -178,7 +178,8 @@ public sealed class ReportContractTests : IDisposable
         var pass = original with
         {
             Suites = [suite],
-            Evidence = original.Evidence.Append(ReportWriter.ConfigurationSuiteEvidence([suite.SuiteId])).ToArray()
+            Evidence = original.Evidence.Where(item => item.Kind != "CHECK_CONFIGURATION")
+                .Append(ReportWriter.ConfigurationSuiteEvidence([suite.SuiteId])).ToArray()
         };
 
         Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(pass with { Suites = [] }));
@@ -189,7 +190,15 @@ public sealed class ReportContractTests : IDisposable
         Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(pass with
         {
             Suites = [suite],
-            Evidence = original.Evidence.Append(ReportWriter.ConfigurationSuiteEvidence(["other-suite"])).ToArray()
+            Evidence = original.Evidence.Where(item => item.Kind != "CHECK_CONFIGURATION")
+                .Append(ReportWriter.ConfigurationSuiteEvidence(["other-suite"])).ToArray()
+        }));
+        Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(pass with
+        {
+            Suites = [suite with
+            {
+                Evidence = [new EvaluationEvidence("BASELINE_GREEN", "Unbound baseline prose.")]
+            }]
         }));
     }
 
