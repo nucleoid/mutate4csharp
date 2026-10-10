@@ -77,7 +77,7 @@ internal static class EvaluationFingerprint
     public static string ComputeForProven(EvaluationFingerprintMaterial material)
     {
         if (!material.ProvenanceComplete || material.Inputs.All(input => input.Kind != "dependency") ||
-            !material.RunnerIdentity.Contains("collector=coverlet-opencover-v1", StringComparison.Ordinal) ||
+            !ContainsExactIdentity(material.RunnerIdentity, "collector", "coverlet-opencover-v1") ||
             !ContainsBoundIdentity(material.RunnerIdentity, "coverage") ||
             !ContainsBoundIdentity(material.RunnerIdentity, "plan") ||
             new[] { material.Configuration, material.ToolVersion, material.OperatorVersion, material.SdkIdentity,
@@ -93,12 +93,14 @@ internal static class EvaluationFingerprint
 
     private static bool ContainsBoundIdentity(string value, string label)
     {
-        var marker = label + "=sha256:";
-        var start = value.IndexOf(marker, StringComparison.Ordinal);
-        if (start < 0) return false;
-        start += marker.Length;
-        return start + 64 <= value.Length && IsSha256(value.Substring(start, 64)) &&
-            (start + 64 == value.Length || value[start + 64] == ';');
+        var fields = value.Split(';').Where(item => item.StartsWith(label + "=", StringComparison.Ordinal)).ToArray();
+        return fields.Length == 1 && IsFingerprint(fields[0][(label.Length + 1)..]);
+    }
+
+    private static bool ContainsExactIdentity(string value, string label, string expected)
+    {
+        var fields = value.Split(';').Where(item => item.StartsWith(label + "=", StringComparison.Ordinal)).ToArray();
+        return fields.Length == 1 && fields[0][(label.Length + 1)..] == expected;
     }
 
     public static string ToolIdentity(Assembly assembly)

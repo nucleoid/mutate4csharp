@@ -360,7 +360,7 @@ internal static class StrictExecutionPipeline
             }
             return new SuiteEvidence(suite.Identity, baseline,
                 [new("SUITE_BASELINE", $"Fresh baseline classified suite as {baseline}.",
-                    EvaluationEvidence.BoundDiagnostics(run.Diagnostics, details,
+                    EvaluationEvidence.BoundDiagnostics(run.Diagnostics.Select(value => "diagnostic=" + value), details,
                         "diagnostics-truncated"))]);
         }).ToArray();
 

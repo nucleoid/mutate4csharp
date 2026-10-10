@@ -81,7 +81,7 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                     ? await PreserveOpenCoverReportsAsync(rawCoverage,
                         $"baseline-{Sanitize(suite.Aliases[0])}") : null;
                 var diagnostics = BaselineDiagnostics(run, disposition == SuiteRunDisposition.Passed &&
-                    coverage is null).ToList();
+                    coverage is null, worker.Root, packages.Root).ToList();
                 if (disposition == SuiteRunDisposition.Passed && coverage is null)
                     diagnostics.Add(CoverageInventory(results));
                 completed = new(disposition, _timeProvider.GetUtcNow() - started, AccountedMembers(run.TrxPaths),
@@ -128,18 +128,27 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
         return SuiteRunDisposition.Error;
     }
 
-    private static IReadOnlyList<string> BaselineDiagnostics(TestRunResult run, bool coverageMissing)
+    private static IReadOnlyList<string> BaselineDiagnostics(TestRunResult run, bool coverageMissing,
+        string workerRoot, string packageRoot)
     {
-        var diagnostics = (run.Diagnostics ?? []).Take(18).ToList();
+        var diagnostics = (run.Diagnostics ?? []).Take(12).ToList();
         if (ClassifyBaseline(run) != SuiteRunDisposition.Error && !coverageMissing) return diagnostics;
+        foreach (var line in (run.StandardOutput ?? string.Empty).Split('\n').Where(line =>
+                     line.Contains("warning CS", StringComparison.Ordinal) ||
+                     line.Contains("error CS", StringComparison.Ordinal)).Take(6))
+            diagnostics.Add(EvaluationTextBounds.Prefix(Sanitize(line.Trim()), EvaluationEvidence.MaxDiagnosticLength));
         foreach (var value in new[] { run.StandardError, run.StandardOutput })
         {
-            var bounded = string.Join(' ', (value ?? string.Empty).Split((char[]?)null,
+            var bounded = string.Join(' ', Sanitize(value ?? string.Empty).Split((char[]?)null,
                 StringSplitOptions.RemoveEmptyEntries));
             bounded = EvaluationTextBounds.Suffix(bounded, EvaluationEvidence.MaxDiagnosticLength);
             if (bounded.Length > 0) diagnostics.Add(bounded);
         }
         return diagnostics.Take(20).ToArray();
+
+        string Sanitize(string value) => value.Replace(workerRoot, "<snapshot>", StringComparison.OrdinalIgnoreCase)
+            .Replace(packageRoot, "<packages>", StringComparison.OrdinalIgnoreCase)
+            .Replace(Path.GetTempPath(), "<temp>/", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CoverageInventory(string results)

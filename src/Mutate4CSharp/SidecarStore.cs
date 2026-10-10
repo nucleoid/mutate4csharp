@@ -56,7 +56,7 @@ internal sealed class SidecarStore
         ArgumentNullException.ThrowIfNull(finalizingPlan);
         finalizingPlan.RequireProvenPublicationEligibility(report, fingerprintMaterial);
         ValidateProven(record, report, fingerprintMaterial);
-        return Publish("proven", FingerprintKey(record.EvaluationFingerprint), record);
+        return Publish("proven", FingerprintKey(record.EvaluationFingerprint), record, replaceExisting: true);
     }
 
     public SidecarReadResult<ProvenEvaluationSidecar> ReadProvenForInspection(string fingerprint)
@@ -83,14 +83,29 @@ internal sealed class SidecarStore
     internal string ProvenPath(string fingerprint) => StatePath("proven", FingerprintKey(fingerprint));
     internal string LockPath(string category, string key) => Path.Combine(_stateRoot, "locks", $"{category}-{key}.lock");
 
-    private string Publish<T>(string category, string key, T record)
+    private string Publish<T>(string category, string key, T record, bool replaceExisting = false)
     {
         PrepareOwnedDirectory(category);
         var path = StatePath(category, key);
         var bytes = JsonSerializer.SerializeToUtf8Bytes(record, JsonOptions);
         if (bytes.Length > MaxRecordBytes) throw new EvaluationContractException("Sidecar record exceeds size bounds.");
-        AtomicOwnedFile.Write(path, LockPath(category, key), bytes, InspectExistingOwnedRecord,
-            replaceExisting: false);
+        AtomicOwnedFile.Write(path, LockPath(category, key), bytes, existing =>
+        {
+            var hash = InspectExistingOwnedRecord(existing);
+            if (hash is not null && category == "proven")
+            {
+                if (record is not ProvenEvaluationSidecar proposed)
+                    throw new EvaluationContractException("Proven publication requires a proven record.");
+                var existingBytes = ReadBoundedRegular(existing);
+                ValidateRawProvenSchema(existingBytes);
+                var previous = JsonSerializer.Deserialize<ProvenEvaluationSidecar>(existingBytes, JsonOptions)
+                    ?? throw new EvaluationContractException("Existing proven state is empty.");
+                ValidateProvenEnvelope(previous, proposed.EvaluationFingerprint);
+                if (!CryptographicOperations.FixedTimeEquals(hash, SHA256.HashData(existingBytes)))
+                    throw new IOException("Existing proven state changed during validation.");
+            }
+            return hash;
+        }, replaceExisting);
         return path;
     }
 

@@ -5,6 +5,19 @@ namespace Mutate4CSharp.Tests;
 public sealed class WorkspaceOwnershipTests
 {
     [Fact]
+    public async Task PrivateScratchNamesStayCompactAndRetainFullOwnershipTokens()
+    {
+        var parent = OwnedDirectory.PrivateParent("package-caches");
+        await using var owned = OwnedDirectory.Create(parent, new string('x', 100));
+        var name = Path.GetFileName(owned.Root);
+        Assert.True(name.Length <= 12 + 1 + 32);
+        Assert.True(Guid.TryParseExact(name[(name.LastIndexOf('-') + 1)..], "N", out _));
+        Assert.True(Guid.TryParseExact(File.ReadAllText(Path.Combine(owned.Root, ".mutate4csharp-owner")),
+            "N", out _));
+        Assert.Equal("p", Path.GetFileName(parent));
+    }
+
+    [Fact]
     public async Task OwnedCleanupLeavesUnrelatedTemporaryPathsAlone()
     {
         var parent = Path.Combine(Path.GetTempPath(), "mutate4csharp-ownership", Guid.NewGuid().ToString("N"));

@@ -160,6 +160,24 @@ public sealed class EvaluationFingerprintTests
             EvaluationFingerprint.ComputeForProven(completeRunner)));
     }
 
+    [Theory]
+    [InlineData("coverage=", "prefixcoverage=")]
+    [InlineData("plan=", "prefixplan=")]
+    [InlineData("collector=", "prefixcollector=")]
+    [InlineData("coverage=", "coverage=sha256:bad;coverage=")]
+    public void ProvenRunnerIdentityRequiresExactUnambiguousFields(string marker, string replacement)
+    {
+        var runner = "runner=strict-vstest-v1;collector=coverlet-opencover-v1;coverage=sha256:" +
+            new string('a', 64) + ";plan=sha256:" + new string('b', 64);
+        var material = Material() with
+        {
+            ProvenanceComplete = true,
+            RunnerIdentity = runner.Replace(marker, replacement, StringComparison.Ordinal)
+        };
+
+        Assert.Throws<EvaluationContractException>(() => EvaluationFingerprint.ComputeForProven(material));
+    }
+
     private static EvaluationFingerprintMaterial Material() => new(
         [
             Input("source", "src/A.cs", "source"),

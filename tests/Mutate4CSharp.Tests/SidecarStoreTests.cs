@@ -148,6 +148,29 @@ public sealed class SidecarStoreTests : IDisposable
     }
 
     [Fact]
+    public void ASecondFreshEligiblePassSupersedesTheSameFingerprintProof()
+    {
+        var (store, report, record, material, plan) = ValidProven();
+        store.PublishProven(record, report, material, plan);
+        var nextReport = report with { RunId = "next-fresh-run", GeneratedAtUtc = report.GeneratedAtUtc.AddSeconds(1) };
+        var bytes = ReportWriter.Serialize(nextReport);
+        var nextRecord = record with
+        {
+            RunId = nextReport.RunId,
+            GeneratedAtUtc = nextReport.GeneratedAtUtc,
+            ReportSha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
+            ReportLength = bytes.LongLength,
+            Coverage = record.Coverage.Select(item => item with { RunId = nextReport.RunId }).ToArray()
+        };
+
+        store.PublishProven(nextRecord, nextReport, material, plan);
+
+        var inspected = store.ReadProvenForInspection(record.EvaluationFingerprint);
+        Assert.True(inspected.IsValid, inspected.Error);
+        Assert.Equal(nextReport.RunId, inspected.Record!.RunId);
+    }
+
+    [Fact]
     public void FullyBoundPassPublishesAndReadsBack()
     {
         var (store, report, record, material, plan) = ValidProven();
