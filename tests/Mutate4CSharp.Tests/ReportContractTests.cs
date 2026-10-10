@@ -68,6 +68,31 @@ public sealed class ReportContractTests : IDisposable
     }
 
     [Fact]
+    public void WindowsPublicationRetriesTransientSharingWhileRevalidatingDestination()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var path = Path.Combine(_directory, "sharing.json");
+        var inspections = 0;
+        FileStream? scanner = null;
+        try
+        {
+            AtomicOwnedFile.Write(path, path + ".lock", "{}"u8.ToArray(), _ =>
+            {
+                if (++inspections == 2)
+                    scanner = new FileStream(Assert.Single(Directory.EnumerateFiles(_directory, ".sharing.json.*.tmp")),
+                        FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                if (inspections == 3) scanner?.Dispose();
+                return null;
+            }, replaceExisting: false);
+
+            Assert.True(inspections >= 3);
+            Assert.Equal("{}", File.ReadAllText(path));
+            Assert.Empty(Directory.EnumerateFiles(_directory, ".sharing.json.*.tmp"));
+        }
+        finally { scanner?.Dispose(); }
+    }
+
+    [Fact]
     public void LeftoverUnlockedLockFileDoesNotBlockAWrite()
     {
         var path = Path.Combine(_directory, "recover.json");

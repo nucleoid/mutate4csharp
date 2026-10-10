@@ -136,6 +136,9 @@ internal static class StrictExecutionPipeline
                  $"configuredWorkers={policy.MaxWorkers};effectiveWorkers={MaxStrictWorkers}"])
         };
         var conditions = plan.IncompleteConditions.Concat(baselines.IncompleteConditions).ToList();
+        if (baselines.Status == BaselineStatus.Green && !material.ProvenanceComplete)
+            conditions.Add(new("COVERAGE_PROVENANCE_INCOMPLETE",
+                "Every configured suite must provide fresh valid coverage and exact baseline member accounting."));
 
         if (baselines.Status != BaselineStatus.Green)
         {

@@ -47,7 +47,24 @@ internal static class AtomicOwnedFile
             if ((before is null) != (after is null) || before is not null && after is not null &&
                 !CryptographicOperations.FixedTimeEquals(before, after))
                 throw new IOException("Destination changed while owned state was being written.");
-            File.Move(temporary, fullPath, overwrite: replaceExisting);
+            var retryStarted = System.Diagnostics.Stopwatch.StartNew();
+            while (true)
+            {
+                try
+                {
+                    File.Move(temporary, fullPath, overwrite: replaceExisting);
+                    break;
+                }
+                catch (IOException ex) when (OperatingSystem.IsWindows() &&
+                    (ex.HResult & 0xffff) is 32 or 33 && retryStarted.Elapsed < TimeSpan.FromSeconds(2))
+                {
+                    Thread.Sleep(25);
+                    var current = inspectExisting(fullPath);
+                    if ((before is null) != (current is null) || before is not null && current is not null &&
+                        !CryptographicOperations.FixedTimeEquals(before, current))
+                        throw new IOException("Destination changed while owned state publication was retried.");
+                }
+            }
         }
         finally
         {

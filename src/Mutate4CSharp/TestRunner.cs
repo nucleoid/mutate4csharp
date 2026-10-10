@@ -303,6 +303,51 @@ internal sealed class CoverageMap
 
     public bool IsCovered(string path, int line) => GetState(path, line) == CoverageState.Covered;
 
+    internal bool HasMalformedEvidence => _incomplete;
+
+    internal string CanonicalIdentity()
+    {
+        var components = new List<(string Label, string Value)>
+        {
+            ("incomplete", _incomplete ? "1" : "0")
+        };
+        var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        var files = _points.Keys.Concat(_spans.Keys).Concat(_spanIncompleteFiles).Distinct(comparer)
+            .Select(path => (Path: path, Relative: Relative(path)))
+            .OrderBy(item => item.Relative, StringComparer.Ordinal).ToArray();
+        for (var index = 0; index < files.Length; index++)
+        {
+            var file = files[index];
+            var prefix = $"file-{index:D8}-";
+            components.Add((prefix + "path", file.Relative));
+            components.Add((prefix + "spans-incomplete", _spanIncompleteFiles.Contains(file.Path) ? "1" : "0"));
+            var lines = _points.TryGetValue(file.Path, out var recordedLines)
+                ? recordedLines.OrderBy(item => item.Key).ToArray() : [];
+            for (var line = 0; line < lines.Length; line++)
+                components.Add((prefix + $"line-{line:D8}", string.Create(CultureInfo.InvariantCulture,
+                    $"{lines[line].Key}:{(lines[line].Value ? 1 : 0)}")));
+            var spans = _spans.TryGetValue(file.Path, out var recordedSpans)
+                ? recordedSpans.Distinct().OrderBy(item => item.StartLine).ThenBy(item => item.StartColumn)
+                    .ThenBy(item => item.EndLine).ThenBy(item => item.EndColumn).ThenBy(item => item.Covered).ToArray()
+                : [];
+            for (var span = 0; span < spans.Length; span++)
+            {
+                var point = spans[span];
+                components.Add((prefix + $"span-{span:D8}", string.Create(CultureInfo.InvariantCulture,
+                    $"{point.StartLine}:{point.StartColumn}:{point.EndLine}:{point.EndColumn}:{(point.Covered ? 1 : 0)}")));
+            }
+        }
+        return MutationIdentity.ComputeDigest("canonical-coverage-v1", components.ToArray());
+
+        string Relative(string path)
+        {
+            var relative = Path.GetRelativePath(_root, path).Replace('\\', '/');
+            if (Path.IsPathRooted(relative) || relative.Split('/').Any(part => part is "" or "." or ".."))
+                throw new EvaluationContractException("Coverage identity requires captured relative source paths.");
+            return relative;
+        }
+    }
+
     public CoverageState GetState(string path, int startLine, int startColumn,
         int endLine, int endColumn)
     {

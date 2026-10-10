@@ -370,7 +370,11 @@ public sealed class StrictMutationExecutorTests : IDisposable
 
             Assert.True(result.Report.Outcome == EvaluationOutcome.Pass,
                 string.Join("; ", result.Report.Reasons.Select(item => item.Code + ": " + item.Message)
-                    .Concat(result.Report.Evidence.Select(item => item.Kind + ": " + item.Summary))));
+                    .Concat(result.Report.Evidence.Select(item => item.Kind + ": " + item.Summary))
+                    .Concat(result.Report.Suites.SelectMany(suite => suite.Evidence)
+                        .SelectMany(item => item.Diagnostics ?? []).Select(item => item
+                            .Replace(_repository.Root, "<fixture>", StringComparison.OrdinalIgnoreCase)
+                            .Replace(Path.GetTempPath(), "<temp>/", StringComparison.OrdinalIgnoreCase)))));
             Assert.Equal(0, result.Report.ExitCode);
             Assert.Equal(BaselineStatus.Green, result.Report.Baseline);
             Assert.NotNull(result.Report.Counts.Enumerated);

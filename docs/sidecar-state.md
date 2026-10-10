@@ -81,6 +81,10 @@ Discovery may record a runner or dependency identity as not yet prepared because
 the proven publication API rejects such placeholder material. Wall-clock time, generated timestamps, temporary
 directories, report destinations, and worker scratch paths are intentionally excluded.
 
+The evaluation fingerprint binds canonical coverage states and source spans using captured relative
+paths. Temporary worker paths, collector-generated module identifiers and raw XML ordering do not
+change that identity. Exact raw coverage-report hashes and lengths remain per-run provenance.
+
 Coverage provenance separately binds the evaluation fingerprint, frozen snapshot, suite/context,
 green fresh baseline, exact coverage-report bytes/length, path-map version, and runner identity.
 Raw or reused coverage is not trusted to classify required sites as uncovered.

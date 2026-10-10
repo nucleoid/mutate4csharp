@@ -219,14 +219,23 @@ internal static class ReportWriter
                 "PASS suite evidence requires green tests and fresh exact coverage provenance.");
         var accounted = ParseMembers(SingleDiagnostic(baseline, "accountedMembers="));
         var expected = ParseMembers(SingleDiagnostic(baseline, "expectedMembers="));
-        if (accounted.Length == 0 || expected.Length == 0 ||
+        if (accounted.Length == 0 || expected.Length == 0 || tests != accounted.Length ||
+            accounted.Distinct(StringComparer.OrdinalIgnoreCase).Count() != accounted.Length ||
+            expected.Distinct(StringComparer.OrdinalIgnoreCase).Count() != expected.Length ||
             !accounted.Order(StringComparer.OrdinalIgnoreCase)
                 .SequenceEqual(expected.Order(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase))
             throw new EvaluationContractException(
                 "PASS suite evidence must account for every expected test member exactly.");
 
-        static string[] ParseMembers(string value) => value == "<none>" ? [] :
-            value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        static string[] ParseMembers(string value)
+        {
+            if (value == "<none>") return [];
+            var members = value.Split(',');
+            if (members.Any(member => string.IsNullOrWhiteSpace(member) || member != member.Trim() ||
+                    member.Contains('/') || member.Contains('\\') || member is "." or ".."))
+                throw new EvaluationContractException("PASS suite member accounting is malformed.");
+            return members;
+        }
     }
 
     private static string SuiteSetIdentity(IEnumerable<string> suiteIds)

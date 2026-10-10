@@ -286,7 +286,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             }
             if (snapshot is not null)
             {
-                if (!options.Plan && !exactIdRequest && snapshotId is not null)
+                if (!options.Plan && !exactIdRequest && snapshotId is not null &&
+                    (!options.NoState || checkConfiguration is not null))
                 {
                     try
                     {
@@ -374,7 +375,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 }
             }
             if (fingerprintMaterialFailure is not null)
-                report = WithStatePublicationFailure(report, facts, evidence, fingerprintMaterialFailure);
+                report = WithFingerprintFailure(report, facts, evidence, fingerprintMaterialFailure);
             ReportWriter.Write(reportPath, report, options.Inputs);
             if (fingerprintMaterialFailure is OperationCanceledException cancellation)
                 throw cancellation;
@@ -647,6 +648,25 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         };
     }
 
+    private static EvaluationReport WithFingerprintFailure(EvaluationReport report, EvaluationFacts facts,
+        IReadOnlyList<EvaluationEvidence> evidence, Exception exception)
+    {
+        var condition = new EvaluationReason("FINGERPRINT_UNAVAILABLE",
+            "Complete evaluation provenance could not be established.");
+        var conditions = report.IncompleteConditions.Append(condition).Distinct().ToArray();
+        var decision = EvaluationReducer.Reduce(facts with { IncompleteConditions = conditions });
+        return report with
+        {
+            IncompleteConditions = conditions,
+            Reasons = decision.Reasons,
+            Evidence = decision.Evidence.Concat(evidence)
+                .Append(new EvaluationEvidence("FINGERPRINT_FAILURE", Bound(exception.Message))).ToArray(),
+            Counts = decision.Counts,
+            Outcome = decision.Outcome,
+            ExitCode = decision.ExitCode
+        };
+    }
+
     internal static EvaluationFingerprintMaterial BuildEvaluationFingerprintMaterial(
         InputSnapshot snapshot, string snapshotId, ScopePlan scopePlan, EvaluationPolicy policy,
         string semanticContextIdentity, string sdkVersion,
@@ -665,12 +685,19 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             $"rid={RuntimeInformation.RuntimeIdentifier};os={RuntimeInformation.OSDescription};" +
             $"osArch={RuntimeInformation.OSArchitecture};processArch={RuntimeInformation.ProcessArchitecture}";
         var runnerIdentity = BuildRunnerIdentity(suites, baselines, candidates);
-        var provenanceComplete = suites is { Count: > 0 } && baselines is not null && candidates is not null &&
+        var provenanceComplete = environment is not null && suites is { Count: > 0 } &&
+            baselines is not null && candidates is not null &&
             suites.All(suite => baselines.TryGetValue(suite.Identity, out var execution) &&
                 execution.Result.Disposition == SuiteRunDisposition.Passed &&
-                execution.Result.CoverageSha256 is not null && execution.Result.CoverageLength > 0 &&
-                !suite.ExpectedMembers.Except(execution.Result.AccountedMembers,
-                    StringComparer.OrdinalIgnoreCase).Any());
+                execution.Result.HealthyControl && execution.Result.CoverageOwner is not null &&
+                execution.Result.CoverageMap is { HasMalformedEvidence: false } &&
+                EvaluationFingerprint.IsSha256(execution.Result.CoverageSha256) && execution.Result.CoverageLength > 0 &&
+                execution.Result.AccountedMembers.Count == suite.ExpectedMembers.Count &&
+                execution.Result.AccountedMembers.Distinct(StringComparer.OrdinalIgnoreCase).Count() ==
+                    execution.Result.AccountedMembers.Count &&
+                execution.Result.AccountedMembers.Order(StringComparer.OrdinalIgnoreCase)
+                    .SequenceEqual(suite.ExpectedMembers.Order(StringComparer.OrdinalIgnoreCase),
+                        StringComparer.OrdinalIgnoreCase));
         return new EvaluationFingerprintMaterial(inputs, snapshotId, scope,
             $"strict-configuration-contract-v2;semantic={semanticContextIdentity}",
             EvaluationFingerprint.ToolIdentity(typeof(EvaluationCoordinator).Assembly), "operator-registry-v1",
@@ -693,9 +720,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     return new (string Label, string Value)[]
                     {
                         ($"suite-{index:D8}-identity", suite.Identity),
-                        ($"suite-{index:D8}-coverage", execution?.Result.CoverageSha256 ?? "missing"),
-                        ($"suite-{index:D8}-coverage-length", (execution?.Result.CoverageLength ?? 0)
-                            .ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                        ($"suite-{index:D8}-coverage", execution?.Result.CoverageMap?.CanonicalIdentity() ?? "missing"),
                         ($"suite-{index:D8}-members", execution is null ? "missing" :
                             string.Join(',', execution.Result.AccountedMembers.Order(StringComparer.OrdinalIgnoreCase)))
                     };
