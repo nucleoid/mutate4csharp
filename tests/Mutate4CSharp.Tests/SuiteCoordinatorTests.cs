@@ -3,6 +3,38 @@ namespace Mutate4CSharp.Tests;
 public sealed class SuiteCoordinatorTests
 {
     [Fact]
+    public void CleanupCombinationPreservesIntegrityFailureAndTypesCleanupOnlyFailure()
+    {
+        var integrity = new SnapshotDivergedException("frozen input changed");
+        var cleanup = new IOException("owned cleanup failed");
+
+        var combined = Assert.IsType<SnapshotCleanupException>(
+            AsyncDisposal.CombineFailure(integrity, cleanup));
+        var cleanupOnly = Assert.IsType<SnapshotCleanupException>(
+            AsyncDisposal.CombineFailure(null, cleanup));
+
+        Assert.Same(integrity, combined.OriginalFailure);
+        Assert.Same(cleanup, combined.CleanupFailure);
+        Assert.Null(cleanupOnly.OriginalFailure);
+        Assert.Same(cleanup, cleanupOnly.CleanupFailure);
+    }
+
+    [Fact]
+    public async Task OwnedDisposalPreservesPrimaryIntegrityFailureWhenCleanupAlsoFails()
+    {
+        var integrity = new ExecutionBoundaryIntegrityException("private package root changed");
+        var cleanup = new IOException("owned cleanup failed");
+
+        var combined = await Assert.ThrowsAsync<SnapshotCleanupException>(async () =>
+            await AsyncDisposal.DisposeAllPreservingFailureAsync(
+                [new ThrowingOwner(cleanup)], integrity));
+
+        Assert.Same(integrity, combined.OriginalFailure);
+        var aggregate = Assert.IsType<AggregateException>(combined.CleanupFailure);
+        Assert.Same(cleanup, Assert.Single(aggregate.InnerExceptions));
+    }
+
+    [Fact]
     public async Task SharedSuiteAliasesRunOneFreshBaselineForTheSnapshot()
     {
         var calls = 0;
@@ -63,6 +95,33 @@ public sealed class SuiteCoordinatorTests
         Assert.Contains(result.IncompleteConditions, item => item.Code == "SUITE_MEMBERS_MISSING");
     }
 
+    [Fact]
+    public async Task BaselineSnapshotIntegrityFailuresEscapeSuiteClassification()
+    {
+        var executor = new DelegateSuiteExecutor((_, _, _) =>
+            throw new SnapshotDivergedException("frozen package cache changed"));
+
+        await Assert.ThrowsAsync<SnapshotDivergedException>(() =>
+            new SuiteCoordinator(executor, TimeProvider.System).RunBaselinesAsync(
+                "snapshot", [Suite("unit", "App.Tests.csproj")], TimeSpan.FromSeconds(10),
+                DateTimeOffset.UtcNow.AddMinutes(1), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task OrdinaryBaselineRestoreFailuresRemainInconclusiveEvidence()
+    {
+        var executor = new DelegateSuiteExecutor((_, _, _) =>
+            throw new SnapshotCaptureException("Frozen worker restore failed: feed unavailable"));
+
+        var result = await new SuiteCoordinator(executor, TimeProvider.System).RunBaselinesAsync(
+            "snapshot", [Suite("unit", "App.Tests.csproj")], TimeSpan.FromSeconds(10),
+            DateTimeOffset.UtcNow.AddMinutes(1), CancellationToken.None);
+
+        Assert.Equal(BaselineStatus.Unknown, result.Status);
+        Assert.Equal(SuiteRunDisposition.Error, Assert.Single(result.Executions).Result.Disposition);
+        Assert.Contains(result.IncompleteConditions, item => item.Code == "BASELINE_INCONCLUSIVE");
+    }
+
     [Theory]
     [InlineData(3, 0, 0)]
     [InlineData(4, 0, 1)]
@@ -79,6 +138,26 @@ public sealed class SuiteCoordinatorTests
 
         Assert.Equal(expected, result.Disposition);
         Assert.Equal(2, result.Evidence.Count);
+    }
+
+    [Fact]
+    public void CompileInvalidRequiresMatchingEvidenceFromEveryMappedSuite()
+    {
+        var mutationId = "mutation:v1:" + new string('d', 64);
+
+        var complete = SuiteCoordinator.AggregateMutant(mutationId, ["one", "two"],
+        [
+            new("one", SuiteRunDisposition.Error, [], ["CS0029 at src/App/A.cs"], true),
+            new("two", SuiteRunDisposition.Error, [], ["CS0029 at src/App/A.cs"], true)
+        ]);
+        var contradictory = SuiteCoordinator.AggregateMutant(mutationId, ["one", "two"],
+        [
+            new("one", SuiteRunDisposition.Error, [], ["CS0029 at src/App/A.cs"], true),
+            Mutant("two", SuiteRunDisposition.Survived)
+        ]);
+
+        Assert.Equal(UnitDisposition.CompileInvalid, complete.Disposition);
+        Assert.Equal(UnitDisposition.Error, contradictory.Disposition);
     }
 
     [Fact]
@@ -141,5 +220,10 @@ public sealed class SuiteCoordinatorTests
             ObservedTimeouts.Add(timeout);
             return _run(suite, timeout, cancellationToken);
         }
+    }
+
+    private sealed class ThrowingOwner(Exception failure) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync() => ValueTask.FromException(failure);
     }
 }

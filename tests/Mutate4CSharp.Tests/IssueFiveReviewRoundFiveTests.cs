@@ -89,13 +89,18 @@ public sealed class IssueFiveReviewRoundFiveTests : IDisposable
         var result = await ScheduleAsync(aggregate);
 
         Assert.Equal(UnitDisposition.Killed, result.Disposition);
-        Assert.Equal(100, result.Evidence.Count);
-        var truncation = Assert.Single(result.Evidence, item => item.Kind == "SUITE_EVIDENCE_TRUNCATED");
-        Assert.Contains("received=150", truncation.Diagnostics!);
-        Assert.Contains("retained=99", truncation.Diagnostics!);
+        Assert.Equal(StabilityEvidence.MaxAttemptEvidence, result.Evidence.Count);
+        var suiteTruncation = Assert.Single(result.Evidence,
+            item => item.Kind == "SUITE_EVIDENCE_TRUNCATED");
+        Assert.Contains("received=150", suiteTruncation.Diagnostics!);
+        Assert.Contains("retained=99", suiteTruncation.Diagnostics!);
         Assert.Equal("SUITE_EVIDENCE_TRUNCATED", result.Evidence[0].Kind);
         Assert.Contains("suite-000", result.Evidence[1].Summary, StringComparison.Ordinal);
-        Assert.Contains("suite-098", result.Evidence[^1].Summary, StringComparison.Ordinal);
+        var schedulerTruncation = Assert.Single(result.Evidence,
+            item => item.Kind == "EVIDENCE_TRUNCATED");
+        Assert.Contains("retained=19", schedulerTruncation.Diagnostics!);
+        Assert.Contains("omitted=81", schedulerTruncation.Diagnostics!);
+        Assert.Equal("EVIDENCE_TRUNCATED", result.Evidence[^1].Kind);
     }
 
     [Fact]

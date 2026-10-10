@@ -174,7 +174,8 @@ internal sealed class OwnedDirectory : IAsyncDisposable
                 }
             }
         }
-        if (failure is not null) throw failure;
+        if (failure is not null)
+            throw failure is SnapshotCleanupException ? failure : new SnapshotCleanupException(failure);
         return ValueTask.CompletedTask;
     }
 

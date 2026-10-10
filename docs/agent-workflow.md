@@ -77,9 +77,9 @@ ordinary dependencies to nuget.org. Use that example configuration only after ex
 checkout, the root and nested files are multiple applicable NuGet.Config files, which strict dependency
 preparation intentionally refuses rather than merging.
 
-The current public strict check **can never produce `PASS` or `FAIL` until mutation execution is connected**.
-For a supported Git-backed configuration-v1 context, `check` returns exit `4` with `INCOMPLETE` and the
-`EXECUTION_NOT_IMPLEMENTED` incomplete condition after publishing a bounded canonical mutation plan. Unsupported
+The current public strict check **cannot produce `PASS` until final verification is connected**.
+For a supported Git-backed configuration-v1 context, `check` runs fresh baseline/coverage and isolated mutants,
+then returns exit `4` with `INCOMPLETE` and the `FINALIZATION_PENDING` incomplete condition. Unsupported
 semantic contexts fail closed with a specific enumeration refusal and an unknown total. Usage rejection, snapshot
 refusal, and exception paths may stop earlier and may not publish a report. The PASS/FAIL handling below defines
 the stable contract for the future execution connection.
@@ -131,17 +131,24 @@ Missing or malformed receipt fields, duplicate or unknown keys, host/SDK mismatc
 symbolic repository boundaries, identity drift, non-commit baselines, existing/symlinked/internal report paths, or
 changed target `HEAD` fail before a result is accepted.
 The current gate accepts a tool result only when a newly created regular report parses, its `exitCode` equals the
-process exit, and it says `INCOMPLETE` / `4`. A supported plan must contain `EXECUTION_NOT_IMPLEMENTED` and a bounded
-nonnegative `counts.enumerated`. A project outside the current semantic envelope may instead contain only an
-explicitly allowlisted semantic `ENUMERATION_*` condition or known scope/selection blocker and must keep
-`counts.enumerated` null. Retired placeholder, SDK/reference-pack, fingerprint, unknown, and integrity-related codes
+process exit, and it says `INCOMPLETE` / `2` or `4`. Exit `2` is accepted only with a reported `RED` or `EMPTY`
+baseline; those baseline states are rejected with exit `4`. A supported run must contain `FINALIZATION_PENDING` and a bounded
+nonnegative `counts.enumerated`. A supported execution may additionally retain named baseline, coverage,
+deadline, cancellation, or omitted-attempt conditions; these remain honest nonpassing evidence. Snapshot,
+boundary, sidecar, and other integrity failures are never allowlisted by the gate. Dependency preparation
+intentionally precedes semantic enumeration because the
+resolved SDK and frozen package graph are part of the candidate-plan identity. A project that cannot establish
+those inputs may instead report only `DEPENDENCY_INPUT_UNAVAILABLE` or `EXECUTION_ENVIRONMENT_UNAVAILABLE`;
+both are nonpassing, keep `counts.enumerated` null, and are explicitly allowlisted by the gate. A project outside
+the current semantic envelope may similarly contain only an explicitly allowlisted semantic `ENUMERATION_*`
+condition or known scope/selection blocker. Retired placeholder, SDK/reference-pack, fingerprint, unknown, and integrity-related codes
 are not accepted merely because they share an `ENUMERATION_` prefix. User-facing nullable/symbol assertions,
 compile-inventory mismatches, and named unsupported semantic contexts are allowlisted limitations (exit `4`). The
 tool's own configuration-root mismatch, snapshot divergence, stale scope/source/span, duplicate/colliding
 identities, unavailable reference packs, and unexpected context exceptions are orchestration refusals (exit `73`).
 Both are nonpassing results. A crash
 that merely exits 4, a malformed condition, or a contradictory count is refused as orchestration exit `73`.
-All orchestration refusals use exit `73`, distinct from tool usage exit `1` and strict incomplete exit `4`.
+All orchestration refusals use exit `73`, distinct from tool usage exit `1` and strict incomplete exits `2` and `4`.
 The preflight and post-run checks reject existing and symbolic report targets, while the tool publishes atomically
 under an adjacent lock. Hash and identity checks before and after execution narrow but do not eliminate TOCTOU: a
 malicious same-account process with write access to the runtime, payload, package, repository, or report parent can
@@ -192,14 +199,12 @@ being confused with tool usage or a validated strict incomplete result. An accep
   "outcome": "INCOMPLETE",
   "exitCode": 4,
   "incompleteConditions": [
-    { "code": "EXECUTION_NOT_IMPLEMENTED" }
+    { "code": "FINALIZATION_PENDING" }
   ],
   "reasons": [
-    { "code": "EXECUTION_NOT_IMPLEMENTED" },
-    { "code": "BASELINE_UNKNOWN" },
-    { "code": "UNIT_OMITTED" }
+    { "code": "FINALIZATION_PENDING" }
   ],
-  "counts": { "enumerated": 1, "selected": 1, "executed": 0, "omitted": 1 }
+  "counts": { "enumerated": 1, "selected": 1, "executed": 1, "killed": 1 }
 }
 ```
 

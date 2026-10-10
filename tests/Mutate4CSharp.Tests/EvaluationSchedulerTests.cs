@@ -3,6 +3,208 @@ namespace Mutate4CSharp.Tests;
 public sealed class EvaluationSchedulerTests
 {
     [Fact]
+    public async Task SchedulerBoundsEvidenceWithoutSplittingSurrogatePairs()
+    {
+        var split = new string('x', EvaluationEvidence.MaxDiagnosticLength - 1) + "😀tail";
+        var executor = new DelegateMutationExecutor((work, _, _) => Task.FromResult(
+            new ScheduledMutationResult(work.EvaluationUnitId, UnitDisposition.Error,
+                [new EvaluationEvidence(split, split, [split])] )));
+
+        var result = await new EvaluationScheduler(executor, TimeProvider.System).RunAsync(
+            [new ScheduledMutation("mutation:v1:" + new string('1', 64),
+                "evaluation:v1:" + new string('2', 64), ["unit"])],
+            1, TimeSpan.FromSeconds(10), DateTimeOffset.UtcNow.AddMinutes(1),
+            CancellationToken.None);
+
+        var evidence = Assert.Single(Assert.Single(result.Results).Evidence);
+        Assert.False(char.IsSurrogate(evidence.Summary[^1]));
+        Assert.False(char.IsSurrogate(Assert.Single(evidence.Diagnostics!)[^1]));
+    }
+
+    [Fact]
+    public async Task SnapshotIntegrityFailuresEscapeUnitClassification()
+    {
+        var executor = new DelegateMutationExecutor((_, _, _) =>
+            throw new SnapshotDivergedException("frozen input changed"));
+        var scheduler = new EvaluationScheduler(executor, TimeProvider.System);
+
+        await Assert.ThrowsAsync<SnapshotDivergedException>(() => scheduler.RunAsync(
+            [new ScheduledMutation("mutation:v1:" + new string('1', 64),
+                "evaluation:v1:" + new string('2', 64), ["unit"])],
+            1, TimeSpan.FromSeconds(10), DateTimeOffset.UtcNow.AddMinutes(1),
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task OrdinaryWorkerRestoreFailuresRemainUnitErrors()
+    {
+        var executor = new DelegateMutationExecutor((_, _, _) =>
+            throw new SnapshotCaptureException("Frozen worker restore failed: feed unavailable"));
+
+        var result = await new EvaluationScheduler(executor, TimeProvider.System).RunAsync(
+            [new ScheduledMutation("mutation:v1:" + new string('3', 64),
+                "evaluation:v1:" + new string('4', 64), ["unit"])],
+            1, TimeSpan.FromSeconds(10), DateTimeOffset.UtcNow.AddMinutes(1),
+            CancellationToken.None);
+
+        var unit = Assert.Single(result.Results);
+        Assert.Equal(UnitDisposition.Error, unit.Disposition);
+        Assert.Contains(unit.Evidence, item => item.Kind == "MUTANT_EXECUTION_INCOMPLETE");
+    }
+
+    [Fact]
+    public async Task StrictStabilityAttemptsAreContiguousPerEvaluationUnit()
+    {
+        var calls = new List<string>();
+        var executor = new DelegateMutationExecutor((work, _, _) =>
+        {
+            calls.Add(work.EvaluationUnitId);
+            return Task.FromResult(new ScheduledMutationResult(work.EvaluationUnitId,
+                UnitDisposition.Killed, [new("KILLED", "fixture")]));
+        });
+        var first = new ScheduledMutation("mutation:v1:" + new string('5', 64),
+            "evaluation:v1:" + new string('5', 64), ["unit"]);
+        var second = new ScheduledMutation("mutation:v1:" + new string('6', 64),
+            "evaluation:v1:" + new string('6', 64), ["unit"]);
+
+        var result = await StrictExecutionPipeline.RunContiguousAttemptsAsync(executor,
+            [first, second], 2, TimeSpan.FromSeconds(10), DateTimeOffset.UtcNow.AddMinutes(1),
+            TimeProvider.System, CancellationToken.None);
+
+        Assert.Equal([first.EvaluationUnitId, first.EvaluationUnitId,
+            second.EvaluationUnitId, second.EvaluationUnitId], calls);
+        Assert.Equal(2, result.Attempts[first.EvaluationUnitId].Count);
+        Assert.Equal(2, result.Attempts[second.EvaluationUnitId].Count);
+    }
+
+    [Fact]
+    public async Task ContiguousAttemptsRetainCompletedEvidenceBeforeCancellationOmission()
+    {
+        using var cancel = new CancellationTokenSource();
+        var executor = new DelegateMutationExecutor((work, _, _) =>
+        {
+            cancel.Cancel();
+            return Task.FromResult(new ScheduledMutationResult(work.EvaluationUnitId,
+                UnitDisposition.Killed, [new("KILLED", "completed before cancellation")]));
+        });
+        var first = new ScheduledMutation("mutation:v1:" + new string('7', 64),
+            "evaluation:v1:" + new string('7', 64), ["unit"]);
+        var second = new ScheduledMutation("mutation:v1:" + new string('8', 64),
+            "evaluation:v1:" + new string('8', 64), ["unit"]);
+
+        var result = await StrictExecutionPipeline.RunContiguousAttemptsAsync(executor,
+            [first, second], 2, TimeSpan.FromSeconds(10), DateTimeOffset.UtcNow.AddMinutes(1),
+            TimeProvider.System, cancel.Token);
+
+        Assert.Equal([UnitDisposition.Killed, UnitDisposition.Omitted],
+            result.Attempts[first.EvaluationUnitId].Select(item => item.Disposition));
+        Assert.Equal(UnitDisposition.Omitted,
+            Assert.Single(result.Attempts[second.EvaluationUnitId]).Disposition);
+        Assert.Contains(result.IncompleteConditions, item => item.Code == "EXECUTION_CANCELLED");
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task DeadlineClampedFinalRepetitionIsOmittedInsteadOfUnstable(int repetitions)
+    {
+        var time = new AdjustableTimeProvider(DateTimeOffset.UtcNow);
+        var calls = 0;
+        var mutation = new ScheduledMutation("mutation:v1:" + new string('9', 64),
+            "evaluation:v1:" + new string('9', 64), ["unit"]);
+        var executor = new DelegateMutationExecutor((work, _, _) =>
+        {
+            if (++calls == repetitions) time.Advance(TimeSpan.FromSeconds(6));
+            return Task.FromResult(new ScheduledMutationResult(work.EvaluationUnitId,
+                UnitDisposition.Killed, [new("KILLED", "fixture")]));
+        });
+
+        var result = await StrictExecutionPipeline.RunContiguousAttemptsAsync(executor,
+            [mutation], repetitions, TimeSpan.FromSeconds(10), time.GetUtcNow().AddSeconds(5), time,
+            CancellationToken.None);
+
+        Assert.Equal(Enumerable.Repeat(UnitDisposition.Killed, repetitions - 1)
+                .Append(UnitDisposition.Omitted),
+            result.Attempts[mutation.EvaluationUnitId].Select(item => item.Disposition));
+        Assert.Contains(result.IncompleteConditions, item => item.Code == "OVERALL_DEADLINE_EXCEEDED");
+    }
+
+    [Fact]
+    public async Task CancellationDuringAssignedAttemptIsOmittedWithRunCondition()
+    {
+        using var cancel = new CancellationTokenSource();
+        var mutation = new ScheduledMutation("mutation:v1:" + new string('a', 64),
+            "evaluation:v1:" + new string('a', 64), ["unit"]);
+        var executor = new DelegateMutationExecutor((_, _, _) =>
+        {
+            cancel.Cancel();
+            throw new OperationCanceledException(cancel.Token);
+        });
+
+        var result = await new EvaluationScheduler(executor, TimeProvider.System).RunAsync(
+            [mutation], 1, TimeSpan.FromSeconds(10), DateTimeOffset.UtcNow.AddMinutes(1), cancel.Token);
+
+        Assert.Equal(UnitDisposition.Omitted, Assert.Single(result.Results).Disposition);
+        Assert.Contains(result.IncompleteConditions, item => item.Code == "EXECUTION_CANCELLED");
+    }
+
+    [Fact]
+    public async Task WorkerTimeoutExceptionUsesMutantTimeoutEvidence()
+    {
+        var mutation = new ScheduledMutation("mutation:v1:" + new string('b', 64),
+            "evaluation:v1:" + new string('b', 64), ["unit"]);
+        var executor = new DelegateMutationExecutor((_, _, _) =>
+            throw new TimeoutException("restore timed out"));
+
+        var result = await new EvaluationScheduler(executor, TimeProvider.System).RunAsync(
+            [mutation], 1, TimeSpan.FromSeconds(10), DateTimeOffset.UtcNow.AddMinutes(1),
+            CancellationToken.None);
+
+        var unit = Assert.Single(result.Results);
+        Assert.Equal(UnitDisposition.Error, unit.Disposition);
+        Assert.Contains(unit.Evidence, item => item.Kind == "MUTANT_TIMEOUT");
+    }
+
+    [Fact]
+    public async Task SchedulerBoundsEvidenceToStabilityContractLimit()
+    {
+        var mutation = new ScheduledMutation("mutation:v1:" + new string('c', 64),
+            "evaluation:v1:" + new string('c', 64), ["unit"]);
+        var executor = new DelegateMutationExecutor((work, _, _) => Task.FromResult(
+            new ScheduledMutationResult(work.EvaluationUnitId, UnitDisposition.Killed,
+                Enumerable.Range(0, 25).Select(index =>
+                    new EvaluationEvidence("EVIDENCE", $"entry {index}")).ToArray())));
+
+        var result = await new EvaluationScheduler(executor, TimeProvider.System).RunAsync(
+            [mutation], 1, TimeSpan.FromSeconds(10), DateTimeOffset.UtcNow.AddMinutes(1),
+            CancellationToken.None);
+
+        var evidence = Assert.Single(result.Results).Evidence;
+        Assert.Equal(StabilityEvidence.MaxAttemptEvidence, evidence.Count);
+        Assert.Contains(evidence, item => item.Kind == "EVIDENCE_TRUNCATED");
+    }
+
+    [Fact]
+    public void PartialAttemptEvidenceIsBoundedAndRetainsItsTerminalMarker()
+    {
+        var results = Enumerable.Range(0, 100).Select(attempt => new ScheduledMutationResult(
+            "evaluation:v1:" + new string('d', 64),
+            attempt == 99 ? UnitDisposition.Omitted : UnitDisposition.Killed,
+            Enumerable.Range(0, 20).Select(index =>
+                new EvaluationEvidence("EVIDENCE", $"attempt {attempt}; entry {index}")).ToArray()))
+            .ToArray();
+
+        var evidence = StrictExecutionPipeline.BuildPartialEvidence(results);
+
+        Assert.Equal(StabilityEvidence.MaxUnitEvidence, evidence.Count);
+        Assert.Contains(evidence, item => item.Kind == "STABILITY_EVIDENCE_TRUNCATED");
+        Assert.Equal("PARTIAL_STABILITY_EVIDENCE", evidence[^1].Kind);
+        Assert.All(evidence, item => Assert.True(
+            item.Diagnostics is null or { Count: <= EvaluationEvidence.MaxDiagnostics }));
+        Assert.Contains("attempts-truncated=81", evidence[^1].Diagnostics!);
+    }
+
+    [Fact]
     public async Task SchedulerNeverExceedsWorkerBoundAndReturnsCanonicalOrder()
     {
         var active = 0;
@@ -57,5 +259,12 @@ public sealed class EvaluationSchedulerTests
             Func<ScheduledMutation, TimeSpan, CancellationToken, Task<ScheduledMutationResult>> run) => _run = run;
         public Task<ScheduledMutationResult> ExecuteAsync(ScheduledMutation mutation, TimeSpan timeout,
             CancellationToken cancellationToken) => _run(mutation, timeout, cancellationToken);
+    }
+
+    private sealed class AdjustableTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        private DateTimeOffset _now = now;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan duration) => _now += duration;
     }
 }

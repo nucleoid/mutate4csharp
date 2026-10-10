@@ -192,8 +192,13 @@ try:
         raise ValueError("report root must be an object")
     if report.get("exitCode") != process_exit:
         raise ValueError("report exitCode does not match process result")
-    if process_exit != 4 or report.get("outcome") != "INCOMPLETE":
-        raise ValueError("current gate requires exit 4 with outcome INCOMPLETE")
+    if process_exit not in (2, 4) or report.get("outcome") != "INCOMPLETE":
+        raise ValueError("current gate requires exit 2 or 4 with outcome INCOMPLETE")
+    baseline = report.get("baseline")
+    if process_exit == 2 and baseline not in ("RED", "EMPTY"):
+        raise ValueError("exit 2 requires a RED or EMPTY baseline")
+    if process_exit == 4 and baseline in ("RED", "EMPTY"):
+        raise ValueError("RED or EMPTY baseline requires exit 2")
     conditions = report.get("incompleteConditions")
     if not isinstance(conditions, list) or not conditions or not all(
         isinstance(item, dict) and isinstance(item.get("code"), str)
@@ -208,10 +213,15 @@ try:
     if any(isinstance(item, dict) and item.get("kind") == "SIDECAR_PUBLICATION_FAILURE" for item in evidence):
         raise ValueError("report contains SIDECAR_PUBLICATION_FAILURE")
     execution_pending = any(
-        isinstance(item, dict) and item.get("code") == "EXECUTION_NOT_IMPLEMENTED"
+        isinstance(item, dict) and item.get("code") == "FINALIZATION_PENDING"
         for item in conditions
     )
-    execution_codes = {"EXECUTION_NOT_IMPLEMENTED", "TARGETED_DIAGNOSTIC"}
+    execution_codes = {
+        "FINALIZATION_PENDING", "TARGETED_DIAGNOSTIC",
+        "OVERALL_DEADLINE_EXCEEDED", "EXECUTION_CANCELLED",
+        "BASELINE_TIMEOUT", "BASELINE_INCONCLUSIVE", "COVERAGE_MISSING",
+        "SUITE_MEMBERS_MISSING", "MUTATION_ATTEMPT_OMITTED",
+    }
     enumeration_codes = {
         "ENUMERATION_ANCESTOR_BUILD_UNSUPPORTED",
         "ENUMERATION_COMPILE_INVENTORY_MISMATCH", "ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED",
@@ -235,9 +245,13 @@ try:
         "UNSUPPORTED_SYNTAX", "NO_SUPPORTED_DECLARATION", "UNSUPPORTED_CHANGED_INPUT",
         "EXACT_ID_RERUN_UNAVAILABLE", "TARGET_SELECTION_INVALID",
     }
+    environment_refusal_codes = {
+        "DEPENDENCY_INPUT_UNAVAILABLE", "EXECUTION_ENVIRONMENT_UNAVAILABLE",
+    }
     execution_valid = execution_pending and all(item["code"] in execution_codes for item in conditions)
     enumeration_refusal = not execution_pending and all(
-        item["code"] in enumeration_codes or item["code"] in scope_refusal_codes
+        item["code"] in enumeration_codes or item["code"] in scope_refusal_codes or
+        item["code"] in environment_refusal_codes
         for item in conditions
     )
     if not execution_valid and not enumeration_refusal:
@@ -429,7 +443,7 @@ with open(sys.argv[1], "rb") as stream:
 codes = [item.get("code") for item in report.get("incompleteConditions", [])
          if isinstance(item, dict)]
 enumerated = report.get("counts", {}).get("enumerated")
-if codes != ["EXECUTION_NOT_IMPLEMENTED"] or not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated <= 0:
+if codes != ["FINALIZATION_PENDING"] or not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated <= 0:
     print(f"unexpected strict example result: codes={codes!r}, enumerated={enumerated!r}", file=sys.stderr)
     raise SystemExit(1)
 PY

@@ -37,8 +37,10 @@ internal static class MutationExecutor
                     var run = await TestRunner.RunAsync(worker.Root, test, resultDirectory, timeout, false,
                         cancellationToken, variables, noRestore: true, requireExecutionBoundary: true);
                     if (!string.Equals(environment.PackageFingerprint,
-                            ExecutionEnvironment.FingerprintPackages(packages.Root), StringComparison.Ordinal))
-                        throw new SnapshotDivergedException("Worker execution changed the frozen package cache.");
+                            ExecutionEnvironment.FingerprintPackages(packages.Root,
+                                cancellationToken: cancellationToken), StringComparison.Ordinal))
+                        throw new ExecutionBoundaryIntegrityException(
+                            "Worker execution changed its private frozen package-cache copy.");
                     var status = Classify(run);
                     var detail = status == MutantStatus.Error
                         ? Tail(run.StandardError + Environment.NewLine + run.StandardOutput)

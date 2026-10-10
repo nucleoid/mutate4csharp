@@ -5,6 +5,79 @@ namespace Mutate4CSharp.Tests;
 
 public sealed class SnapshotExecutionTests : IDisposable
 {
+    [Fact]
+    public void DependencyFailureTailRetainsNewestBoundedOutput()
+    {
+        var tail = typeof(ExecutionEnvironment).GetMethod("Tail",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var output = string.Join('\n',
+            Enumerable.Range(1, 3).Select(index => $"old-{index}-" + new string('x', 400))
+                .Append("FINAL_NUGET_ERROR: package source unavailable"));
+
+        var bounded = Assert.IsType<string>(tail.Invoke(null, [new[] { output }]));
+
+        Assert.Contains("FINAL_NUGET_ERROR", bounded, StringComparison.Ordinal);
+        Assert.True(bounded.Length <= EvaluationReason.MaxMessageLength -
+            "Dependency preparation failed: ".Length);
+    }
+
+    [Fact]
+    public void MalformedTrxAccountingReportsTheReadFailure()
+    {
+        var trx = Path.Combine(_repository.Root, "partial.trx");
+        File.WriteAllText(trx, "<TestRun>");
+
+        var failure = Assert.ThrowsAny<Exception>(() =>
+            VstestSuiteExecutor.AccountedMembers([trx]));
+
+        Assert.Equal("TrxAccountingException", failure.GetType().Name);
+        Assert.Contains("partial.trx", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PassingTrxWithoutStorageReportsTheMembershipFailure()
+    {
+        var results = Path.Combine(_repository.Root, "missing-storage-results");
+        Directory.CreateDirectory(results);
+        var trx = Path.Combine(results, "missing-storage.trx");
+        File.WriteAllText(trx, """
+            <TestRun>
+              <Results><UnitTestResult testName="Suite.Passes" outcome="Passed" /></Results>
+              <TestDefinitions><UnitTest name="Suite.Passes" /></TestDefinitions>
+              <ResultSummary outcome="Passed">
+                <Counters total="1" executed="1" passed="1" failed="0" />
+              </ResultSummary>
+            </TestRun>
+            """);
+
+        var analyzed = TestRunner.AnalyzeTrx(results);
+        Assert.True(analyzed.Valid);
+        Assert.True(analyzed.TestsExecuted);
+        Assert.False(analyzed.HasFailedTests);
+        var failure = Assert.Throws<TrxAccountingException>(() =>
+            VstestSuiteExecutor.AccountedMembers([trx]));
+
+        Assert.Contains("missing-storage.trx", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("storage", failure.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void OriginalDiagnosticCountProducesTruthfulUnicodeSafeTruncationEvidence()
+    {
+        var retained = Enumerable.Range(1, EvaluationEvidence.MaxDiagnostics)
+            .Select(index => index == EvaluationEvidence.MaxDiagnostics - 1
+                ? new string('x', EvaluationEvidence.MaxDiagnosticLength - 1) + "😀tail"
+                : $"diagnostic-{index:D2}")
+            .ToArray();
+
+        var diagnostics = EvaluationEvidence.BoundDiagnostics(retained, 25);
+
+        Assert.Equal(EvaluationEvidence.MaxDiagnostics, diagnostics.Count);
+        Assert.Equal("diagnostics-truncated=6", diagnostics[^1]);
+        Assert.All(diagnostics, diagnostic =>
+            Assert.False(diagnostic.Length > 0 && char.IsHighSurrogate(diagnostic[^1])));
+    }
+
     private readonly SnapshotTestRepository _repository = new();
 
     [Fact]
@@ -49,6 +122,25 @@ public sealed class SnapshotExecutionTests : IDisposable
         File.WriteAllText(Path.Combine(second, "package.dll"), "two");
 
         Assert.NotEqual(ExecutionEnvironment.FingerprintTree(first), ExecutionEnvironment.FingerprintTree(second));
+    }
+
+    [Fact]
+    public void PackageFingerprintingObservesCancellation()
+    {
+        var packages = Path.Combine(_repository.Root, "cancelled-packages");
+        Directory.CreateDirectory(packages);
+        File.WriteAllBytes(Path.Combine(packages, "package.bin"), new byte[1024]);
+        var method = typeof(ExecutionEnvironment).GetMethod("FingerprintPackages",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static,
+            [typeof(string), typeof(int), typeof(long), typeof(CancellationToken)]);
+        Assert.NotNull(method);
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+
+        var failure = Assert.Throws<System.Reflection.TargetInvocationException>(() =>
+            method!.Invoke(null, [packages, int.MaxValue, long.MaxValue, cancelled.Token]));
+
+        Assert.IsType<OperationCanceledException>(failure.InnerException);
     }
 
     [Fact]
@@ -943,7 +1035,7 @@ public sealed class SnapshotExecutionTests : IDisposable
 
         try
         {
-            var error = Assert.Throws<SnapshotCaptureException>(() =>
+            var error = Assert.Throws<ExecutionBoundaryIntegrityException>(() =>
                 ExecutionEnvironment.ValidateResolvedPackageRoots(workspace, packages));
             Assert.Contains("unfrozen", error.Message, StringComparison.OrdinalIgnoreCase);
         }
@@ -981,7 +1073,7 @@ public sealed class SnapshotExecutionTests : IDisposable
 
         try
         {
-            var error = Assert.Throws<SnapshotCaptureException>(() =>
+            var error = Assert.Throws<ExecutionBoundaryIntegrityException>(() =>
                 ExecutionEnvironment.ValidateResolvedPackageRoots(workspace, packages));
             Assert.Contains("source", error.Message, StringComparison.OrdinalIgnoreCase);
         }
@@ -1074,7 +1166,7 @@ public sealed class SnapshotExecutionTests : IDisposable
                     }
                 }));
 
-                var error = Assert.Throws<SnapshotCaptureException>(() =>
+                var error = Assert.Throws<ExecutionBoundaryIntegrityException>(() =>
                     ExecutionEnvironment.ValidateResolvedPackageRoots(workspace, packages, selectedConfig));
                 Assert.Contains("outside the selected NuGet.Config", error.Message,
                     StringComparison.OrdinalIgnoreCase);
@@ -1114,7 +1206,7 @@ public sealed class SnapshotExecutionTests : IDisposable
         try
         {
             ExecutionEnvironment.ValidateResolvedPackageRoots(workspace, packages);
-            var error = Assert.Throws<SnapshotCaptureException>(() =>
+            var error = Assert.Throws<ExecutionBoundaryIntegrityException>(() =>
                 ExecutionEnvironment.ValidateResolvedPackageRoots(workspace, packages, selectedConfig));
             Assert.Contains("source", error.Message, StringComparison.OrdinalIgnoreCase);
         }
@@ -1147,7 +1239,7 @@ public sealed class SnapshotExecutionTests : IDisposable
 
         try
         {
-            var error = Assert.Throws<SnapshotCaptureException>(() =>
+            var error = Assert.Throws<ExecutionBoundaryIntegrityException>(() =>
                 ExecutionEnvironment.ValidateResolvedPackageRoots(workspace, packages));
             Assert.Contains("sources", error.Message, StringComparison.OrdinalIgnoreCase);
         }
@@ -1185,7 +1277,7 @@ public sealed class SnapshotExecutionTests : IDisposable
 
         try
         {
-            var error = Assert.Throws<SnapshotCaptureException>(() =>
+            var error = Assert.Throws<ExecutionBoundaryIntegrityException>(() =>
                 ExecutionEnvironment.ValidateResolvedPackageRoots(workspace, packages));
             Assert.Contains("sources", error.Message, StringComparison.OrdinalIgnoreCase);
         }

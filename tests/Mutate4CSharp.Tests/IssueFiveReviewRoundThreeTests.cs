@@ -50,9 +50,10 @@ public sealed class IssueFiveReviewRoundThreeTests : IDisposable
             [new("first", ["first"], first), new("second", ["second"], second),
                 new("third", ["third"], third)], []);
 
-        var error = await Assert.ThrowsAsync<AggregateException>(async () => await result.DisposeAsync());
+        var error = await Assert.ThrowsAsync<SnapshotCleanupException>(async () => await result.DisposeAsync());
 
-        Assert.Equal(2, error.InnerExceptions.Count);
+        var cleanup = Assert.IsType<AggregateException>(error.CleanupFailure);
+        Assert.Equal(2, cleanup.InnerExceptions.Count);
         Assert.False(Directory.Exists(thirdOwner.Root));
     }
 

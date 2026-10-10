@@ -98,6 +98,28 @@ public sealed class MutationSelectionTests
         Assert.Equal(["src/I.cs", "src/ı.cs"], plan.Selected.Select(item => item.Material.RepositoryPath));
     }
 
+    [Fact]
+    public void PlanCanAuthorizeOneNonExecutedUncoveredCompletionButCannotForgeOrRepeatIt()
+    {
+        var material = FingerprintMaterial("coverage");
+        var plan = MutationSelection.Plan(MutationSelection.Bind([
+            Candidate("src/A.cs", "Type.A", "site/1", "op", "coverage")
+        ], material), material);
+        var pending = Assert.Single(plan.CreatePendingLedger());
+
+        var completed = plan.CompleteWithoutExecution(pending, UnitDisposition.Uncovered,
+            [new("FRESH_UNCOVERED", "Every required fresh coverage map reported zero visits.")]);
+        var facts = plan.FinalizeFacts(BaselineStatus.Green, [completed], false,
+            [new("FINALIZATION_PENDING", "Final publication belongs to the next integration issue.")]);
+
+        Assert.Equal(UnitDisposition.Uncovered, Assert.Single(facts.Units).Disposition);
+        Assert.Throws<EvaluationContractException>(() => plan.CompleteWithoutExecution(pending,
+            UnitDisposition.Uncovered, [new("FRESH_UNCOVERED", "Repeated completion.")]));
+        Assert.Throws<EvaluationContractException>(() => plan.CompleteWithoutExecution(
+            plan.CreatePendingLedger().Single(), UnitDisposition.Killed,
+            [new("FORGED", "Killed is not a non-executed disposition.")]));
+    }
+
     private static MutationCandidate Candidate(string path, string declaration, string site,
         string op, string evaluationId)
     {

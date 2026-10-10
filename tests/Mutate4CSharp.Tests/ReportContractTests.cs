@@ -105,8 +105,52 @@ public sealed class ReportContractTests : IDisposable
         var missingEvidence = valid with { Units = [unit], Counts = badCounts };
         Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(missingEvidence));
 
-        var oversized = valid with { Reasons = [new("TEST_REASON", new string('x', 1025))] };
+        var generated = new EvaluationReason("TEST_REASON", new string('x', 1025));
+        Assert.Equal(1024, generated.Message.Length);
+        var oversized = valid with
+        {
+            Reasons = [generated with { Message = new string('x', 1025) }]
+        };
         Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(oversized));
+    }
+
+    [Fact]
+    public void GeneratedLongIncompleteConditionRemainsSerializable()
+    {
+        var condition = new EvaluationReason("DEPENDENCY_INPUT_UNAVAILABLE",
+            string.Join(" | ", Enumerable.Repeat(new string('x', 400), 4)));
+        var original = EvaluationReport.CreateSynthetic(
+            EvaluationOutcome.Incomplete, "long-condition", "TEST_FIXTURE");
+        var facts = new EvaluationFacts(original.Baseline, original.Counts.Enumerated,
+            original.Units, original.Policy.AllowNotApplicable, [condition]);
+        var decision = EvaluationReducer.Reduce(facts);
+        var report = original with
+        {
+            IncompleteConditions = facts.IncompleteConditions,
+            Reasons = decision.Reasons,
+            Evidence = decision.Evidence,
+            Counts = decision.Counts,
+            Outcome = decision.Outcome,
+            ExitCode = decision.ExitCode
+        };
+
+        var bytes = ReportWriter.Serialize(report);
+
+        Assert.Equal(1024, condition.Message.Length);
+        Assert.NotEmpty(bytes);
+    }
+
+    [Fact]
+    public void GeneratedBoundsNeverSplitSurrogatePairs()
+    {
+        var reason = new EvaluationReason("TEST_REASON",
+            new string('x', EvaluationReason.MaxMessageLength - 1) + "😀tail");
+        var diagnostic = Assert.Single(EvaluationEvidence.BoundDiagnostics([
+            new string('x', EvaluationEvidence.MaxDiagnosticLength - 1) + "😀tail"
+        ]));
+
+        Assert.False(char.IsSurrogate(reason.Message[^1]));
+        Assert.False(char.IsSurrogate(diagnostic[^1]));
     }
 
     [Fact]
@@ -271,8 +315,13 @@ public sealed class ReportContractTests : IDisposable
 
     private static async Task<int> RunCheck(string path)
     {
+        using var repository = new SnapshotTestRepository();
+        repository.WriteText("src/A.cs", "class A { }\n");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "fixture");
         var start = new System.Diagnostics.ProcessStartInfo(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
         {
+            WorkingDirectory = repository.Root,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false

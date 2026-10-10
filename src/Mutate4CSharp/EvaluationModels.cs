@@ -3,8 +3,95 @@ using System.Text.Json.Serialization;
 namespace Mutate4CSharp;
 
 internal sealed record EvaluationEvidence(string Kind, string Summary,
-    IReadOnlyList<string>? Diagnostics = null);
-internal sealed record EvaluationReason(string Code, string Message);
+    IReadOnlyList<string>? Diagnostics = null)
+{
+    public const int MaxDiagnostics = 20;
+    public const int MaxDiagnosticLength = 512;
+
+    public static IReadOnlyList<string> BoundDiagnostics(IEnumerable<string> diagnostics,
+        IReadOnlyList<string>? requiredTail = null, string truncationLabel = "diagnostics-truncated")
+    {
+        ArgumentNullException.ThrowIfNull(diagnostics);
+        requiredTail ??= [];
+        if (requiredTail.Count > MaxDiagnostics)
+            throw new EvaluationContractException("Required evidence diagnostics exceed schema bounds.");
+        var values = diagnostics.Select(Bound).ToArray();
+        var tail = requiredTail.Select(Bound).ToArray();
+        var available = MaxDiagnostics - tail.Length;
+        if (values.Length <= available) return values.Concat(tail).ToArray();
+        if (available == 0)
+            throw new EvaluationContractException("Evidence diagnostics leave no room for truncation accounting.");
+        var retained = available - 1;
+        return values.Take(retained)
+            .Append(Bound($"{truncationLabel}={values.Length - retained}"))
+            .Concat(tail).ToArray();
+    }
+
+    public static IReadOnlyList<string> BoundDiagnostics(IEnumerable<string> retainedDiagnostics,
+        int originalCount, string truncationLabel = "diagnostics-truncated")
+    {
+        ArgumentNullException.ThrowIfNull(retainedDiagnostics);
+        var values = retainedDiagnostics.Select(Bound).ToArray();
+        if (originalCount < values.Length)
+            throw new EvaluationContractException("Original diagnostic count cannot be smaller than retained evidence.");
+        if (originalCount <= MaxDiagnostics) return values;
+        var retained = Math.Min(values.Length, MaxDiagnostics - 1);
+        return values.Take(retained)
+            .Append(Bound($"{truncationLabel}={originalCount - retained}"))
+            .ToArray();
+    }
+
+    private static string Bound(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return EvaluationTextBounds.Prefix(value, MaxDiagnosticLength);
+    }
+}
+internal sealed record EvaluationReason
+{
+    public const int MaxMessageLength = 1024;
+
+    public EvaluationReason(string code, string message)
+    {
+        Code = code;
+        Message = BoundMessage(message);
+    }
+
+    public string Code { get; init; }
+    public string Message { get; init; }
+
+    public static string BoundMessage(string message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        return EvaluationTextBounds.Prefix(message, MaxMessageLength);
+    }
+}
+
+internal static class EvaluationTextBounds
+{
+    public static string Prefix(string value, int maximum)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        ArgumentOutOfRangeException.ThrowIfNegative(maximum);
+        if (value.Length <= maximum) return value;
+        var length = maximum;
+        if (length > 0 && char.IsHighSurrogate(value[length - 1]) &&
+            char.IsLowSurrogate(value[length])) length--;
+        return value[..length];
+    }
+
+    public static string Suffix(string value, int maximum)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        ArgumentOutOfRangeException.ThrowIfNegative(maximum);
+        if (maximum == 0) return string.Empty;
+        if (value.Length <= maximum) return value;
+        var start = value.Length - maximum;
+        if (start > 0 && char.IsLowSurrogate(value[start]) &&
+            char.IsHighSurrogate(value[start - 1])) start++;
+        return value[start..];
+    }
+}
 internal sealed record EvaluationUnitResult(string UnitId, string EvaluationUnitId,
     UnitDisposition Disposition, IReadOnlyList<EvaluationEvidence> Evidence)
 {

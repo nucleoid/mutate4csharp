@@ -135,7 +135,8 @@ internal static class ReportWriter
                      .Concat(report.Suites.SelectMany(suite => suite.Evidence)))
         {
             ValidateText(item.Kind, item.Summary, "evidence");
-            if (item.Diagnostics is { Count: > 20 } || item.Diagnostics?.Any(value => value.Length > 512) == true)
+            if (item.Diagnostics is { Count: > EvaluationEvidence.MaxDiagnostics } ||
+                item.Diagnostics?.Any(value => value.Length > EvaluationEvidence.MaxDiagnosticLength) == true)
                 throw new EvaluationContractException("Evidence diagnostics exceed schema bounds.");
         }
         if (report.Suites.Any(suite => string.IsNullOrWhiteSpace(suite.SuiteId) || suite.Evidence.Count == 0))

@@ -69,4 +69,16 @@ reruns, fixed execution-policy defaults, and stability repetitions are specified
 
 ## Snapshot status
 
-The strict report contract records bounded immutable working-tree capture in `INPUT_SNAPSHOT` evidence; see [snapshot-inputs.md](snapshot-inputs.md). Capture refusal or drift writes a current-run `INCOMPLETE` report when the report destination itself remains writable. The versioned scope plan, repository configuration, suite-baseline deduplication, VSTest/TRX aggregation, deadlines, bounded scheduling and exact-ID rerun contracts are present. Supported Git-backed configuration-v1 contexts now enumerate a deterministic bound plan with canonical mutation/evaluation-unit identities. The selected units are explicitly `OMITTED` with `EXECUTION_NOT_IMPLEMENTED` until execution is integrated; therefore public strict invocations still cannot manufacture `PASS` or `FAIL`.
+The strict report contract records bounded immutable working-tree capture in `INPUT_SNAPSHOT` evidence; see [snapshot-inputs.md](snapshot-inputs.md). Capture refusal or drift writes a current-run `INCOMPLETE` report when the report destination itself remains writable. Supported Git-backed configuration-v1 contexts enumerate a deterministic bound plan, run fresh baselines and coverage, and execute selected units in isolated clones. Reports retain `FINALIZATION_PENDING` until issue #4 adds the final completeness and original-tree gate, so public strict invocations cannot manufacture `PASS` from partial evidence.
+
+An execution-time package-root, restore-source, lock-file, worker-root, or private package-cache escape is reported
+as `EXECUTION_BOUNDARY_INTEGRITY`, not as an unsupported capture or ordinary mutant error. It aborts the run and
+preserves cleanup failure evidence because continuing after a proven frozen-boundary violation would make later
+unit evidence untrustworthy. Ordinary feed, restore, SDK, host, workload, and per-mutant timeout failures remain
+nonpassing execution evidence rather than being promoted to boundary violations.
+When cleanup also fails, the report retains both `SNAPSHOT_CLEANUP_FAILED` and the typed primary divergence,
+boundary, limit, or strict-execution-refusal condition with separate evidence. Exact-ID reruns and partial
+stability markers share the report's bounded 20-diagnostic evidence contract and summarize any additional
+identities or attempts with an explicit truncation count. Generated reason and incomplete-condition messages
+are bounded to the report schema's 1,024-character limit, including dependency-preparation failures. Later
+validation cancellation or native/runtime failure retains any integrity condition already observed.

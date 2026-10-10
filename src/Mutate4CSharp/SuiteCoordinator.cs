@@ -17,6 +17,10 @@ internal sealed record SuiteRunResult(SuiteRunDisposition Disposition, TimeSpan 
     IReadOnlyList<string> Diagnostics, IReadOnlyList<string> CoverageReports) : IAsyncDisposable
 {
     internal OwnedCoverageReports? CoverageOwner { get; init; }
+    internal CoverageMap? CoverageMap { get; init; }
+    internal string? CoverageSha256 { get; init; }
+    internal long CoverageLength { get; init; }
+    internal bool HealthyControl { get; init; }
     public ValueTask DisposeAsync() => CoverageOwner?.DisposeAsync() ?? ValueTask.CompletedTask;
 }
 
@@ -35,6 +39,18 @@ internal sealed record SuiteBaselineResult(BaselineStatus Status,
 
 internal static class AsyncDisposal
 {
+    public static Exception CombineFailure(Exception? primaryFailure, Exception cleanupFailure)
+    {
+        ArgumentNullException.ThrowIfNull(cleanupFailure);
+        if (cleanupFailure is SnapshotCleanupException { OriginalFailure: null } cleanupOnly)
+            cleanupFailure = cleanupOnly.CleanupFailure;
+        if (primaryFailure is not null)
+            return new SnapshotCleanupException(primaryFailure, cleanupFailure);
+        return cleanupFailure is SnapshotCleanupException
+            ? cleanupFailure
+            : new SnapshotCleanupException(cleanupFailure);
+    }
+
     public static async ValueTask DisposeAllAsync(IEnumerable<IAsyncDisposable?> owners)
     {
         List<Exception>? failures = null;
@@ -44,12 +60,29 @@ internal static class AsyncDisposal
             try { await owner.DisposeAsync(); }
             catch (Exception ex) { (failures ??= []).Add(ex); }
         }
-        if (failures is not null) throw new AggregateException("One or more owned-resource cleanups failed.", failures);
+        if (failures is not null)
+            throw new SnapshotCleanupException(
+                new AggregateException("One or more owned-resource cleanups failed.", failures));
+    }
+
+    public static async ValueTask DisposeAllPreservingFailureAsync(
+        IEnumerable<IAsyncDisposable?> owners, Exception? primaryFailure)
+    {
+        Exception? failure = primaryFailure;
+        try { await DisposeAllAsync(owners); }
+        catch (Exception cleanupFailure)
+        {
+            failure = CombineFailure(primaryFailure, cleanupFailure);
+        }
+        if (failure is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     }
 }
 
 internal sealed record SuiteMutationEvidence(string SuiteId, SuiteRunDisposition Disposition,
-    IReadOnlyList<string> FailedTestIds, IReadOnlyList<string> Diagnostics);
+    IReadOnlyList<string> FailedTestIds, IReadOnlyList<string> Diagnostics,
+    bool CompileInvalid = false, int? DiagnosticCount = null,
+    IReadOnlyList<string>? PriorityDiagnostics = null, int? FailedTestCount = null);
 
 internal sealed record AggregatedMutation(UnitDisposition Disposition,
     IReadOnlyList<EvaluationEvidence> Evidence);
@@ -117,18 +150,28 @@ internal sealed class SuiteCoordinator
                     throw new EvaluationContractException("Suite executor returned no baseline result.");
                 result = Bound(unboundedResult);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException ex)
             {
-                if (unboundedResult is not null) await DisposeFailedResultAsync(unboundedResult);
+                if (unboundedResult is not null) await DisposeFailedResultAsync(unboundedResult, ex);
                 AddCondition(conditions, "EXECUTION_CANCELLED", "Baseline execution was cancelled.");
                 break;
+            }
+            catch (Exception ex) when (ex is SnapshotDivergedException or
+                                       ExecutionBoundaryIntegrityException or
+                                       SnapshotCleanupException or SnapshotLimitException)
+            {
+                if (unboundedResult is not null) await DisposeFailedResultAsync(unboundedResult, ex);
+                throw;
             }
             catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
             {
                 if (unboundedResult is not null)
                 {
                     try { await unboundedResult.DisposeAsync(); }
-                    catch (Exception cleanupFailure) { ex = new SnapshotCleanupException(ex, cleanupFailure); }
+                    catch (Exception cleanupFailure)
+                    {
+                        throw AsyncDisposal.CombineFailure(ex, cleanupFailure);
+                    }
                 }
                 result = new(SuiteRunDisposition.Error, TimeSpan.Zero, [], [], [Bound(ex.Message, 512)], []);
             }
@@ -215,23 +258,41 @@ internal sealed class SuiteCoordinator
                     $"omitted={orderedEvidence.Length - retained.Count}"]));
         }
 
-        var incomplete = validEvidence.Any(item => item.Disposition is SuiteRunDisposition.Cancelled or
-            SuiteRunDisposition.TimedOut or SuiteRunDisposition.Error or SuiteRunDisposition.Empty or
-            SuiteRunDisposition.Failed);
-        var disposition = incomplete ? UnitDisposition.Error
+        var compileInvalid = validEvidence.Any(item => item.CompileInvalid);
+        var incomplete = validEvidence.Any(item => !item.CompileInvalid &&
+            item.Disposition is SuiteRunDisposition.Cancelled or SuiteRunDisposition.TimedOut or
+                SuiteRunDisposition.Error or SuiteRunDisposition.Empty or SuiteRunDisposition.Failed);
+        var disposition = incomplete || compileInvalid && validEvidence.Any(item => !item.CompileInvalid)
+            ? UnitDisposition.Error
+            : compileInvalid ? UnitDisposition.CompileInvalid
             : validEvidence.Any(item => item.Disposition == SuiteRunDisposition.Killed) ? UnitDisposition.Killed
             : validEvidence.All(item => item.Disposition is SuiteRunDisposition.Survived or SuiteRunDisposition.Passed)
                 ? UnitDisposition.Survived
                 : UnitDisposition.Error;
         return new(disposition, retained);
 
-        static EvaluationEvidence ToEvidence(SuiteMutationEvidence item) =>
-            new("SUITE_MUTANT_RESULT",
-                $"Suite {Bound(item.SuiteId, 128)} classified the mutant as {item.Disposition.ToString().ToUpperInvariant()}.",
-                new[] { $"failed-count={item.FailedTestIds.Count}", $"diagnostic-count={item.Diagnostics.Count}" }
+        static EvaluationEvidence ToEvidence(SuiteMutationEvidence item)
+        {
+            var priorityDiagnostics = (item.PriorityDiagnostics ?? []).Take(MaxDiagnostics)
+                .Select(value => "diagnostic=" + Bound(value, 512)).ToArray();
+            var diagnostics = item.Diagnostics.Take(MaxDiagnostics)
+                .Select(value => "diagnostic=" + Bound(value, 512)).ToArray();
+            var details = item.Disposition == SuiteRunDisposition.Error
+                ? priorityDiagnostics
                     .Concat(item.FailedTestIds.Take(MaxFailedTests).Select(value => "failed=" + Bound(value, 256)))
-                    .Concat(item.Diagnostics.Take(MaxDiagnostics).Select(value => "diagnostic=" + Bound(value, 512)))
-                    .ToArray());
+                    .Concat(diagnostics)
+                : item.FailedTestIds.Take(MaxFailedTests).Select(value => "failed=" + Bound(value, 256))
+                    .Concat(priorityDiagnostics).Concat(diagnostics);
+            var failedCount = item.FailedTestCount ?? item.FailedTestIds.Count;
+            var diagnosticCount = item.DiagnosticCount ?? item.Diagnostics.Count + priorityDiagnostics.Length;
+            var retained = new[] { $"failed-count={failedCount}",
+                    $"diagnostic-count={diagnosticCount}",
+                    $"compile-invalid={item.CompileInvalid.ToString().ToLowerInvariant()}" }
+                .Concat(details).ToArray();
+            return new("SUITE_MUTANT_RESULT",
+                $"Suite {Bound(item.SuiteId, 128)} classified the mutant as {item.Disposition.ToString().ToUpperInvariant()}.",
+                EvaluationEvidence.BoundDiagnostics(retained, 3 + failedCount + diagnosticCount));
+        }
     }
 
     public static EvaluationEvidence SurvivorEvidence(string mutationId, string path, int line,
@@ -302,10 +363,13 @@ internal sealed class SuiteCoordinator
             throw new EvaluationContractException($"Suite executor returned an invalid {member} collection.");
     }
 
-    private static async Task DisposeFailedResultAsync(SuiteRunResult result)
+    private static async Task DisposeFailedResultAsync(SuiteRunResult result, Exception primaryFailure)
     {
         try { await result.DisposeAsync(); }
-        catch { }
+        catch (Exception cleanupFailure)
+        {
+            throw AsyncDisposal.CombineFailure(primaryFailure, cleanupFailure);
+        }
     }
 
     private static string ExecutionKey(string snapshotId, SuiteExecution suite)
@@ -327,14 +391,10 @@ internal sealed class SuiteCoordinator
             conditions.Add(new(code, message));
     }
 
-    private static string Bound(string value, int maximum) => value.Length <= maximum ? value : value[..maximum];
+    private static string Bound(string value, int maximum) => EvaluationTextBounds.Prefix(value, maximum);
 
     private static string BoundWithoutSplittingSurrogate(string value, int maximum)
     {
-        if (value.Length <= maximum) return value;
-        var length = maximum;
-        if (length > 0 && char.IsHighSurrogate(value[length - 1]) &&
-            length < value.Length && char.IsLowSurrogate(value[length])) length--;
-        return value[..length];
+        return EvaluationTextBounds.Prefix(value, maximum);
     }
 }

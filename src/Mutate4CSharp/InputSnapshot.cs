@@ -11,8 +11,18 @@ internal sealed class SnapshotDivergedException(string message) : SnapshotCaptur
 internal sealed class SnapshotLimitException(string message) : SnapshotCaptureException(message);
 internal sealed class SnapshotEnvironmentException(string message, Exception? inner = null) :
     SnapshotCaptureException(message, inner);
+internal sealed class ExecutionEnvironmentUnavailableException(string message, Exception? inner = null) :
+    SnapshotCaptureException(message, inner);
+internal sealed class ExecutionBoundaryIntegrityException(string message, Exception? inner = null) :
+    SnapshotCaptureException(message, inner);
 internal sealed class SnapshotCleanupException : SnapshotCaptureException
 {
+    public SnapshotCleanupException(Exception cleanupFailure)
+        : base($"Snapshot cleanup failed: {cleanupFailure.Message}", cleanupFailure)
+    {
+        CleanupFailure = cleanupFailure;
+    }
+
     public SnapshotCleanupException(Exception originalFailure, Exception cleanupFailure)
         : base($"Snapshot cleanup failed after {Describe(originalFailure)}; cleanup failure: {cleanupFailure.Message}",
             new AggregateException(originalFailure, cleanupFailure))
@@ -21,7 +31,7 @@ internal sealed class SnapshotCleanupException : SnapshotCaptureException
         CleanupFailure = cleanupFailure;
     }
 
-    public Exception OriginalFailure { get; }
+    public Exception? OriginalFailure { get; }
     public Exception CleanupFailure { get; }
 
     private static string Describe(Exception exception) =>

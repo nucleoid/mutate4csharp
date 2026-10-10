@@ -5,6 +5,7 @@ internal sealed record StabilityAttempt(int Attempt, UnitDisposition Disposition
 
 internal static class StabilityEvidence
 {
+    public const int MaxAttemptEvidence = 20;
     public const int MaxUnitEvidence = 200;
 
     public static EvaluationUnitResult Reduce(string mutationId, string evaluationUnitId,
@@ -36,7 +37,7 @@ internal static class StabilityEvidence
                 .SequenceEqual(Enumerable.Range(1, attempts.Count)))
             throw new EvaluationContractException("Stability attempts must be unique and contiguous from one.");
         if (attempts.Any(item => item.Disposition is UnitDisposition.Pending or UnitDisposition.Omitted or
-                                 UnitDisposition.Unstable || item.Evidence.Count is 0 or > 20))
+                                 UnitDisposition.Unstable || item.Evidence.Count is 0 or > MaxAttemptEvidence))
             throw new EvaluationContractException("Stability attempts require terminal executed evidence.");
 
         var dispositions = attempts.Select(item => item.Disposition).Distinct().ToArray();
@@ -63,8 +64,9 @@ internal static class StabilityEvidence
         return new(mutationId, evaluationUnitId, disposition, evidence);
     }
 
-    private static List<EvaluationEvidence> BoundTotal(IReadOnlyList<EvaluationEvidence> evidence, int maximum)
+    internal static List<EvaluationEvidence> BoundTotal(IReadOnlyList<EvaluationEvidence> evidence, int maximum)
     {
+        if (maximum < 1) throw new ArgumentOutOfRangeException(nameof(maximum));
         if (evidence.Count <= maximum) return evidence.ToList();
         var retained = maximum - 1;
         var first = retained / 2;
@@ -79,6 +81,6 @@ internal static class StabilityEvidence
     private static string Bound(string? value, int length)
     {
         if (string.IsNullOrWhiteSpace(value)) return "(empty)";
-        return value.Length <= length ? value : value[..length];
+        return EvaluationTextBounds.Prefix(value, length);
     }
 }

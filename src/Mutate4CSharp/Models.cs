@@ -24,6 +24,7 @@ internal sealed record EmbeddedManifest(int Version, string ContextFingerprint, 
 internal sealed record TestRunResult(int ExitCode, TimeSpan Duration, bool TimedOut, bool TestsDiscovered,
     bool HasFailedTests, bool TrxValid, string StandardOutput, string StandardError,
     IReadOnlyList<string> TrxPaths, bool HasRunErrors = false,
-    IReadOnlyList<string>? FailedTestIds = null, IReadOnlyList<string>? Diagnostics = null);
+    IReadOnlyList<string>? FailedTestIds = null, IReadOnlyList<string>? Diagnostics = null,
+    int? FailedTestCount = null, int? DiagnosticCount = null);
 internal sealed record MutantResult(MutationSite Site, MutantStatus Status, TimeSpan Duration, string? Detail = null);
 internal sealed record ProjectContext(string Root, string Project, string TestProject, string TargetRelativePath, string DisplayPath);

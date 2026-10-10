@@ -11,6 +11,19 @@ public sealed class StrictCheckIntegrationTests : IDisposable
     public StrictCheckIntegrationTests() => Directory.CreateDirectory(_directory);
 
     [Fact]
+    public void ExecutionBoundaryIntegrityHasAnExplicitRunLevelReason()
+    {
+        var method = typeof(EvaluationCoordinator).GetMethod("SnapshotFailure",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var reason = Assert.IsType<EvaluationReason>(method!.Invoke(null,
+            [new ExecutionBoundaryIntegrityException("private package cache changed")]));
+
+        Assert.Equal("EXECUTION_BOUNDARY_INTEGRITY", reason.Code);
+    }
+
+    [Fact]
     public void RequiresExactlyOneStrictSelectionMode()
     {
         Assert.NotNull(Cli.Parse(["check"]).Error);
@@ -36,13 +49,23 @@ public sealed class StrictCheckIntegrationTests : IDisposable
     [Fact]
     public async Task PublicStrictCheckFailsClosedUntilFrozenCaptureExists()
     {
+        using var repository = new SnapshotTestRepository();
+        repository.WriteText("src/A.cs", "class A { }\n");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "fixture");
         var reportPath = Path.Combine(_directory, "strict.json");
         var oldOut = Console.Out;
         var output = new StringWriter();
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
         Console.SetOut(output);
         int code;
         try { code = await Program.Main(["check", "--base", "HEAD", "--report", reportPath]); }
-        finally { Console.SetOut(oldOut); }
+        finally
+        {
+            Console.SetOut(oldOut);
+            Environment.CurrentDirectory = previous;
+        }
 
         Assert.Equal(4, code);
         using var report = JsonDocument.Parse(File.ReadAllBytes(reportPath));
@@ -53,7 +76,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         Assert.Contains(report.RootElement.GetProperty("reasons").EnumerateArray(),
             reason => reason.GetProperty("code").GetString() is
                 "ENUMERATION_SCOPE_INCOMPLETE" or "ENUMERATION_CONTEXT_UNSUPPORTED" or
-                "EXECUTION_NOT_IMPLEMENTED");
+                "ENUMERATION_CONFIGURATION_REQUIRED");
         Assert.DoesNotContain(report.RootElement.GetProperty("reasons").EnumerateArray(),
             reason => reason.GetProperty("code").GetString() == "ENUMERATION_NOT_IMPLEMENTED");
         var snapshot = report.RootElement.GetProperty("evidence").EnumerateArray()
@@ -64,7 +87,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task SupportedCapturedScopePublishesBoundEnumerationBeforeExecutionIntegration()
+    public async Task SupportedCapturedScopePublishesBoundEnumerationAndBaselineEvidence()
     {
         using var repository = StrictEnumerationRepository("public int Value() => 0;");
         repository.Git("add", ".");
@@ -91,7 +114,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         Assert.Equal(1, result.Report.Counts.Omitted);
         Assert.True(MutationIdentity.IsMutationId(unit.UnitId));
         Assert.True(EvaluationUnitIdentity.IsEvaluationUnitId(unit.EvaluationUnitId));
-        Assert.Contains(result.Report.Reasons, reason => reason.Code == "EXECUTION_NOT_IMPLEMENTED");
+        Assert.Contains(result.Report.Reasons, reason => reason.Code == "FINALIZATION_PENDING");
         Assert.DoesNotContain(result.Report.Reasons, reason => reason.Code == "ENUMERATION_NOT_IMPLEMENTED");
         Assert.Contains(result.Report.Evidence, item => item.Kind == "MUTATION_PLAN" &&
             item.Diagnostics?.Any(value => value.StartsWith("planFingerprint=sha256:",
@@ -164,6 +187,9 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         Assert.Empty(result.Report.Units);
         Assert.Contains(result.Report.Reasons, reason => reason.Code == "SNAPSHOT_DIVERGED");
         Assert.DoesNotContain(result.Report.Evidence, item => item.Kind == "MUTATION_PLAN");
+        Assert.Equal(BaselineStatus.Unknown, result.Report.Baseline);
+        Assert.Empty(result.Report.Suites);
+        Assert.DoesNotContain(result.Report.Evidence, item => item.Kind == "DEPENDENCY_INPUT");
     }
 
     [Fact]
@@ -186,19 +212,26 @@ public sealed class StrictCheckIntegrationTests : IDisposable
 
         Assert.Equal(0, result.Report.Counts.Enumerated);
         Assert.Empty(result.Report.Units);
-        Assert.Contains(result.Report.Reasons, reason => reason.Code == "EXECUTION_NOT_IMPLEMENTED");
+        Assert.Contains(result.Report.Reasons, reason => reason.Code == "FINALIZATION_PENDING");
         Assert.DoesNotContain(result.Report.Reasons, reason => reason.Code == "ENUMERATION_INCOMPLETE");
     }
 
     [Fact]
     public async Task ExactIdRequestFreshlyRebindsTheCurrentPlanAsDiagnosticOnly()
     {
-        using var repository = StrictEnumerationRepository("public int Value() => 0;");
+        var baselineMembers = string.Join(' ', Enumerable.Range(0, 25)
+            .Select(index => $"public int Value{index}() => 0;"));
+        var changedMembers = string.Join(' ', Enumerable.Range(0, 25)
+            .Select(index => $"public int Value{index}() => 1;"));
+        using var repository = StrictEnumerationRepository(baselineMembers);
         repository.Git("add", ".");
         repository.Git("commit", "-m", "baseline");
-        repository.WriteText("src/App/Flag.cs", "public sealed class Flag { public int Value() => 1; }\n");
+        repository.WriteText("src/App/Flag.cs", $"public sealed class Flag {{ {changedMembers} }}\n");
         var firstReport = Path.Combine(_directory, "full-plan.json");
         var targetedReport = Path.Combine(_directory, "targeted-plan.json");
+        var staleReport = Path.Combine(_directory, "stale-targeted-plan.json");
+        var manyIdsReport = Path.Combine(_directory, "many-targeted-ids.json");
+        var invalidatedReport = Path.Combine(_directory, "invalidated-targeted-plan.json");
         var previous = Environment.CurrentDirectory;
         Environment.CurrentDirectory = repository.Root;
         try
@@ -206,7 +239,8 @@ public sealed class StrictCheckIntegrationTests : IDisposable
             var coordinator = new EvaluationCoordinator();
             var full = await coordinator.RunAsync(
                 new(false, "HEAD", [], firstReport, "full-plan"), CancellationToken.None);
-            var mutation = Assert.Single(full.Report.Units).UnitId;
+            Assert.True(full.Report.Units.Count >= 25);
+            var mutation = full.Report.Units[0].UnitId;
             var planFingerprint = Assert.Single(full.Report.Evidence,
                     item => item.Kind == "MUTATION_PLAN").Diagnostics!
                 .Single(value => value.StartsWith("planFingerprint=", StringComparison.Ordinal))[16..];
@@ -218,14 +252,101 @@ public sealed class StrictCheckIntegrationTests : IDisposable
             Assert.True(targeted.Report.DiagnosticPartial);
             Assert.Contains(targeted.Report.IncompleteConditions,
                 reason => reason.Code == MutationSelection.TargetedDiagnosticCode);
-            Assert.Contains(targeted.Report.Evidence, item => item.Kind == "EXACT_ID_REQUEST");
+            var exactEvidence = Assert.Single(targeted.Report.Evidence,
+                item => item.Kind == "EXACT_ID_REQUEST");
+            Assert.DoesNotContain("Executed", exactEvidence.Summary, StringComparison.Ordinal);
+
+            var stale = await coordinator.RunAsync(new(false, "HEAD", [], staleReport,
+                "stale-targeted-plan", MutationIds: [mutation],
+                PlanFingerprint: "sha256:" + new string('0', 64)), CancellationToken.None);
+            Assert.Contains(stale.Report.IncompleteConditions,
+                reason => reason.Code == "TARGET_SELECTION_INVALID");
+            Assert.Contains(stale.Report.IncompleteConditions,
+                reason => reason.Code == "EXACT_ID_RERUN_UNAVAILABLE");
+            Assert.DoesNotContain(stale.Report.IncompleteConditions,
+                reason => reason.Code == "SNAPSHOT_VALIDATION_FAILED");
+            Assert.Contains(stale.Report.Evidence, item => item.Kind == "EXACT_ID_REQUEST");
+            Assert.Contains(stale.Report.Evidence, item => item.Kind == "SCOPE_PLAN");
+
+            var manyIds = full.Report.Units.Take(25).Select(item => item.UnitId).ToArray();
+            var many = await coordinator.RunAsync(new(false, "HEAD", [], manyIdsReport,
+                "many-targeted-ids", MutationIds: manyIds,
+                PlanFingerprint: planFingerprint), CancellationToken.None);
+            var manyEvidence = Assert.Single(many.Report.Evidence,
+                item => item.Kind == "EXACT_ID_REQUEST");
+            Assert.True(File.Exists(manyIdsReport));
+            Assert.True(manyEvidence.Diagnostics!.Count <= EvaluationEvidence.MaxDiagnostics);
+            Assert.Contains(manyEvidence.Diagnostics,
+                item => item == "ids-truncated=8");
+
+            var validationPass = 0;
+            var captureOptions = SnapshotCaptureOptions.Default with
+            {
+                Hook = (stage, relativePath) =>
+                {
+                    if (stage != SnapshotCaptureStage.BeforeOriginalFileHashed ||
+                        relativePath != "src/App/Flag.cs" || ++validationPass != 2) return;
+                    repository.WriteText("src/App/Flag.cs",
+                        $"public sealed class Flag {{ {changedMembers.Replace("=> 1;", "=> 2;", StringComparison.Ordinal)} }}\n");
+                }
+            };
+            var invalidated = await new EvaluationCoordinator(captureOptions).RunAsync(new(false, "HEAD", [],
+                invalidatedReport, "invalidated-targeted-plan", MutationIds: [mutation],
+                PlanFingerprint: planFingerprint), CancellationToken.None);
+            Assert.Contains(invalidated.Report.IncompleteConditions,
+                reason => reason.Code == "SNAPSHOT_DIVERGED");
+            Assert.Contains(invalidated.Report.IncompleteConditions,
+                reason => reason.Code == "EXACT_ID_RERUN_UNAVAILABLE");
+            Assert.Empty(invalidated.Report.Units);
+            var invalidatedExact = Assert.Single(invalidated.Report.Evidence,
+                item => item.Kind == "EXACT_ID_REQUEST");
+            Assert.StartsWith("Refused", invalidatedExact.Summary, StringComparison.Ordinal);
+            Assert.DoesNotContain(invalidatedExact.Diagnostics ?? [],
+                item => item.StartsWith("executed=", StringComparison.Ordinal));
         }
         finally { Environment.CurrentDirectory = previous; }
     }
 
     [Fact]
+    public void LaterFailuresRetainPriorIntegrityAndCleanupWrappedStrictRefusals()
+    {
+        var cleanupReason = new EvaluationReason("SNAPSHOT_CLEANUP_FAILED", "cleanup failed");
+        var boundary = new EvaluationReason("EXECUTION_BOUNDARY_INTEGRITY", "boundary changed");
+        var divergence = new SnapshotCleanupException(
+            new SnapshotDivergedException("original tree changed"),
+            new IOException("cleanup also failed"));
+        var retained = EvaluationCoordinator.PreservedFailureReasons(
+            cleanupReason, [boundary], divergence);
+
+        var refusal = new StrictExecutionRefusalException(
+            new("BASELINE_ACCOUNTING_INCOMPLETE", "baseline accounting failed"),
+            [new("BASELINE_ACCOUNTING_INCOMPLETE", "baseline accounting failed")]);
+        var wrappedRefusal = new SnapshotCleanupException(refusal,
+            new IOException("environment cleanup failed"));
+        var refusalReasons = EvaluationCoordinator.PreservedFailureReasons(
+            cleanupReason, [], wrappedRefusal);
+        var refusalEvidence = EvaluationCoordinator.PreservedFailureEvidence(wrappedRefusal);
+        var cancelledReasons = EvaluationCoordinator.PreservedFailureReasons(
+            cleanupReason, [boundary], new OperationCanceledException("cancelled"));
+        var unexpectedReasons = EvaluationCoordinator.PreservedFailureReasons(
+            cleanupReason, [boundary], new UnauthorizedAccessException("permissions changed"));
+
+        Assert.Contains(retained, item => item.Code == "EXECUTION_BOUNDARY_INTEGRITY");
+        Assert.Contains(retained, item => item.Code == "SNAPSHOT_DIVERGED");
+        Assert.Contains(refusalReasons, item => item.Code == "BASELINE_ACCOUNTING_INCOMPLETE");
+        Assert.Contains(refusalEvidence, item => item.Kind == "STRICT_EXECUTION_REFUSAL" &&
+            item.Diagnostics!.Contains("BASELINE_ACCOUNTING_INCOMPLETE: baseline accounting failed"));
+        Assert.Contains(cancelledReasons, item => item.Code == "EXECUTION_BOUNDARY_INTEGRITY");
+        Assert.Contains(unexpectedReasons, item => item.Code == "EXECUTION_BOUNDARY_INTEGRITY");
+    }
+
+    [Fact]
     public async Task RefusedReportWritePrintsCurrentRunIdAndCannotBeMistakenForStaleReport()
     {
+        using var repository = new SnapshotTestRepository();
+        repository.WriteText("src/A.cs", "class A { }\n");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "fixture");
         var reportPath = Path.Combine(_directory, "stale.json");
         ReportWriter.Write(reportPath,
             EvaluationReport.CreateSynthetic(EvaluationOutcome.Incomplete, "stale-run", "TEST_FIXTURE"));
@@ -233,10 +354,16 @@ public sealed class StrictCheckIntegrationTests : IDisposable
             FileAccess.Write, FileShare.None);
         var oldError = Console.Error;
         var error = new StringWriter();
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
         Console.SetError(error);
         int code;
         try { code = await Program.Main(["check", "--base", "HEAD", "--report", reportPath]); }
-        finally { Console.SetError(oldError); }
+        finally
+        {
+            Console.SetError(oldError);
+            Environment.CurrentDirectory = previous;
+        }
 
         Assert.Equal(4, code);
         var marker = "Run ID: ";
@@ -460,11 +587,15 @@ public sealed class StrictCheckIntegrationTests : IDisposable
             Assert.Equal("cleanup-current-run", report.RootElement.GetProperty("runId").GetString());
             Assert.Contains(report.RootElement.GetProperty("reasons").EnumerateArray(),
                 reason => reason.GetProperty("code").GetString() == "SNAPSHOT_CLEANUP_FAILED");
+            Assert.Contains(report.RootElement.GetProperty("incompleteConditions").EnumerateArray(),
+                reason => reason.GetProperty("code").GetString() == "SNAPSHOT_DIVERGED");
             Assert.False(report.RootElement.GetProperty("scopePlan").GetProperty("isComplete").GetBoolean());
             Assert.Contains(report.RootElement.GetProperty("scopePlan").GetProperty("reasons").EnumerateArray(),
                 reason => reason.GetProperty("code").GetString() == "SCOPE_UNAVAILABLE");
             var cleanup = report.RootElement.GetProperty("evidence").EnumerateArray()
                 .Single(item => item.GetProperty("kind").GetString() == "SNAPSHOT_CLEANUP");
+            Assert.Contains(report.RootElement.GetProperty("evidence").EnumerateArray(),
+                item => item.GetProperty("kind").GetString() == "SNAPSHOT_DIVERGENCE");
             var summary = cleanup.GetProperty("summary").GetString();
             Assert.Contains("primary validation failure", summary, StringComparison.Ordinal);
             Assert.Contains("ownership marker", summary, StringComparison.OrdinalIgnoreCase);
@@ -761,13 +892,23 @@ public sealed class StrictCheckIntegrationTests : IDisposable
     [Fact]
     public async Task NonStringExistingReportEnvelopeIsAUsageError()
     {
+        using var repository = new SnapshotTestRepository();
+        repository.WriteText("src/A.cs", "class A { }\n");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "fixture");
         var path = Path.Combine(_directory, "wrong-types.json");
-        Assert.Equal(4, await Program.Main(["check", "--base", "HEAD", "--report", path]));
-        File.WriteAllText(path, "{\"schemaVersion\":1,\"runId\":false,\"outcome\":[]}");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
+        try
+        {
+            Assert.Equal(4, await Program.Main(["check", "--base", "HEAD", "--report", path]));
+            File.WriteAllText(path, "{\"schemaVersion\":1,\"runId\":false,\"outcome\":[]}");
 
-        var code = await Program.Main(["check", "--base", "HEAD", "--report", path]);
+            var code = await Program.Main(["check", "--base", "HEAD", "--report", path]);
 
-        Assert.Equal(1, code);
+            Assert.Equal(1, code);
+        }
+        finally { Environment.CurrentDirectory = previous; }
     }
 
     private static SnapshotTestRepository StrictEnumerationRepository(string member)
@@ -807,6 +948,9 @@ public sealed class StrictCheckIntegrationTests : IDisposable
                 "expectedMembers": ["App.Tests.dll"]
               }]
             }
+            """);
+        repository.WriteText("NuGet.Config", """
+            <configuration><packageSources><clear /></packageSources></configuration>
             """);
         return repository;
     }

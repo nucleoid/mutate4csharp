@@ -46,6 +46,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         int? enumerationCount = null;
         IReadOnlyList<EvaluationUnitResult> reportUnits = [];
         IReadOnlyList<EvaluationReason> enumerationReasons = [];
+        var baseline = BaselineStatus.Unknown;
+        IReadOnlyList<SuiteEvidence> reportSuites = [];
         EvaluationReason reason;
         var evidence = new List<EvaluationEvidence>();
         try
@@ -117,115 +119,64 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             }
             else
             {
-                try { sdkVersion = await ResolveSdkVersionAsync(snapshot, cancellationToken); }
-                catch (Exception ex) when (!IsFatal(ex))
+                var execution = await StrictExecutionPipeline.RunAsync(snapshot, snapshotId!, scopePlan,
+                    checkConfiguration, exactMutationIds, options.PlanFingerprint, cancellationToken);
+                fingerprintMaterial = execution.FingerprintMaterial;
+                semanticContextIdentity = execution.SemanticContextIdentity;
+                sdkVersion = execution.SdkVersion;
+                enumerationCount = execution.EnumerationCount;
+                reportUnits = execution.Units;
+                baseline = execution.Baseline;
+                reportSuites = execution.Suites;
+                enumerationReasons = execution.IncompleteConditions;
+                reason = execution.Reason;
+                var dependency = execution.FingerprintMaterial.Inputs.Single(input =>
+                    input.Kind == "dependency" &&
+                    input.Path == ".mutate4csharp/frozen-dependencies");
+                var snapshotEvidenceIndex = evidence.FindIndex(item => item.Kind == "INPUT_SNAPSHOT");
+                if (snapshotEvidenceIndex >= 0)
                 {
-                    enumerationReasons = [new("ENUMERATION_SDK_UNAVAILABLE", Bound(ex.Message))];
-                    reason = enumerationReasons[0];
-                    evidence.Add(new("MUTATION_ENUMERATION_REFUSAL", reason.Message));
-                    goto ScopeEvidence;
+                    var captured = evidence[snapshotEvidenceIndex];
+                    evidence[snapshotEvidenceIndex] = captured with
+                    {
+                        Diagnostics = (captured.Diagnostics ?? [])
+                            .Where(value => !value.StartsWith("dependencyFingerprint=",
+                                StringComparison.Ordinal))
+                            .Append("dependencyFingerprint=" +
+                                (dependency.Sha256.StartsWith("sha256:", StringComparison.Ordinal)
+                                    ? dependency.Sha256
+                                    : "sha256:" + dependency.Sha256)).ToArray()
+                    };
                 }
-                var enumeration = StrictMutationEnumerator.Enumerate(snapshot, checkConfiguration,
-                    scopePlan, cancellationToken, sdkVersion);
-                if (!enumeration.IsComplete)
+                evidence.AddRange(execution.Evidence);
+                if (exactIdRequest)
                 {
-                    enumerationReasons = enumeration.Reasons;
-                    reason = enumeration.Reasons.FirstOrDefault() ?? new("ENUMERATION_CONTEXT_UNSUPPORTED",
-                        "Strict semantic enumeration could not prove one complete candidate set.");
-                    evidence.Add(new("MUTATION_ENUMERATION_REFUSAL", reason.Message,
-                        enumeration.Reasons.Select(item => BoundDiagnostic(
-                            $"{item.Code}: {item.Message}")).Take(20).ToArray()));
-                }
-                else
-                {
-                    semanticContextIdentity = enumeration.SemanticContextIdentity ??
-                        throw new EvaluationContractException(
-                            "Complete semantic enumeration requires one context identity.");
-                    try
+                    var counters = new[]
                     {
-                        fingerprintMaterial = BuildEvaluationFingerprintMaterial(snapshot,
-                            snapshotId!, scopePlan, checkConfiguration.Policy, semanticContextIdentity,
-                            sdkVersion);
-                    }
-                    catch (Exception ex) when (!IsFatal(ex))
-                    {
-                        enumerationReasons =
-                            [new("ENUMERATION_FINGERPRINT_UNAVAILABLE", Bound(ex.Message))];
-                        reason = enumerationReasons[0];
-                        evidence.Add(new("MUTATION_FINGERPRINT_REFUSAL", reason.Message));
-                        goto ScopeEvidence;
-                    }
-                    BoundMutationPlan bound;
-                    try { bound = MutationSelection.Bind(enumeration.Candidates, fingerprintMaterial); }
-                    catch (Exception ex) when (ex is ArgumentException or EvaluationContractException)
-                    {
-                        enumerationReasons =
-                            [new("ENUMERATION_FINGERPRINT_INVALID", Bound(ex.Message))];
-                        reason = enumerationReasons[0];
-                        evidence.Add(new("MUTATION_FINGERPRINT_REFUSAL", reason.Message));
-                        goto ScopeEvidence;
-                    }
-                    MutationSelectionPlan mutationPlan;
-                    try
-                    {
-                        mutationPlan = exactIdRequest
-                            ? MutationSelection.PlanTargeted(bound, exactMutationIds,
-                                options.PlanFingerprint ?? string.Empty, fingerprintMaterial)
-                            : MutationSelection.Plan(bound, fingerprintMaterial);
-                    }
-                    catch (EvaluationContractException ex)
-                    {
-                        enumerationReasons =
-                            [new("TARGET_SELECTION_INVALID", Bound(ex.Message))];
-                        reason = enumerationReasons[0];
-                        evidence.Add(new("MUTATION_SELECTION_REFUSAL", reason.Message));
-                        goto ScopeEvidence;
-                    }
-                    var issued = mutationPlan.CreatePendingLedger();
-                    enumerationReasons = mutationPlan.IncompleteConditions;
-                    reportUnits = issued.Select(unit => unit.Disposition == UnitDisposition.Pending
-                        ? unit.Complete(UnitDisposition.Omitted,
-                            [new("EXECUTION_NOT_IMPLEMENTED",
-                                "Canonical mutation enumeration completed, but strict mutant execution is not integrated.")])
-                        : unit).ToArray();
-                    enumerationCount = issued.Count;
-                    reason = new("EXECUTION_NOT_IMPLEMENTED",
-                        "Canonical mutation enumeration completed, but strict baseline and mutant execution belongs to issue #3.");
-                    evidence.Add(new("MUTATION_PLAN",
-                        $"Bound {enumeration.Candidates.Count} evaluation unit(s); " +
-                        $"selected {mutationPlan.Selected.Count} and omitted {mutationPlan.Omitted.Count}.",
-                        [$"evaluationFingerprint={bound.EvaluationFingerprint}",
-                         $"planFingerprint={bound.PlanFingerprint}",
-                         $"selectionFingerprint={mutationPlan.PlanFingerprint}"]));
-                    if (exactIdRequest)
-                        evidence.Add(new("EXACT_ID_REQUEST",
-                            $"Freshly bound {exactMutationIds.Count} requested mutation ID(s) for diagnostic execution.",
-                            exactMutationIds.Take(100).Concat([
-                                "planFingerprint=" + bound.PlanFingerprint]).ToArray()));
+                        $"executed={reportUnits.Count(item => item.Disposition is not (UnitDisposition.Omitted or UnitDisposition.Uncovered or UnitDisposition.Pending))}",
+                        $"omitted={reportUnits.Count(item => item.Disposition == UnitDisposition.Omitted)}"
+                    };
+                    evidence.Add(new("EXACT_ID_REQUEST",
+                        $"Freshly bound {exactMutationIds.Count} diagnostic mutation ID(s); " +
+                        "terminal dispositions are recorded in the unit ledger.",
+                        EvaluationEvidence.BoundDiagnostics(exactMutationIds, counters,
+                            "ids-truncated")));
                 }
             }
-ScopeEvidence:
-            if (exactIdRequest && reason.Code != "EXECUTION_NOT_IMPLEMENTED" &&
-                evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
-            {
-                enumerationReasons = enumerationReasons.Concat([
-                    new EvaluationReason("EXACT_ID_RERUN_UNAVAILABLE",
-                        "Exact-ID reruns require a freshly bound complete semantic enumeration plan.")
-                ]).Distinct().ToArray();
-                evidence.Add(new("EXACT_ID_REQUEST",
-                    $"Refused {exactMutationIds.Count} exact mutation ID request(s) without a complete bound plan.",
-                    exactMutationIds.Take(100).ToArray()));
-            }
-            evidence.Add(new("SCOPE_PLAN",
-                $"Scope plan v{scopePlan.SchemaVersion}: {scopePlan.Files.Count} file(s), " +
-                $"{scopePlan.ProjectUnits.Count} project unit(s), {scopePlan.Exclusions.Count} exclusion(s).",
-                scopePlan.Reasons.Select(item => BoundDiagnostic($"{item.Code}: {item.Message}"))
+        }
+        catch (StrictExecutionRefusalException ex)
+        {
+            reason = ex.Reason;
+            enumerationReasons = ex.Reasons;
+            evidence.Add(new("STRICT_EXECUTION_REFUSAL", reason.Message,
+                ex.Reasons.Select(item => BoundDiagnostic($"{item.Code}: {item.Message}"))
                     .Take(20).ToArray()));
         }
         catch (SnapshotCaptureException ex)
         {
             reason = SnapshotFailure(ex);
-            evidence.Add(new(SnapshotEvidenceKind(ex), Bound(ex.Message)));
+            enumerationReasons = PreservedFailureReasons(reason, [], ex);
+            AddSnapshotFailureEvidence(evidence, ex);
         }
         catch (OperationCanceledException)
         {
@@ -256,6 +207,24 @@ ScopeEvidence:
             evidence.Add(new("SNAPSHOT_VALIDATION_FAILURE", Bound($"{ex.GetType().Name}: {ex.Message}")));
         }
 
+        if (exactIdRequest && reason.Code != "FINALIZATION_PENDING" &&
+            evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
+        {
+            enumerationReasons = enumerationReasons.Concat([
+                new EvaluationReason("EXACT_ID_RERUN_UNAVAILABLE",
+                    "Exact-ID reruns require a freshly bound complete semantic enumeration plan.")
+            ]).Distinct().ToArray();
+            evidence.Add(new("EXACT_ID_REQUEST",
+                $"Refused {exactMutationIds.Count} exact mutation ID request(s) without a complete bound plan.",
+                EvaluationEvidence.BoundDiagnostics(exactMutationIds,
+                    truncationLabel: "ids-truncated")));
+        }
+        evidence.Add(new("SCOPE_PLAN",
+            $"Scope plan v{scopePlan.SchemaVersion}: {scopePlan.Files.Count} file(s), " +
+            $"{scopePlan.ProjectUnits.Count} project unit(s), {scopePlan.Exclusions.Count} exclusion(s).",
+            scopePlan.Reasons.Select(item => BoundDiagnostic($"{item.Code}: {item.Message}"))
+                .Take(20).ToArray()));
+
         try
         {
             if (snapshot is not null)
@@ -263,40 +232,46 @@ ScopeEvidence:
                 try { await snapshot.ValidateOriginalAsync(cancellationToken); }
                 catch (SnapshotCaptureException ex)
                 {
+                    var previousReason = reason;
+                    var previousReasons = enumerationReasons;
                     reason = SnapshotFailure(ex);
-                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
-                    evidence.Add(new(SnapshotEvidenceKind(ex), Bound(ex.Message)));
+                    InvalidateSnapshotExecutionEvidence(evidence, ref baseline, ref reportSuites);
+                    AddSnapshotFailureEvidence(evidence, ex);
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
-                    enumerationReasons = [];
+                    enumerationReasons = PreservedFailureReasons(previousReason, previousReasons, ex);
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot divergence."));
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException ex)
                 {
+                    var previousReason = reason;
+                    var previousReasons = enumerationReasons;
                     reason = new("SNAPSHOT_CANCELLED", "Immutable capture validation was cancelled.");
-                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
+                    InvalidateSnapshotExecutionEvidence(evidence, ref baseline, ref reportSuites);
                     evidence.Add(new("SNAPSHOT_CANCELLATION",
                         "Cancellation was observed before report publication."));
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
-                    enumerationReasons = [];
+                    enumerationReasons = PreservedFailureReasons(previousReason, previousReasons, ex);
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot cancellation."));
                 }
                 catch (Exception ex)
                 {
+                    var previousReason = reason;
+                    var previousReasons = enumerationReasons;
                     reason = new("SNAPSHOT_VALIDATION_FAILED",
                         "Immutable capture failed closed during native or runtime validation.");
-                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
+                    InvalidateSnapshotExecutionEvidence(evidence, ref baseline, ref reportSuites);
                     evidence.Add(new("SNAPSHOT_VALIDATION_FAILURE",
                         Bound($"{ex.GetType().Name}: {ex.Message}")));
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
-                    enumerationReasons = [];
+                    enumerationReasons = PreservedFailureReasons(previousReason, previousReasons, ex);
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot validation failure."));
                 }
@@ -323,24 +298,45 @@ ScopeEvidence:
                 try { await snapshot.DisposeAsync(); }
                 catch (Exception ex)
                 {
+                    var previousReason = reason;
+                    var previousReasons = enumerationReasons;
                     reason = new("SNAPSHOT_CLEANUP_FAILED",
                         "The immutable capture could not be cleaned up safely.");
-                    evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or "MUTATION_PLAN");
-                    evidence.Add(new("SNAPSHOT_CLEANUP", Bound(ex.Message)));
+                    InvalidateSnapshotExecutionEvidence(evidence, ref baseline, ref reportSuites);
+                    if (ex is SnapshotCaptureException snapshotFailure)
+                    {
+                        AddSnapshotFailureEvidence(evidence, snapshotFailure);
+                    }
+                    else
+                    {
+                        evidence.Add(new("SNAPSHOT_CLEANUP", Bound(ex.Message)));
+                    }
+                    enumerationReasons = PreservedFailureReasons(previousReason, previousReasons, ex);
                     snapshotId = null;
                     enumerationCount = null;
                     reportUnits = [];
-                    enumerationReasons = [];
                     scopePlan = ScopePlan.Empty(selection.Kind, ".", null,
                         new EvaluationReason("SCOPE_UNAVAILABLE", "Scope plan was invalidated by snapshot cleanup failure."));
                 }
                 snapshot = null;
             }
+            if (exactIdRequest && reason.Code != "FINALIZATION_PENDING" &&
+                evidence.All(item => item.Kind != "EXACT_ID_REQUEST"))
+            {
+                enumerationReasons = enumerationReasons.Concat([
+                    new EvaluationReason("EXACT_ID_RERUN_UNAVAILABLE",
+                        "Exact-ID reruns require a freshly bound complete semantic enumeration plan.")
+                ]).Distinct().ToArray();
+                evidence.Add(new("EXACT_ID_REQUEST",
+                    $"Refused {exactMutationIds.Count} exact mutation ID request(s) without a complete bound plan.",
+                    EvaluationEvidence.BoundDiagnostics(exactMutationIds,
+                        truncationLabel: "ids-truncated")));
+            }
             var incompleteConditions = new List<EvaluationReason> { reason };
             incompleteConditions.AddRange(enumerationReasons);
             incompleteConditions.AddRange(scopePlan.Reasons.Concat(scopePlan.Files.SelectMany(file => file.Reasons))
                 .Where(item => ScopePlanner.IsBlockingCode(item.Code)));
-            var facts = new EvaluationFacts(BaselineStatus.Unknown, enumerationCount, reportUnits,
+            var facts = new EvaluationFacts(baseline, enumerationCount, reportUnits,
                 checkConfiguration?.Policy.AllowNotApplicable ?? false,
                 incompleteConditions.Distinct().ToArray());
             var decision = EvaluationReducer.Reduce(facts);
@@ -348,7 +344,7 @@ ScopeEvidence:
             var report = new EvaluationReport("1", runId, DateTimeOffset.UtcNow,
                 options.Plan ? "plan" : "check", selection, scopePlan,
                 checkConfiguration?.Policy ?? EvaluationReport.DefaultPolicy,
-                facts.Baseline, [], facts.Units, decision.Counts, facts.IncompleteConditions,
+                facts.Baseline, reportSuites, facts.Units, decision.Counts, facts.IncompleteConditions,
                 decision.Reasons, reportEvidence, decision.Outcome, decision.ExitCode);
             SidecarStore? sidecarStore = null;
             if (!options.NoState && !options.Plan && !exactIdRequest && stateRoot is not null && snapshotId is not null &&
@@ -514,6 +510,8 @@ ScopeEvidence:
             "The immutable capture could not be cleaned up safely."),
         SnapshotEnvironmentException => new("SNAPSHOT_ENVIRONMENT",
             "Immutable capture could not create or write its private staging environment."),
+        ExecutionBoundaryIntegrityException => new("EXECUTION_BOUNDARY_INTEGRITY",
+            "Execution escaped or changed a frozen private workspace or dependency boundary."),
         SnapshotDivergedException => new("SNAPSHOT_DIVERGED", "Inputs diverged during or after immutable capture."),
         SnapshotLimitException => new("SNAPSHOT_LIMIT", "Immutable capture exceeded a configured safety bound."),
         _ => new("SNAPSHOT_REFUSED", "Immutable capture refused an unsupported or unsafe input.")
@@ -523,11 +521,81 @@ ScopeEvidence:
     {
         SnapshotCleanupException => "SNAPSHOT_CLEANUP",
         SnapshotEnvironmentException => "SNAPSHOT_ENVIRONMENT",
+        ExecutionBoundaryIntegrityException => "EXECUTION_BOUNDARY_INTEGRITY",
+        SnapshotDivergedException => "SNAPSHOT_DIVERGENCE",
+        SnapshotLimitException => "SNAPSHOT_LIMIT",
         _ => "SNAPSHOT_REFUSAL"
     };
 
-    private static string Bound(string value) => value.Length <= 1024 ? value : value[..1024];
-    private static string BoundDiagnostic(string value) => value.Length <= 512 ? value : value[..512];
+    internal static IReadOnlyList<EvaluationReason> PreservedFailureReasons(
+        EvaluationReason currentReason, IReadOnlyList<EvaluationReason> existingReasons,
+        Exception latestFailure)
+    {
+        ArgumentNullException.ThrowIfNull(currentReason);
+        ArgumentNullException.ThrowIfNull(existingReasons);
+        ArgumentNullException.ThrowIfNull(latestFailure);
+        return existingReasons.Prepend(currentReason).Where(IsIntegrityFailure)
+            .Concat(FailureChain(latestFailure).Skip(1).SelectMany(FailureReasons))
+            .Distinct().ToArray();
+    }
+
+    internal static IReadOnlyList<EvaluationEvidence> PreservedFailureEvidence(Exception failure)
+    {
+        ArgumentNullException.ThrowIfNull(failure);
+        return FailureChain(failure).SelectMany(FailureEvidence).Distinct().ToArray();
+    }
+
+    private static void AddSnapshotFailureEvidence(List<EvaluationEvidence> evidence,
+        SnapshotCaptureException exception)
+    {
+        foreach (var item in PreservedFailureEvidence(exception))
+            if (!evidence.Contains(item)) evidence.Add(item);
+    }
+
+    private static IEnumerable<Exception> FailureChain(Exception exception)
+    {
+        Exception? current = exception;
+        for (var depth = 0; current is not null && depth < 16; depth++)
+        {
+            yield return current;
+            current = current is SnapshotCleanupException { OriginalFailure: { } original } ? original : null;
+        }
+    }
+
+    private static IEnumerable<EvaluationReason> FailureReasons(Exception failure) => failure switch
+    {
+        SnapshotCaptureException snapshot => [SnapshotFailure(snapshot)],
+        StrictExecutionRefusalException refusal => refusal.Reasons,
+        _ => []
+    };
+
+    private static IEnumerable<EvaluationEvidence> FailureEvidence(Exception failure) => failure switch
+    {
+        SnapshotCaptureException snapshot =>
+            [new EvaluationEvidence(SnapshotEvidenceKind(snapshot), Bound(snapshot.Message))],
+        StrictExecutionRefusalException refusal =>
+            [new EvaluationEvidence("STRICT_EXECUTION_REFUSAL", refusal.Reason.Message,
+                EvaluationEvidence.BoundDiagnostics(refusal.Reasons.Select(item =>
+                    $"{item.Code}: {item.Message}")))],
+        _ => []
+    };
+
+    private static bool IsIntegrityFailure(EvaluationReason reason) => reason.Code is
+        "EXECUTION_BOUNDARY_INTEGRITY" or "SNAPSHOT_DIVERGED" or "SNAPSHOT_LIMIT";
+
+    private static void InvalidateSnapshotExecutionEvidence(List<EvaluationEvidence> evidence,
+        ref BaselineStatus baseline, ref IReadOnlyList<SuiteEvidence> reportSuites)
+    {
+        baseline = BaselineStatus.Unknown;
+        reportSuites = [];
+        evidence.RemoveAll(item => item.Kind is "INPUT_SNAPSHOT" or "SCOPE_PLAN" or
+            "MUTATION_PLAN" or "DEPENDENCY_INPUT" or "EXACT_ID_REQUEST");
+    }
+
+    private static string Bound(string value) =>
+        EvaluationTextBounds.Prefix(value, EvaluationReason.MaxMessageLength);
+    private static string BoundDiagnostic(string value) =>
+        EvaluationTextBounds.Prefix(value, EvaluationEvidence.MaxDiagnosticLength);
 
     private static bool IsFatal(Exception exception) =>
         exception is OutOfMemoryException or StackOverflowException or AccessViolationException;
@@ -553,20 +621,30 @@ ScopeEvidence:
         };
     }
 
-    private static EvaluationFingerprintMaterial BuildEvaluationFingerprintMaterial(
+    internal static EvaluationFingerprintMaterial BuildEvaluationFingerprintMaterial(
         InputSnapshot snapshot, string snapshotId, ScopePlan scopePlan, EvaluationPolicy policy,
-        string semanticContextIdentity, string sdkVersion)
+        string semanticContextIdentity, string sdkVersion,
+        FrozenExecutionEnvironment? environment = null,
+        IReadOnlyList<SuiteExecution>? suites = null)
     {
         var inputs = snapshot.Files.Select(file => new FingerprintInput(Classify(file.RelativePath),
-            file.RelativePath, file.Length, file.Sha256, file.Exists, file.IsTracked)).ToArray();
+            file.RelativePath, file.Length, file.Sha256, file.Exists, file.IsTracked)).ToList();
+        if (environment is not null)
+            inputs.Add(new("dependency", ".mutate4csharp/frozen-dependencies", 0,
+                environment.Fingerprint, true, false));
         var scope = ReportWriter.SerializeCanonicalScope(scopePlan);
         var runtimeIdentity = $"framework={RuntimeInformation.FrameworkDescription};" +
             $"rid={RuntimeInformation.RuntimeIdentifier};os={RuntimeInformation.OSDescription};" +
             $"osArch={RuntimeInformation.OSArchitecture};processArch={RuntimeInformation.ProcessArchitecture}";
+        var runnerIdentity = suites is null ? "runner:not-executed" :
+            "strict-vstest-coverlet-v1:" + MutationIdentity.ComputeDigest("runner-suites",
+                suites.OrderBy(item => item.Identity, StringComparer.Ordinal)
+                    .Select((item, index) => ($"suite.{index}", item.Identity)).ToArray());
         return new EvaluationFingerprintMaterial(inputs, snapshotId, scope,
             $"strict-configuration-contract-v2;semantic={semanticContextIdentity}",
             EvaluationFingerprint.ToolIdentity(typeof(EvaluationCoordinator).Assembly), "operator-registry-v1",
-            $"dotnet-sdk={sdkVersion}", runtimeIdentity, "runner:not-executed",
+            $"dotnet-sdk={sdkVersion};dependencies={environment?.Fingerprint ?? "not-prepared"}",
+            runtimeIdentity, runnerIdentity,
             policy, ProvenanceComplete: false);
 
         static string Classify(string path)

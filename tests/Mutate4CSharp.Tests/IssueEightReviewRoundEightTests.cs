@@ -180,7 +180,7 @@ public sealed class IssueEightReviewRoundEightTests : IDisposable
         Assert.Contains("DOTNET_STARTUP_HOOKS", script, StringComparison.Ordinal);
         Assert.Contains("DOTNET_ADDITIONAL_DEPS", script, StringComparison.Ordinal);
         Assert.Contains("runtime_version", script, StringComparison.Ordinal);
-        Assert.Contains("EXECUTION_NOT_IMPLEMENTED", script, StringComparison.Ordinal);
+        Assert.Contains("FINALIZATION_PENDING", script, StringComparison.Ordinal);
         Assert.Contains("exitCode", script, StringComparison.Ordinal);
         Assert.Contains("outcome", script, StringComparison.Ordinal);
         Assert.Contains("73", docs, StringComparison.Ordinal);
@@ -352,7 +352,7 @@ public sealed class IssueEightReviewRoundEightTests : IDisposable
         Directory.CreateDirectory(sdk);
         File.Copy(Path.Combine(RepositoryRoot, "global.json"), Path.Combine(sdk, "global.json"), overwrite: true);
         await File.WriteAllTextAsync(package, "package", TestContext.Current.CancellationToken);
-        var body = checkBody ?? "printf '%s\\n' '{\"schemaVersion\":\"1\",\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"EXECUTION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":0}}' > \"$5\"\nexit 4";
+        var body = checkBody ?? "printf '%s\\n' '{\"schemaVersion\":\"1\",\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":0}}' > \"$5\"\nexit 4";
         await WriteExecutableAsync(command, $"#!/usr/bin/env bash\nif [[ ${{1:-}} = --version ]]; then echo '{version}+{toolCommit}'; exit 0; fi\n{body}\n");
         var runtime = (await RunAsync(sdk, DotnetHost(), "--version")).StandardOutput.Trim();
         await File.WriteAllTextAsync(receipt, $"format\tmutate4csharp-agent-gate-v3\nlocal_tool_version\t{version}\ntool_package\t{package}\ntool_payload\t{payload}\nruntime_version\t{runtime}\ndotnet_host\t{CanonicalDotnetHost()}\n", TestContext.Current.CancellationToken);

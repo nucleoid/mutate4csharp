@@ -52,11 +52,11 @@ Strict checks now capture bounded current working-tree bytes, validate `mutate4c
 change-scope plan and, for the supported captured project boundary, canonical mutation and evaluation-unit IDs. Git mode compares the once-resolved direct base commit (never a merge base) with
 captured working-tree bytes, including staged, unstaged, and eligible untracked changes without
 duplicating paths. Explicit repeated inputs also work outside Git for scope planning, but strict semantic enumeration
-requires a Git-backed project snapshot. Suite orchestration, bounded scheduling,
-and fail-closed aggregate contracts are implemented, but strict execution is not yet connected.
-Public strict `check` can never produce `PASS` or `FAIL` at this integration boundary. A supported capture publishes
-the bound nonzero or known-zero enumeration, then returns exit `4` with `INCOMPLETE` and the
-`EXECUTION_NOT_IMPLEMENTED` incomplete condition. Unsupported semantic contexts publish precise enumeration
+requires a Git-backed project snapshot. Suite orchestration prepares frozen dependencies, runs fresh
+baseline/coverage evidence, and executes selected mutants in isolated clones with bounded scheduling.
+Public strict `check` cannot produce `PASS` until final verification is connected. A supported capture publishes
+the bound nonzero or known-zero enumeration and observed unit evidence, then returns exit `4` with `INCOMPLETE`
+and the `FINALIZATION_PENDING` incomplete condition. Unsupported semantic contexts publish precise enumeration
 refusals with an unknown count. Usage rejection,
 snapshot refusal, and exception paths differ and may not reach enumeration or report publication. The strict interface writes an
 atomic JSON report and uses fail-closed outcomes. Its report schema,

@@ -2,6 +2,16 @@ using System.Xml.Linq;
 
 namespace Mutate4CSharp;
 
+internal sealed class TrxAccountingException : Exception
+{
+    public TrxAccountingException(string path, Exception innerException) :
+        base($"Failed to read TRX membership from '{Path.GetFileName(path)}': {innerException.Message}",
+            innerException) { }
+
+    public TrxAccountingException(string path, string message) :
+        base($"Failed to account TRX membership from '{Path.GetFileName(path)}': {message}") { }
+}
+
 internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutionEnvironment environment,
     TimeProvider? timeProvider = null) : ISuiteExecutor
 {
@@ -59,11 +69,16 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                     linked.Token, ExecutionEnvironment.ProcessEnvironment(packages.Root), noRestore: true,
                     requireExecutionBoundary: true, framework: suite.Framework, configuration: suite.Configuration);
                 if (!string.Equals(environment.PackageFingerprint,
-                        ExecutionEnvironment.FingerprintPackages(packages.Root), StringComparison.Ordinal))
-                    throw new SnapshotDivergedException("Baseline execution changed the frozen package cache.");
+                        ExecutionEnvironment.FingerprintPackages(packages.Root,
+                            cancellationToken: linked.Token), StringComparison.Ordinal))
+                    throw new ExecutionBoundaryIntegrityException(
+                        "Baseline execution changed its private frozen package-cache copy.");
                 var disposition = ClassifyBaseline(run);
+                var rawCoverage = TestRunner.FindCoverage(results);
+                var coverageMap = disposition == SuiteRunDisposition.Passed
+                    ? CoverageMap.Load(rawCoverage, worker) : null;
                 coverage = disposition == SuiteRunDisposition.Passed
-                    ? await PreserveOpenCoverReportsAsync(TestRunner.FindCoverage(results),
+                    ? await PreserveOpenCoverReportsAsync(rawCoverage,
                         $"baseline-{Sanitize(suite.Aliases[0])}") : null;
                 var diagnostics = BaselineDiagnostics(run, disposition == SuiteRunDisposition.Passed &&
                     coverage is null).ToList();
@@ -71,14 +86,20 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                     diagnostics.Add(CoverageInventory(results));
                 completed = new(disposition, _timeProvider.GetUtcNow() - started, AccountedMembers(run.TrxPaths),
                     run.FailedTestIds ?? [], diagnostics.Take(20).ToArray(), coverage?.Reports ?? [])
-                    { CoverageOwner = coverage };
+                    {
+                        CoverageOwner = coverage,
+                        CoverageMap = coverageMap,
+                        CoverageSha256 = coverage is null ? null : HashReports(coverage.Reports),
+                        CoverageLength = coverage?.Reports.Sum(path => new FileInfo(path).Length) ?? 0,
+                        HealthyControl = disposition == SuiteRunDisposition.Passed
+                    };
             }
             catch (Exception ex) { failure = ex; }
 
             try { await AsyncDisposal.DisposeAllAsync([packages, worker]); }
             catch (Exception cleanupFailure)
             {
-                failure = failure is null ? cleanupFailure : new SnapshotCleanupException(failure, cleanupFailure);
+                failure = AsyncDisposal.CombineFailure(failure, cleanupFailure);
             }
 
             if (failure is not null)
@@ -88,7 +109,7 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                     try { await coverage.DisposeAsync(); }
                     catch (Exception cleanupFailure)
                     {
-                        failure = new SnapshotCleanupException(failure, cleanupFailure);
+                        failure = AsyncDisposal.CombineFailure(failure, cleanupFailure);
                     }
                 }
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
@@ -115,7 +136,7 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
         {
             var bounded = string.Join(' ', (value ?? string.Empty).Split((char[]?)null,
                 StringSplitOptions.RemoveEmptyEntries));
-            if (bounded.Length > 512) bounded = bounded[..512];
+            bounded = EvaluationTextBounds.Suffix(bounded, EvaluationEvidence.MaxDiagnosticLength);
             if (bounded.Length > 0) diagnostics.Add(bounded);
         }
         return diagnostics.Take(20).ToArray();
@@ -129,10 +150,10 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
             : [];
         var value = "Coverage output was missing; result files: " +
             (files.Length == 0 ? "<none>" : string.Join(", ", files));
-        return value.Length <= 512 ? value : value[..512];
+        return EvaluationTextBounds.Prefix(value, EvaluationEvidence.MaxDiagnosticLength);
     }
 
-    private static IReadOnlyList<string> AccountedMembers(IReadOnlyList<string> trxPaths)
+    internal static IReadOnlyList<string> AccountedMembers(IReadOnlyList<string> trxPaths)
     {
         var members = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var path in trxPaths)
@@ -140,17 +161,20 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
             try
             {
                 var document = XDocument.Load(path);
-                foreach (var storage in document.Descendants().Where(item => item.Name.LocalName == "UnitTest")
-                             .Select(item => item.Attribute("storage")?.Value)
-                             .Where(value => !string.IsNullOrWhiteSpace(value)))
+                var unitTests = document.Descendants()
+                    .Where(item => item.Name.LocalName == "UnitTest").ToArray();
+                if (unitTests.Any(item => string.IsNullOrWhiteSpace(item.Attribute("storage")?.Value)))
+                    throw new TrxAccountingException(path,
+                        "one or more UnitTest definitions did not declare storage.");
+                foreach (var storage in unitTests.Select(item => item.Attribute("storage")!.Value))
                 {
-                    var member = Path.GetFileName(storage!.Replace('\\', Path.DirectorySeparatorChar));
+                    var member = Path.GetFileName(storage.Replace('\\', Path.DirectorySeparatorChar));
                     if (!string.IsNullOrWhiteSpace(member)) members.Add(member);
                 }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Xml.XmlException)
             {
-                return [];
+                throw new TrxAccountingException(path, ex);
             }
         }
         return members.ToArray();
@@ -182,6 +206,21 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
             }
             throw;
         }
+    }
+
+    private static string HashReports(IReadOnlyList<string> reports)
+    {
+        using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(
+            System.Security.Cryptography.HashAlgorithmName.SHA256);
+        Span<byte> length = stackalloc byte[8];
+        foreach (var path in reports.OrderBy(value => value, StringComparer.Ordinal))
+        {
+            var bytes = File.ReadAllBytes(path);
+            System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(length, bytes.LongLength);
+            hash.AppendData(length);
+            hash.AppendData(bytes);
+        }
+        return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
     }
 
     private static string Sanitize(string value)

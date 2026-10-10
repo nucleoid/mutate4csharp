@@ -209,6 +209,8 @@ public sealed class LegacyStateTrustTests : IDisposable
               }]
             }
             """);
+        repository.WriteText("NuGet.Config",
+            "<configuration><packageSources><clear /></packageSources></configuration>\n");
         repository.Git("add", ".");
         repository.Git("commit", "-m", "configured fixture");
         repository.WriteText("src/App/Flag.cs",
@@ -226,7 +228,7 @@ public sealed class LegacyStateTrustTests : IDisposable
 
             Assert.Null(result.Report.Counts.Enumerated);
             Assert.Contains(result.Report.IncompleteConditions,
-                reason => reason.Code == "ENUMERATION_SDK_UNAVAILABLE");
+                reason => reason.Code == "EXECUTION_ENVIRONMENT_UNAVAILABLE");
         }
         finally
         {

@@ -298,7 +298,7 @@ internal static class ProcessTree
     }
 
     private static string BoundDiagnostic(string value, int maximum) =>
-        value.Length <= maximum ? value : value[..maximum];
+        EvaluationTextBounds.Prefix(value, maximum);
 
     private static string ReadSetSidHelp(string executable)
     {
@@ -623,12 +623,13 @@ internal sealed record DependencyPreparationOptions(TimeSpan Timeout, int MaxFil
 
 internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string packageRoot,
     string graphRoot, string fingerprint, string packageFingerprint, string? configRelativePath,
-    string? generatedConfigPath) : IAsyncDisposable
+    string? generatedConfigPath, string sdkVersion) : IAsyncDisposable
 {
     public string PackageRoot { get; } = packageRoot;
     public string GraphRoot { get; } = graphRoot;
     public string Fingerprint { get; } = fingerprint;
     public string PackageFingerprint { get; } = packageFingerprint;
+    public string SdkVersion { get; } = sdkVersion;
 
     public async Task<OwnedPackageCache> CreateWorkerPackageCacheAsync(string purpose,
         CancellationToken cancellationToken)
@@ -661,7 +662,8 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
             var destination = Path.Combine(worker.Root, Path.GetRelativePath(GraphRoot, file));
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             if (File.Exists(destination) && !File.ReadAllBytes(destination).SequenceEqual(File.ReadAllBytes(file)))
-                throw new SnapshotCaptureException("Captured package lock differs from the prepared dependency lock.");
+                throw new ExecutionBoundaryIntegrityException(
+                    "Captured package lock differs from the prepared dependency lock.");
             if (!File.Exists(destination)) await SnapshotWorkspace.CopyFileAsync(file, destination, cancellationToken);
         }
         ExecutionEnvironment.ValidateExecutionAncestors(worker.Root);
@@ -689,12 +691,17 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
         {
             var diagnostic = string.Join(' ', new[] { run.StandardError, run.StandardOutput }
                 .SelectMany(value => value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)));
-            if (diagnostic.Length > 2048) diagnostic = diagnostic[..2048];
-            throw new SnapshotCaptureException($"Frozen worker restore failed: {diagnostic}");
+            const string prefix = "Frozen worker restore failed: ";
+            diagnostic = EvaluationTextBounds.Suffix(diagnostic,
+                EvaluationEvidence.MaxDiagnosticLength - prefix.Length);
+            throw new SnapshotCaptureException(prefix + diagnostic);
         }
         ExecutionEnvironment.ValidateResolvedPackageRoots(worker.Root, packages.Root, config);
-        if (!string.Equals(PackageFingerprint, ExecutionEnvironment.FingerprintPackages(packages.Root), StringComparison.Ordinal))
-            throw new SnapshotDivergedException("Worker restore changed the frozen package cache.");
+        if (!string.Equals(PackageFingerprint,
+                ExecutionEnvironment.FingerprintPackages(packages.Root, cancellationToken: cancellationToken),
+                StringComparison.Ordinal))
+            throw new ExecutionBoundaryIntegrityException(
+                "Worker restore changed its private frozen package-cache copy.");
     }
 
     public ValueTask DisposeAsync() => owner.DisposeAsync();
@@ -731,7 +738,8 @@ internal static class ExecutionEnvironment
         var version = sdk.StandardOutput.Trim();
         if (sdk.TimedOut || sdk.ExitCode != 0 || version.Length == 0 ||
             version.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not ('.' or '-' or '+')))
-            throw new SnapshotCaptureException("Could not pin the .NET SDK for the private execution boundary.");
+            throw new ExecutionEnvironmentUnavailableException(
+                "Could not pin the .NET SDK for the private execution boundary.");
         WriteBoundary(Path.Combine(ownedRoot, "Directory.Build.props"), "<Project />\n");
         WriteBoundary(Path.Combine(ownedRoot, "Directory.Build.targets"), "<Project />\n");
         WriteBoundary(Path.Combine(ownedRoot, "Directory.Packages.props"), "<Project />\n");
@@ -746,13 +754,16 @@ internal static class ExecutionEnvironment
     internal static void ValidateExecutionBoundary(string executionRoot)
     {
         var ownedRoot = Directory.GetParent(Path.GetFullPath(executionRoot))?.FullName ??
-            throw new SnapshotCaptureException("Snapshot execution root has no owned parent.");
+            throw new ExecutionBoundaryIntegrityException(
+                "Snapshot execution root has no owned parent.");
         if (!OperatingSystem.IsWindows())
         {
             var mode = File.GetUnixFileMode(ownedRoot);
             var forbidden = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
                             UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
-            if ((mode & forbidden) != 0) throw new SnapshotCaptureException("Snapshot execution parent is not private.");
+            if ((mode & forbidden) != 0)
+                throw new ExecutionBoundaryIntegrityException(
+                    "Snapshot execution parent is not private.");
         }
         foreach (var boundary in new Dictionary<string, string>
                  {
@@ -767,16 +778,19 @@ internal static class ExecutionEnvironment
         {
             var path = Path.Combine(ownedRoot, boundary.Key);
             if (!File.Exists(path) || (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-                throw new SnapshotCaptureException($"Private execution boundary is missing or unsafe: {boundary.Key}");
+                throw new ExecutionBoundaryIntegrityException(
+                    $"Private execution boundary is missing or unsafe: {boundary.Key}");
             if (!string.Equals(File.ReadAllText(path), boundary.Value, StringComparison.Ordinal))
-                throw new SnapshotCaptureException($"Private execution boundary was modified: {boundary.Key}");
+                throw new ExecutionBoundaryIntegrityException(
+                    $"Private execution boundary was modified: {boundary.Key}");
         }
         var global = Path.Combine(ownedRoot, "global.json");
         if (!File.Exists(global) || (File.GetAttributes(global) & FileAttributes.ReparsePoint) != 0)
-            throw new SnapshotCaptureException("Private execution boundary is missing or unsafe: global.json");
+            throw new ExecutionBoundaryIntegrityException(
+                "Private execution boundary is missing or unsafe: global.json");
         for (var ancestor = Directory.GetParent(ownedRoot); ancestor is not null; ancestor = ancestor.Parent)
             if (File.Exists(Path.Combine(ancestor.FullName, ".globalconfig")))
-                throw new SnapshotCaptureException(
+                throw new ExecutionBoundaryIntegrityException(
                     $"Private execution boundary cannot stop inherited .globalconfig: {ancestor.FullName}");
     }
 
@@ -837,15 +851,19 @@ internal static class ExecutionEnvironment
                 Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
                 await SnapshotWorkspace.CopyFileAsync(packageLock, destination, deadline.Token);
             }
-            var packageFingerprint = FingerprintPackages(packages, options.MaxFiles, options.MaxBytes);
-            var graphFingerprint = FingerprintTreeBounded(graphs, options.MaxFiles, options.MaxBytes);
+            var packageFingerprint = FingerprintPackages(packages, options.MaxFiles, options.MaxBytes,
+                deadline.Token);
+            var graphFingerprint = FingerprintTreeBounded(graphs, options.MaxFiles, options.MaxBytes,
+                deadline.Token);
             var sdk = await ProcessTree.RunAsync(dotnet, ["--version"], preparation.Root,
                 TimeSpan.FromSeconds(30), deadline.Token, requireLinuxSessionIsolation: true);
-            if (sdk.ExitCode != 0 || sdk.TimedOut) throw new SnapshotCaptureException("Could not identify the resolved .NET SDK.");
+            if (sdk.ExitCode != 0 || sdk.TimedOut)
+                throw new ExecutionEnvironmentUnavailableException(
+                    "Could not identify the resolved .NET SDK.");
             var identity = HashStrings("dependencies-v1", snapshot.Identity.CaptureId, sdk.StandardOutput.Trim(),
                 packageFingerprint, graphFingerprint);
             return new(owner, packages, graphs, identity, packageFingerprint,
-                configRelativePath, null);
+                configRelativePath, null, sdk.StandardOutput.Trim());
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
         {
@@ -930,10 +948,12 @@ internal static class ExecutionEnvironment
         return selectedPath;
     }
 
-    public static string FingerprintTree(string root) => FingerprintTreeBounded(root, int.MaxValue, long.MaxValue);
+    public static string FingerprintTree(string root) =>
+        FingerprintTreeBounded(root, int.MaxValue, long.MaxValue, CancellationToken.None);
 
-    internal static string FingerprintPackages(string root, int maxFiles = int.MaxValue, long maxBytes = long.MaxValue) =>
-        FingerprintTreeBounded(root, maxFiles, maxBytes,
+    internal static string FingerprintPackages(string root, int maxFiles = int.MaxValue,
+        long maxBytes = long.MaxValue, CancellationToken cancellationToken = default) =>
+        FingerprintTreeBounded(root, maxFiles, maxBytes, cancellationToken,
             path => !Path.GetFileName(path).Equals(".nupkg.metadata", StringComparison.OrdinalIgnoreCase));
 
     internal static void ValidateResolvedPackageRoots(string workspaceRoot, string expectedPackageRoot,
@@ -951,7 +971,8 @@ internal static class ExecutionEnvironment
         {
             using var assets = JsonDocument.Parse(File.ReadAllBytes(assetsPath));
             if (!assets.RootElement.TryGetProperty("packageFolders", out var packageFolders))
-                throw new SnapshotCaptureException("Resolved dependency graph did not declare package folders.");
+                throw new ExecutionBoundaryIntegrityException(
+                    "Resolved dependency graph did not declare package folders.");
             var foundExpected = false;
             foreach (var folder in packageFolders.EnumerateObject())
             {
@@ -959,12 +980,13 @@ internal static class ExecutionEnvironment
                     Path.AltDirectorySeparatorChar);
                 if (!string.Equals(actual, expected, OperatingSystem.IsWindows()
                         ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-                    throw new SnapshotCaptureException(
+                    throw new ExecutionBoundaryIntegrityException(
                         $"Resolved dependency graph used an unfrozen package folder: {folder.Name}");
                 foundExpected = true;
             }
             if (!foundExpected)
-                throw new SnapshotCaptureException("Resolved dependency graph did not use the private package folder.");
+                throw new ExecutionBoundaryIntegrityException(
+                    "Resolved dependency graph did not use the private package folder.");
             if (allowedSources is null) continue;
             if (!assets.RootElement.TryGetProperty("project", out var project) ||
                 !project.TryGetProperty("restore", out var restore) ||
@@ -981,14 +1003,15 @@ internal static class ExecutionEnvironment
                         downloads.ValueKind is JsonValueKind.Array or JsonValueKind.Object &&
                         (downloads.ValueKind == JsonValueKind.Object || downloads.GetArrayLength() > 0));
                 if (hasResolvedPackages || hasPackageDownloads)
-                    throw new SnapshotCaptureException("Resolved dependency graph did not declare restore sources.");
+                    throw new ExecutionBoundaryIntegrityException(
+                        "Resolved dependency graph did not declare restore sources.");
                 continue;
             }
             foreach (var source in sources.EnumerateObject())
             {
                 var normalized = NormalizePackageSource(source.Name, workspaceRoot);
                 if (!allowedSources.Contains(normalized) && !IsImplicitRuntimeLibraryPacksSource(normalized))
-                    throw new SnapshotCaptureException(
+                    throw new ExecutionBoundaryIntegrityException(
                         $"Resolved dependency graph used a source outside the selected NuGet.Config: {source.Name}");
             }
         }
@@ -1040,24 +1063,35 @@ internal static class ExecutionEnvironment
     }
 
     private static string FingerprintTreeBounded(string root, int maxFiles, long maxBytes,
-        Func<string, bool>? include = null)
+        CancellationToken cancellationToken, Func<string, bool>? include = null)
     {
         var fullRoot = Path.GetFullPath(root);
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var count = 0;
         long total = 0;
+        var buffer = new byte[81920];
+        cancellationToken.ThrowIfCancellationRequested();
         foreach (var file in Directory.EnumerateFiles(fullRoot, "*", SearchOption.AllDirectories)
                      .Where(path => include?.Invoke(path) != false)
                      .OrderBy(path => Path.GetRelativePath(fullRoot, path), StringComparer.Ordinal))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
-                throw new SnapshotCaptureException("Resolved dependency content contains a link or reparse point.");
+                throw new ExecutionBoundaryIntegrityException(
+                    "Resolved dependency content contains a link or reparse point.");
             if (++count > maxFiles) throw new SnapshotLimitException("Resolved dependency file count exceeds its bound.");
-            var bytes = File.ReadAllBytes(file);
-            checked { total += bytes.Length; }
-            if (total > maxBytes) throw new SnapshotLimitException("Resolved dependency bytes exceed their bound.");
             Append(hash, Path.GetRelativePath(fullRoot, file).Replace('\\', '/'));
-            hash.AppendData(bytes);
+            using var input = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read, buffer.Length,
+                FileOptions.SequentialScan);
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                checked { total += read; }
+                if (total > maxBytes)
+                    throw new SnapshotLimitException("Resolved dependency bytes exceed their bound.");
+                hash.AppendData(buffer, 0, read);
+            }
         }
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
     }
@@ -1148,6 +1182,8 @@ internal static class ExecutionEnvironment
     private static string Tail(params string[] values)
     {
         var lines = string.Join('\n', values).Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        return string.Join(" | ", lines.TakeLast(4)).Trim();
+        const string prefix = "Dependency preparation failed: ";
+        return EvaluationTextBounds.Suffix(string.Join(" | ", lines.TakeLast(4)).Trim(),
+            EvaluationReason.MaxMessageLength - prefix.Length);
     }
 }

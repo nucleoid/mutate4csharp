@@ -136,9 +136,15 @@ internal static class StrictMutationEnumerator
                         if (candidates.Count == maxCandidates)
                             throw new EnumerationContextException("ENUMERATION_LIMIT_EXCEEDED",
                                 $"Semantic enumeration exceeds the bounded limit of {maxCandidates} evaluation units.");
+                        var lineSpan = tree.GetLineSpan(
+                            new Microsoft.CodeAnalysis.Text.TextSpan(site.Start, site.Length));
                         candidates.Add(new(mutation.MutationId, evaluationId, mutation.Material,
                             project.Project, project.TargetFramework, project.ParseContext,
-                            site.Start, site.Length));
+                            site.Start, site.Length, context.Sources[path].Substring(site.Start, site.Length),
+                            lineSpan.StartLinePosition.Line + 1,
+                            lineSpan.StartLinePosition.Character + 1,
+                            lineSpan.EndLinePosition.Line + 1,
+                            lineSpan.EndLinePosition.Character + 1));
                     }
                 }
             }
@@ -807,7 +813,8 @@ internal static class StrictMutationEnumerator
     private static StrictMutationEnumerationResult Refused(string code, string message) =>
         new([], [new(code, Bound(message))], false, null);
 
-    private static string Bound(string value) => value.Length <= 1024 ? value : value[..1024];
+    private static string Bound(string value) =>
+        EvaluationTextBounds.Prefix(value, EvaluationReason.MaxMessageLength);
 
     private static bool IsFatal(Exception exception) =>
         exception is OutOfMemoryException or StackOverflowException or AccessViolationException;
