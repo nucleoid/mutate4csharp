@@ -219,6 +219,17 @@ public sealed class SidecarStoreTests : IDisposable
     }
 
     [Fact]
+    public void InspectionRejectsPreviewSidecarEnvelope()
+    {
+        var (store, report, record, material, plan) = ValidProven();
+        var path = store.PublishProven(record, report, material, plan);
+        var node = JsonNode.Parse(File.ReadAllBytes(path))!.AsObject();
+        node["schemaVersion"] = "1";
+        File.WriteAllText(path, node.ToJsonString());
+        Assert.False(store.ReadProvenForInspection(record.EvaluationFingerprint).IsValid);
+    }
+
+    [Fact]
     public void ProvenPublicationRejectsSnapshotSuiteAndCoverageLengthMismatches()
     {
         var (store, report, record, material, plan) = ValidProven();

@@ -317,6 +317,10 @@ internal sealed class SidecarStore
             record.Counts.FreshUncovered != 0 || record.Counts.Omitted != 0 || record.Counts.Errors != 0 ||
             record.Counts.Survived != 0 || record.Counts.CompileInvalid > record.Counts.Executed)
             throw new EvaluationContractException("Proven state does not match the requested fingerprint.");
+        if (record.Counts.Killed < 1 || record.Counts.CompileInvalid < 0 ||
+            record.Counts.Executed != record.Counts.Killed + record.Counts.CompileInvalid ||
+            record.Counts.Enumerated > 100_000)
+            throw new EvaluationContractException("Proven state lacks bounded nonzero killed accounting.");
         foreach (var coverage in record.Coverage)
             coverage.Validate(expectedFingerprint, record.SnapshotId, record.RunId, coverage.SuiteId);
     }
