@@ -5,7 +5,7 @@ using System.Text.Json;
 
 namespace Mutate4CSharp.Tests;
 
-public sealed class ToolPackagingIntegrationTests : IDisposable
+public sealed partial class ToolPackagingIntegrationTests : IDisposable
 {
     private static readonly string RepositoryRoot = Path.GetFullPath("../../../../../", AppContext.BaseDirectory);
     private static readonly string SourceCommit = GitOutput("rev-parse", "HEAD").Trim();
