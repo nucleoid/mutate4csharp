@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Text.Json;
+using System.Security.Cryptography;
 
 namespace Mutate4CSharp.Tests;
 
@@ -77,6 +78,10 @@ public sealed partial class ToolPackagingIntegrationTests
             var index = (await RunAsync(consumer, "git", "diff", "--cached", "--binary")).StandardOutput;
             var status = (await RunAsync(consumer, "git", "status", "--porcelain=v1", "--untracked-files=all")).StandardOutput;
             Assert.Empty(status);
+            var sourceState = ConsumerFiles(consumer);
+            var indexFlags = (await RunAsync(consumer, "git", "ls-files", "--stage", "-v")).StandardOutput;
+            var head = (await RunAsync(consumer, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
+            var tree = (await RunAsync(consumer, "git", "rev-parse", "HEAD^{tree}")).StandardOutput.Trim();
             JsonDocument? first = null;
             try
             {
@@ -121,12 +126,56 @@ public sealed partial class ToolPackagingIntegrationTests
                     Assert.Equal(index, (await RunAsync(consumer, "git", "diff", "--cached", "--binary")).StandardOutput);
                     Assert.Equal(status, (await RunAsync(consumer, "git", "status", "--porcelain=v1", "--untracked-files=all")).StandardOutput);
                     Assert.Equal(payload, HashDirectory(toolPath));
+                    Assert.Equal(sourceState, ConsumerFiles(consumer));
+                    Assert.Equal(indexFlags, (await RunAsync(consumer, "git", "ls-files", "--stage", "-v")).StandardOutput);
+                    Assert.Equal(head, (await RunAsync(consumer, "git", "rev-parse", "HEAD")).StandardOutput.Trim());
                     if (noState) Assert.False(Directory.Exists(Path.Combine(consumer, ".mutate4csharp")));
+                    SaveCertification(scenario, noState, baseline, head, tree, sourceState, packagePath,
+                        payload, arguments, result.ExitCode, File.ReadAllBytes(reportPath), report.RootElement);
                 }
                 var proof = Path.Combine(consumer, ".mutate4csharp", "proven");
                 Assert.Equal(scenario == "strong", Directory.Exists(proof) && Directory.EnumerateFiles(proof, "*.json").Any());
             }
             finally { first?.Dispose(); }
         }
+    }
+
+    private static string[] ConsumerFiles(string root) => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+        .Select(path => (Path: path, Relative: Path.GetRelativePath(root, path).Replace('\\', '/')))
+        .Where(item => !item.Relative.StartsWith(".git/", StringComparison.Ordinal) &&
+                       !item.Relative.StartsWith(".mutate4csharp/", StringComparison.Ordinal))
+        .Select(item => item.Relative + ":" + Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(item.Path))))
+        .Order(StringComparer.Ordinal).ToArray();
+
+    private static void SaveCertification(string scenario, bool noState, string baseline, string head,
+        string tree, string[] sourceState, string package, string payload, List<string> arguments,
+        int exit, byte[] reportBytes, JsonElement report)
+    {
+        var directory = Environment.GetEnvironmentVariable("MUTATE4CSHARP_CERTIFICATION_DIRECTORY");
+        if (string.IsNullOrEmpty(directory)) return;
+        Directory.CreateDirectory(directory);
+        // This is a sanitized test observation, never a replacement tool report or approved quality baseline.
+        var observation = new
+        {
+            schema = "mutate4csharp-installed-certification-v1", fixture = true, scenario,
+            sourceCommit = SourceCommit, toolVersion = PackageVersion + "+" + SourceCommit,
+            packageSha256 = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(package))),
+            payloadSha256 = payload, baseline, head, tree, noState, exit,
+            argv = arguments.Select((value, index) => index > 0 && arguments[index - 1] == "--report" ? "<external-report>" : value).ToArray(),
+            sourceFiles = sourceState, sourceStateUnchanged = true, indexStatusHeadUnchanged = true,
+            originalReportSha256 = Convert.ToHexStringLower(SHA256.HashData(reportBytes)), originalReportLength = reportBytes.Length,
+            runId = report.GetProperty("runId").GetString(), outcome = report.GetProperty("outcome").GetString(),
+            counts = report.GetProperty("counts"), policy = report.GetProperty("policy"),
+            suites = report.GetProperty("suites"),
+            units = report.GetProperty("units").EnumerateArray().Select(unit => new
+            { unitId = unit.GetProperty("unitId").GetString(), evaluationUnitId = unit.GetProperty("evaluationUnitId").GetString(), disposition = unit.GetProperty("disposition").GetString() }).ToArray(),
+            reasonCodes = report.GetProperty("reasons").EnumerateArray().Select(reason => reason.GetProperty("code").GetString()).ToArray(),
+            incompleteCodes = report.GetProperty("incompleteConditions").EnumerateArray().Select(reason => reason.GetProperty("code").GetString()).ToArray(),
+            limitations = new[] { "Repository-owned fixture; no approved production baseline", "Linux installed workflow; Windows Bash gate uncertified", "Pinned VSTest/xUnit/Coverlet profile" }
+        };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(observation, new JsonSerializerOptions { WriteIndented = true });
+        var path = Path.Combine(directory, scenario + (noState ? "-no-state" : "-default-state") + ".json");
+        File.WriteAllBytes(path, bytes);
+        File.WriteAllText(path + ".sha256", Convert.ToHexStringLower(SHA256.HashData(bytes)) + "\n");
     }
 }

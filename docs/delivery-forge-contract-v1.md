@@ -38,3 +38,11 @@ quality baselines. The supported Bash orchestration profile is Linux with GNU fi
 isolated Python imports and the committed SDK selection. Windows build/real-process tests do not
 certify the Linux Bash adapter on Windows. Consult the supported matrix for collector, Unicode,
 coverage-projection and process-control limits. No public package feed publication is part of this mapping.
+
+The Linux package job retains `mutate4csharp-installed-certification-v1` observations and SHA-256
+sidefiles for each installed fixture invocation. These sanitized observations carry the source/tool,
+package/payload, consumer base/head/tree, argv, source inventory, policy, suite accounting, unit ledger,
+outcome/reason codes and original report hash/length. Their `fixture: true` marker is mandatory:
+they are test evidence, not Forge receipts or approved production quality baselines. Original private
+process logs are not published. A Forge adapter still validates the complete original report and current
+invocation, then creates its own append-only receipt under Delivery Forge #7's policy.

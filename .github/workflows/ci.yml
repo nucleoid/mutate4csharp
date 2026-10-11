@@ -35,7 +35,16 @@ jobs:
           echo "MUTATE4CSHARP_PACKED_FEED=${WORKSPACE}/feed" >> "$GITHUB_ENV"
       - name: local-tool-workflow
         if: runner.os == 'Linux'
+        env:
+          MUTATE4CSHARP_CERTIFICATION_DIRECTORY: ${{ runner.temp }}/mutate4csharp-installed-certification
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~ToolPackagingIntegrationTests" -- xUnit.MaxParallelThreads=1
+      - name: installed-certification-artifacts
+        if: runner.os == 'Linux' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-certification-${{ github.sha }}
+          path: ${{ runner.temp }}/mutate4csharp-installed-certification
+          if-no-files-found: error
       - name: round-seven-shipped-workflow
         if: runner.os == 'Linux'
         shell: bash
