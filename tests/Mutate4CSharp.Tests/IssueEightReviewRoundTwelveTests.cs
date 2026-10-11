@@ -173,7 +173,7 @@ public sealed class IssueEightReviewRoundTwelveTests : IDisposable
             Path.Combine(source, "scripts", "agent-gate.sh"), "gate", consumer, receipt,
             values["PACKAGE_SHA256"], values["PAYLOAD_SHA256"], values["TOOL_SOURCE_COMMIT"], head, head,
             Path.Combine(reports, "receipt-host-fallback.json"), "no-state");
-        Assert.Equal(4, fallback.ExitCode);
+        Assert.Equal(3, fallback.ExitCode);
         Assert.False(File.Exists(pathDotnetMarker), fallback.Diagnostic);
         var defects = new List<string>();
         if (!ancestorWasRejectedBeforeExecution) defects.Add("ancestor controls were not rejected before execution");

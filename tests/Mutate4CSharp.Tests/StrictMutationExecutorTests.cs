@@ -327,13 +327,13 @@ public sealed class StrictMutationExecutorTests : IDisposable
 
         var suites = Assert.IsAssignableFrom<IReadOnlyList<SuiteEvidence>>(method.Invoke(null,
             [new[] { suite }, new Dictionary<string, SuiteBaselineExecution>(StringComparer.Ordinal)
-                { [suite.Identity] = execution }]))!;
+                { [suite.Identity] = execution }, "diagnostic-run", "snapshot-key"]))!;
 
         var evidence = Assert.Single(Assert.Single(suites).Evidence);
         Assert.True(evidence.Diagnostics!.Count <= EvaluationEvidence.MaxDiagnostics);
         Assert.Contains(evidence.Diagnostics, item => item == "accountedMembers=<none>");
         Assert.Contains(evidence.Diagnostics, item => item == "expectedMembers=One.Tests.dll");
-        Assert.Contains(evidence.Diagnostics, item => item.StartsWith("baseline-read-error-",
+        Assert.Contains(evidence.Diagnostics, item => item.StartsWith("diagnostic=baseline-read-error-",
             StringComparison.Ordinal));
         Assert.Contains(evidence.Diagnostics, item => item.StartsWith("diagnostics-truncated=",
             StringComparison.Ordinal));
@@ -480,10 +480,11 @@ public sealed class StrictMutationExecutorTests : IDisposable
         var cancellationToken = TestContext.Current.CancellationToken;
         WriteFixture();
         _repository.WriteText("tests/App.Tests/FlagTests.cs", """
+            using App;
             using Xunit;
             public sealed class FlagTests
             {
-                [Fact] public void WeakTest() => Assert.True(true);
+                [Fact] public void WeakTest() { _ = Flag.Value(); Assert.True(true); }
             }
             """);
         _repository.WriteText("src/App/Flag.cs", """

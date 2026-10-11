@@ -94,13 +94,14 @@ public static class Extensions
         };
         var facts = new EvaluationFacts(BaselineStatus.Green, units.Length, units, false, []);
         var decision = EvaluationReducer.Reduce(facts);
-        var report = EvaluationReport.CreateSynthetic(EvaluationOutcome.Pass, "multi-context", "TEST_FIXTURE") with
+        var fixture = EvaluationReport.CreateSynthetic(EvaluationOutcome.Pass, "multi-context", "TEST_FIXTURE");
+        var report = fixture with
         {
             Baseline = facts.Baseline,
             Units = units,
             Counts = decision.Counts,
             Reasons = decision.Reasons,
-            Evidence = decision.Evidence,
+            Evidence = decision.Evidence.Concat(fixture.Evidence.Where(item => item.Kind is "CHECK_CONFIGURATION" or "INPUT_SNAPSHOT")).ToArray(),
             Outcome = decision.Outcome,
             ExitCode = decision.ExitCode
         };

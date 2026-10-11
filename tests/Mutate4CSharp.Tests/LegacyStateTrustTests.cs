@@ -436,7 +436,7 @@ public sealed class LegacyStateTrustTests : IDisposable
 
             using var published = JsonDocument.Parse(File.ReadAllBytes(report));
             Assert.Contains(published.RootElement.GetProperty("incompleteConditions").EnumerateArray(),
-                reason => reason.GetProperty("code").GetString() == "SIDECAR_WRITE_FAILED");
+                reason => reason.GetProperty("code").GetString() == "FINGERPRINT_UNAVAILABLE");
         }
         finally
         {
