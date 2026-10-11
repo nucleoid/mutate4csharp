@@ -89,7 +89,7 @@ public sealed partial class ToolPackagingIntegrationTests
                     var result = await RunAsync(consumer, command, arguments.ToArray());
                     using var report = JsonDocument.Parse(File.ReadAllBytes(reportPath));
                     var outcome = scenario switch { "strong" => "PASS", "weak" or "uncovered" => "FAIL", "zero" => "NOT_APPLICABLE", _ => "INCOMPLETE" };
-                    var exit = scenario switch { "strong" => 0, "weak" or "uncovered" => 3, "zero" => 5, _ => 2 };
+                    var exit = scenario switch { "strong" => 0, "weak" or "uncovered" => 3, "zero" => 5, "red" or "empty" => 2, _ => 4 };
                     Assert.True(result.ExitCode == exit, scenario + ": " + result.Diagnostic);
                     Assert.Equal(outcome, report.RootElement.GetProperty("outcome").GetString());
                     var counts = report.RootElement.GetProperty("counts");

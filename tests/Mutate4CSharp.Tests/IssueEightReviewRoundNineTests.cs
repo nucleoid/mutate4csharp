@@ -143,6 +143,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
     [InlineData("COVERAGE_MISSING")]
     [InlineData("SUITE_MEMBERS_MISSING")]
     [InlineData("MUTATION_ATTEMPT_OMITTED")]
+    [InlineData("BUDGET_OMITTED")]
     [InlineData("BASELINE_ACCOUNTING_INCOMPLETE")]
     public async Task GateAcceptsValidatedExecutionIncompletenessWithoutAcceptingIntegrityFailures(string code)
     {

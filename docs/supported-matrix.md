@@ -25,6 +25,14 @@ local restore, invocation, strict configuration/scope loading, fresh coverage, a
 The representative changed expression has a surviving mutant, so the complete nonzero ledger returns `FAIL` / exit
 `3`. Separate in-repository fixtures prove an all-killed `PASS`, incomplete execution, and explicit zero-effective
 `NOT_APPLICABLE` reduction.
+
+The installed contract fixture additionally packs a clean exact commit and installs from a single-source
+local feed into an external tool path. Separate clean consumers prove strong-test PASS, weak-test survivor
+FAIL, fresh uncovered FAIL, red/empty baseline INCOMPLETE and genuine zero-site NOT_APPLICABLE, in both
+default-state and no-state modes. It checks source bytes, index/status, payload hash and complete unit counts;
+only the strong fixture publishes proven state. Installed certification runs in the Linux packaging CI job.
+Windows real-process CI covers the strict implementation; it does not certify the Bash gate or installed
+contract fixture on Windows.
 Coverlet 6.0.4 OpenCover reports contain line-granular placeholders. Strict execution can recover precise spans
 from a portable PDB only after matching the assembly/PDB identity and checksum, captured source bytes and exact
 compiled method signature. Zero visits must account for all relevant PDB sequence-point lines. Ambiguous or

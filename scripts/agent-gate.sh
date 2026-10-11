@@ -268,7 +268,7 @@ try:
         "BASELINE_ACCOUNTING_INCOMPLETE",
         "OVERALL_DEADLINE_EXCEEDED", "EXECUTION_CANCELLED",
         "BASELINE_TIMEOUT", "BASELINE_INCONCLUSIVE", "COVERAGE_MISSING",
-        "SUITE_MEMBERS_MISSING", "MUTATION_ATTEMPT_OMITTED",
+        "SUITE_MEMBERS_MISSING", "MUTATION_ATTEMPT_OMITTED", "BUDGET_OMITTED",
     }
     enumeration_codes = {
         "ENUMERATION_ANCESTOR_BUILD_UNSUPPORTED",
@@ -416,6 +416,7 @@ try:
                 discovery = read_json(stream)
             if (isinstance(discovery, dict) and discovery.get("schemaVersion") == "2" and discovery.get("recordKind") == "DISCOVERY" and
                     discovery.get("reportSha256") == expected_hash and
+                    discovery.get("runId") == report.get("runId") and
                     discovery.get("reportLength") == len(report_bytes)):
                 matched = True
                 break

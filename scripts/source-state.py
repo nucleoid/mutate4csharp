@@ -28,6 +28,8 @@ if state_mode == "default-state":
                     continue
                 if parts[0] not in ("discovery", "proven", "locks", "reports") or len(parts) > 2:
                     raise ValueError("undocumented sidecar effect")
+                if stat.S_ISDIR(info.st_mode) and len(parts) != 1:
+                    raise ValueError("undocumented nested sidecar directory")
                 if stat.S_ISREG(info.st_mode) and (len(parts) != 2 or not name.endswith(".lock" if parts[0] == "locks" else ".json")):
                     raise ValueError("undocumented sidecar file")
 

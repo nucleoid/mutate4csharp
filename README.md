@@ -120,7 +120,7 @@ scripts/agent-gate.sh prepare "$(git rev-parse --show-toplevel)" \
   "$TOOL_WORKSPACE" "$TOOL_PARENT/receipt.tsv"
 ```
 
-The suite includes Roslyn unit coverage and bounded real `dotnet test` integrations for killed/survived/timeout/red-baseline behavior, Coverlet OpenCover collection, path spaces, source isolation, scan/update side effects, flags, and context invalidation.
+The suite includes Roslyn unit coverage and bounded real `dotnet test` integrations for killed/survived/timeout/red-baseline behavior, Coverlet OpenCover collection, path spaces, source isolation, scan/update side effects, flags, and context invalidation. The Linux package job also invokes the installed strict executable from independent clean consumers. [Delivery Forge producer mapping](docs/delivery-forge-contract-v1.md) defines outcome normalization and the required identity, artifact and source-state bindings.
 
 ## Contributing and security
 
