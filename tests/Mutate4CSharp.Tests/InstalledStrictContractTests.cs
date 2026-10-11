@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 
 namespace Mutate4CSharp.Tests;
 
@@ -289,6 +290,13 @@ public sealed partial class ToolPackagingIntegrationTests
         var observation = new
         {
             schema = "mutate4csharp-installed-certification-v1", fixture = true, scenario,
+            gateId = "installed-check-fixture", policyId = "fixture-only/no-production-baseline",
+            generatedAtUtc = report.GetProperty("generatedAtUtc"),
+            hashBindings = report.GetProperty("evidence").EnumerateArray()
+                .SelectMany(item => item.TryGetProperty("diagnostics", out var diagnostics) && diagnostics.ValueKind == JsonValueKind.Array
+                    ? diagnostics.EnumerateArray().Select(value => value.GetString()) : Array.Empty<string?>())
+                .Where(value => value is not null && Regex.IsMatch(value, @"^[A-Za-z][A-Za-z0-9-]*=(sha256:)?([0-9a-f]{40}|[0-9a-f]{64})$"))
+                .Order(StringComparer.Ordinal).ToArray(),
             sourceCommit = SourceCommit, toolVersion = PackageVersion + "+" + SourceCommit,
             packageSha256 = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(package))),
             payloadSha256 = payload, baseline, head, tree, noState, exit,
@@ -300,7 +308,7 @@ public sealed partial class ToolPackagingIntegrationTests
             observations = new[] { SanitizeObservation(before), SanitizeObservation(after), SanitizeObservation(restored) },
             toolExit = report.GetProperty("exitCode").GetInt32(), orchestrationExit = exit,
             normalizedOutcome = exit == 73 ? "ERROR" : report.GetProperty("outcome").GetString(),
-            sourceStateDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n", sourceState)))),
+            sourceInventoryDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n", sourceState)))),
             indexDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(indexFlags))),
             statusDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(status))),
             originalReportSha256 = Convert.ToHexStringLower(SHA256.HashData(reportBytes)), originalReportLength = reportBytes.Length,

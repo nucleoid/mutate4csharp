@@ -18,6 +18,7 @@ An append-only consumer receipt must record these fields from the same invocatio
 | invocation | Exact executable identity and argv, selection/base, configured scope, configuration bytes/hash and resource limits |
 | baseline | Exact suite identities, expected/accounted members, baseline status, coverage identities and collection provenance |
 | result | Process exit, outcome, every reason/incomplete condition, complete unit IDs/dispositions and reconciled counts |
+| receipt | Consumer-owned gate/policy IDs, invocation timestamps, exit state and append-only receipt identity |
 | artifacts | Immutable report bytes, SHA-256/length, package/payload hashes and report-bound discovery/proven hashes where applicable |
 | source-state | Source bytes, Git index, status and tree before/after; only documented default-state sidecars may differ |
 | provenance | Reviewed source/head, CI links, package/install identity, fixture marker and parent-owned acceptance reference |
@@ -46,3 +47,10 @@ outcome/reason codes and original report hash/length. Their `fixture: true` mark
 they are test evidence, not Forge receipts or approved production quality baselines. Original private
 process logs are not published. A Forge adapter still validates the complete original report and current
 invocation, then creates its own append-only receipt under Delivery Forge #7's policy.
+
+This field mapping follows [Delivery Forge's pinned quality-gate contract](https://github.com/nucleoid/delivery-forge/blob/6304c90f83df3cdb918dff03f6358dcf4a939d16/docs/quality-gates.md).
+The fixture's `sourceInventoryDigest` hashes UTF-8 newline-joined, sorted relative-file/hash entries;
+index/status digests hash the captured Git output. These observation digests are explicitly separate
+from the Bash guard's framed source-state digest. Safe hash bindings retain captured input, dependency,
+plan and evaluation identities without publishing private diagnostics. The consumer still owns gate and
+policy IDs, timestamps, registry identity and its append-only receipt; fixture IDs grant no policy authority.

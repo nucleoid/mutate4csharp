@@ -649,6 +649,20 @@ public sealed class SidecarStoreTests : IDisposable
         Assert.Equal("INCOMPLETE", current.RootElement.GetProperty("outcome").GetString());
     }
 
+    [Fact]
+    public void CancellationDuringAllowedNotApplicablePublicationCannotReturnExitZero()
+    {
+        var report = EvaluationReport.CreateSynthetic(EvaluationOutcome.NotApplicable, "cancelled-na", "STRUCTURAL_FIXTURE");
+        report = report with { Policy = report.Policy with { AllowNotApplicable = true }, ExitCode = 0 };
+        var facts = new EvaluationFacts(report.Baseline, report.Counts.Enumerated, report.Units, true, []);
+        using var cancellation = new CancellationTokenSource();
+        var result = EvaluationPublication.Publish(Path.Combine(_directory, "cancelled-na.json"), [], report, facts,
+            null, null, null, null, [], _ => cancellation.Cancel(), cancellation.Token);
+        Assert.Equal(EvaluationOutcome.Incomplete, result.Outcome);
+        Assert.Equal(4, result.ExitCode);
+        Assert.Contains(result.IncompleteConditions, reason => reason.Code == "EXECUTION_CANCELLED");
+    }
+
     private static MutationCandidate Candidate(string site = "site/1")
     {
         var identityMaterial = new MutationIdentityMaterial("src/A.cs", "Type.M", site,
