@@ -82,11 +82,12 @@ public sealed class IssueEightReviewRoundFourTests
     }
 
     [Fact]
-    public void AllowNotApplicableExitZeroIsClearlyFutureBehavior()
+    public void AllowNotApplicableExitZeroPreservesExplicitNotApplicableOutcome()
     {
         var workflow = Read("docs/agent-workflow.md");
-        Assert.Contains("future validated `allowNotApplicable: true`", workflow, StringComparison.Ordinal);
-        Assert.DoesNotContain("With validated\n  `allowNotApplicable: true`", workflow, StringComparison.Ordinal);
+        Assert.Contains("Validated `allowNotApplicable: true`", workflow, StringComparison.Ordinal);
+        Assert.Contains("JSON still says `NOT_APPLICABLE`", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("future validated `allowNotApplicable: true`", workflow, StringComparison.Ordinal);
     }
 
     [Fact]

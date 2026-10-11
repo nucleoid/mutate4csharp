@@ -756,7 +756,8 @@ public sealed class StrictMutationExecutorTests : IDisposable
             if (scenario == "cancel-after-execution")
             {
                 Assert.True(result.Report.Counts.Killed > 0);
-                Assert.Contains(result.Report.IncompleteConditions, item => item.Code == "SNAPSHOT_CANCELLED");
+                Assert.Contains(result.Report.IncompleteConditions, item => item.Code == "EXECUTION_CANCELLED");
+                Assert.DoesNotContain(result.Report.IncompleteConditions, item => item.Code == "SNAPSHOT_CANCELLED");
             }
             if (scenario == "drift-after-execution")
             {

@@ -266,9 +266,9 @@ try:
     execution_codes = {
         "TARGETED_DIAGNOSTIC", "MUTATION_EXECUTION_FAILED", "COVERAGE_PROVENANCE_INCOMPLETE",
         "BASELINE_ACCOUNTING_INCOMPLETE",
-        "OVERALL_DEADLINE_EXCEEDED", "EXECUTION_CANCELLED",
+        "OVERALL_DEADLINE_EXCEEDED", "EXECUTION_CANCELLED", "SNAPSHOT_CANCELLED",
         "BASELINE_TIMEOUT", "BASELINE_INCONCLUSIVE", "COVERAGE_MISSING",
-        "SUITE_MEMBERS_MISSING", "MUTATION_ATTEMPT_OMITTED",
+        "SUITE_MEMBERS_MISSING", "MUTATION_ATTEMPT_OMITTED", "BUDGET_OMITTED",
     }
     enumeration_codes = {
         "ENUMERATION_ANCESTOR_BUILD_UNSUPPORTED",
@@ -292,6 +292,7 @@ try:
         "AMBIGUOUS_PROJECT_OWNERSHIP", "UNMAPPED_PROJECT", "CONFIGURED_PATH_MISSING",
         "UNSUPPORTED_SYNTAX", "NO_SUPPORTED_DECLARATION", "UNSUPPORTED_CHANGED_INPUT",
         "EXACT_ID_RERUN_UNAVAILABLE", "TARGET_SELECTION_INVALID",
+        "SCOPE_UNSUPPORTED_ENCODING",
     }
     environment_refusal_codes = {
         "DEPENDENCY_INPUT_UNAVAILABLE", "EXECUTION_ENVIRONMENT_UNAVAILABLE", "FINGERPRINT_UNAVAILABLE",
@@ -338,7 +339,14 @@ try:
         if not execution_valid and not enumeration_refusal and not reducer_incomplete:
             raise ValueError("report lacks an accepted execution or enumeration incomplete condition")
         if execution_valid:
-            if not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated < 0:
+            cancelled_before_binding = enumerated is None and all(
+                item["code"] in {"EXECUTION_CANCELLED", "SNAPSHOT_CANCELLED"} for item in conditions)
+            if cancelled_before_binding and (units or report.get("suites") or any(
+                    isinstance(item, dict) and (item.get("kind") == "MUTATION_PLAN" or
+                    (any(reason["code"] == "SNAPSHOT_CANCELLED" for reason in conditions) and item.get("kind") == "INPUT_SNAPSHOT"))
+                    for item in evidence)):
+                raise ValueError("unbound cancellation contradicts retained unit, suite or snapshot evidence")
+            if not cancelled_before_binding and (not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated < 0):
                 raise ValueError("report lacks a bounded nonnegative enumeration count")
         elif enumeration_refusal and enumerated is not None:
             raise ValueError("enumeration refusal must retain unknown enumeration count")
@@ -416,6 +424,7 @@ try:
                 discovery = read_json(stream)
             if (isinstance(discovery, dict) and discovery.get("schemaVersion") == "2" and discovery.get("recordKind") == "DISCOVERY" and
                     discovery.get("reportSha256") == expected_hash and
+                    discovery.get("runId") == report.get("runId") and
                     discovery.get("reportLength") == len(report_bytes)):
                 matched = True
                 break
@@ -658,6 +667,10 @@ gate() {
     fail "target repository HEAD changed from its approved current commit"
   local arguments=(check --base "$TASK_START" --report "$report")
   [[ "$state_mode" = no-state ]] && arguments+=(--no-state)
+  local state_script source_before source_after
+  state_script=$(realpath -e -- "$(dirname -- "${BASH_SOURCE[0]}")/source-state.py") || fail "source-state contract is missing"
+  [[ "$(sha256_file "$state_script")" = "600a64f86113d06317750bacbafe7d1bc509e1e675f2d78f2c8cf7e63eee92de" ]] || fail "source-state contract changed"
+  source_before=$(python3 -I "$state_script" "$target_repository" "$state_mode") || fail "source-state capture failed"
   local exit_code
   if (cd "$target_repository" && trusted_tool "${arguments[@]}"); then
     exit_code=0
@@ -669,6 +682,8 @@ gate() {
   [[ "$(trusted_tool --version)" = "$observed_version" ]] || fail "tool identity changed during gate"
   [[ "$(git -C "$target_repository" rev-parse HEAD)" = "$EXPECTED_TARGET_HEAD" ]] ||
     fail "target repository HEAD changed during gate"
+  source_after=$(python3 -I "$state_script" "$target_repository" "$state_mode") || fail "source-state revalidation failed"
+  [[ "$source_before" = "$source_after" ]] || fail "source bytes, index, status or tree changed during gate"
   validate_report "$report" "$exit_code" "$state_mode" "$target_repository"
   return "$exit_code"
 }
@@ -781,6 +796,8 @@ PY
   require_supported_example_enumeration "$report_directory/no-state.json"
   require_supported_example_enumeration "$report_directory/default-state.json"
 }
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then return 0; fi
 
 case "${1:-}" in
   prepare) shift; prepare "$@" ;;

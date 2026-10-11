@@ -414,12 +414,12 @@ public sealed class LegacyStateTrustTests : IDisposable
     }
 
     [Fact]
-    public async Task CancellationAfterReportPublicationRewritesThenRethrows()
+    public async Task CancellationWithUnavailableSdkReturnsCurrentIncompleteReport()
     {
         if (OperatingSystem.IsWindows()) return;
         using var repository = CreateRepository();
         var host = Path.Combine(_directory, "cancelled-sdk-host.sh");
-        File.WriteAllText(host, "#!/bin/sh\nsleep 30\n");
+        File.WriteAllText(host, "#!/bin/sh\nsleep 1\n");
         File.SetUnixFileMode(host, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         var report = Path.Combine(_directory, "cancelled-publication.json");
         var previousDirectory = Environment.CurrentDirectory;
@@ -429,8 +429,11 @@ public sealed class LegacyStateTrustTests : IDisposable
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
         try
         {
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new EvaluationCoordinator().RunAsync(
-                new(false, "HEAD", [], report, "cancelled-publication"), cancellation.Token));
+            var result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], report, "cancelled-publication"), cancellation.Token);
+            Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+            Assert.Equal(4, result.Report.ExitCode);
+            Assert.Equal("cancelled-publication", result.Report.RunId);
 
             using var published = JsonDocument.Parse(File.ReadAllBytes(report));
             Assert.Contains(published.RootElement.GetProperty("incompleteConditions").EnumerateArray(),

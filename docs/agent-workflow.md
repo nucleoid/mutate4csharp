@@ -214,9 +214,9 @@ Handle outcomes as follows:
   or infrastructure prevented reusable success. Unknown enumeration is not zero mutations. Exit `1` is outside
   strict outcome mapping because usage rejection may not produce a report; exception exit `4` may likewise have
   no report.
-- `NOT_APPLICABLE` / exit `5`: there are no effective valid candidates after complete execution. A future validated `allowNotApplicable: true`
+- `NOT_APPLICABLE` / exit `5`: there are no effective valid candidates after complete execution. Validated `allowNotApplicable: true`
   configuration may map this to exit `0`, while JSON still says `NOT_APPLICABLE`; it is
-  never `PASS`. The current enumeration-only boundary reports `INCOMPLETE` even when the known candidate count is zero.
+  never `PASS`. Unknown enumeration remains `INCOMPLETE`.
 
 `INCOMPLETE` takes precedence over a known failure while retaining all reasons in JSON. Treat every nonzero exit
 as a blocked gate and inspect the report rather than flattening all failures into one message.

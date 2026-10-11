@@ -49,7 +49,7 @@ internal static class Program
                       $"{result.Report.ScopePlan.ProjectUnits.Count} project unit(s), " +
                       $"{result.Report.ScopePlan.Exclusions.Count} exclusion(s). No tests ran. " +
                       $"Run ID: {options.StrictCheck.RunId}. Report: {result.ReportPath}"
-                    : $"Strict evaluation is incomplete; immutable snapshot {result.SnapshotId ?? "refused"}. Run ID: {options.StrictCheck.RunId}. Report: {result.ReportPath}");
+                    : $"Strict evaluation {(result.Report.Outcome == EvaluationOutcome.NotApplicable ? "NOT_APPLICABLE" : result.Report.Outcome.ToString().ToUpperInvariant())}; immutable snapshot {result.SnapshotId ?? "refused"}. Run ID: {options.StrictCheck.RunId}. Report: {result.ReportPath}");
                 return result.Report.ExitCode;
             }
             catch (ArgumentException ex)

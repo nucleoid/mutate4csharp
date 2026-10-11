@@ -1,2 +1,3 @@
 *.sh text eol=lf
+scripts/source-state.py text eol=lf
 docs/contracts/invariant-upper-v1.json text eol=lf

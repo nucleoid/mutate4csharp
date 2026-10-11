@@ -25,6 +25,14 @@ local restore, invocation, strict configuration/scope loading, fresh coverage, a
 The representative changed expression has a surviving mutant, so the complete nonzero ledger returns `FAIL` / exit
 `3`. Separate in-repository fixtures prove an all-killed `PASS`, incomplete execution, and explicit zero-effective
 `NOT_APPLICABLE` reduction.
+
+The installed contract fixture additionally packs a clean exact commit and installs from a single-source
+local feed into an external tool path. Separate clean consumers prove strong-test PASS, weak-test survivor
+FAIL, fresh uncovered FAIL, red/empty baseline INCOMPLETE and genuine zero-site NOT_APPLICABLE, in both
+default-state and no-state modes. It checks source bytes, index/status, payload hash and complete unit counts;
+only the strong fixture publishes proven state. Installed certification runs in the Linux packaging CI job.
+Windows real-process CI covers the strict implementation; it does not certify the Bash gate or installed
+contract fixture on Windows.
 Coverlet 6.0.4 OpenCover reports contain line-granular placeholders. Strict execution can recover precise spans
 from a portable PDB only after matching the assembly/PDB identity and checksum, captured source bytes and exact
 compiled method signature. Zero visits must account for all relevant PDB sequence-point lines. Ambiguous or
@@ -48,3 +56,31 @@ Names requiring newer Unicode casing are outside this verified interop profile a
 The table and Unicode license ship together. Source: [UnicodeData 15.0.0](https://www.unicode.org/Public/15.0.0/ucd/UnicodeData.txt).
 Aggregate-zero projection is verified with Release compilation; Debug block-bodied methods commonly
 contain return branches and therefore execute conservatively instead of receiving uncovered proof.
+
+The Bash source-state guard inventories all ordinary consumer files, including ignored outputs, up to
+100,000 files and 1 GiB total. Symlinks, special files, configured Git filters and undocumented state paths
+are orchestration refusals, as are submodules, gitlinks and nested repositories. It uses `/usr/bin/git`, disables fsmonitor/untracked-cache/hooks, clears Git
+environment overrides and system/global configuration, and binds local configuration into the digest.
+Default state permits only the documented one-level JSON/lock directories and canonical `*\n` ignore bytes.
+Repositories outside these bounds require a separately reviewed orchestration profile.
+
+Installed fixtures cover policy-authorized N/A exit zero, plan-only operation, actual budget omissions,
+unsupported encoding, baseline timeout, cancellation during baseline execution and original-input drift.
+Ordinary outcome fixtures invoke the gate extracted from the exact package in both state modes; drift
+must normalize to orchestration ERROR. Plan-only operation and baseline cancellation invoke the installed
+tool directly. The cancellation test signals only that owned process and checks its baseline child exits.
+After execution teardown, original-input revalidation and SDK identity finalization share one 30-second
+post-cancellation grace budget. Ordinary runs have no added audit deadline; cancellation during finalization
+starts that grace budget. Execution teardown has its own process-control limits. An exhausted integrity
+audit is validation failure and orchestration ERROR, not accepted cancellation evidence. Missing identity
+or discovery likewise remains ERROR. Cancellation is checked during success publication,
+which revokes proof and rewrites the report when interrupted. A bound ledger is retained, while cancellation
+before binding cannot claim known unit counts. Fixture observations record before, observed-after and
+restored source/index/status/head/tree digests; drift restoration happens only after refusal is verified.
+Cancellation is honored up to the final publication check; a signal after that completion point cannot
+retroactively invalidate an already completed invocation. Real installed cancellation reports are also
+parsed by the shipped report validator in both state modes. Sourcing the Bash script exposes diagnostic
+helpers only; functional certification still requires the identity-bound `gate` invocation.
+An incomplete discovery record may retain a captured snapshot and bound ledger whose final audit did
+not finish. Its validation-failure condition prevents acceptance and proven publication; discovery is
+descriptive evidence, never reusable proof.
