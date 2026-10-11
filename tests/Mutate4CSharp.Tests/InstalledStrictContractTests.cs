@@ -5,7 +5,7 @@ namespace Mutate4CSharp.Tests;
 
 public sealed partial class ToolPackagingIntegrationTests
 {
-    [Fact(Timeout = 1_800_000)]
+    [Fact(Timeout = 3_600_000)]
     public async Task InstalledStrictCliCertifiesRealOutcomesFromIndependentCleanConsumers()
     {
         var feed = Environment.GetEnvironmentVariable("MUTATE4CSHARP_PACKED_FEED") ?? Path.Combine(_root, "contract-feed");
@@ -26,7 +26,7 @@ public sealed partial class ToolPackagingIntegrationTests
         Assert.Equal($"{PackageVersion}+{SourceCommit}", (await RunAsync(_root, command, "--version")).StandardOutput.Trim());
         var payload = HashDirectory(toolPath);
 
-        foreach (var scenario in new[] { "strong", "weak", "uncovered", "red", "empty", "zero" })
+        foreach (var scenario in new[] { "strong", "weak", "uncovered", "red", "empty", "zero", "partial", "unsupported", "timeout" })
         {
             var consumer = Path.Combine(_root, "contract-" + scenario);
             Directory.CreateDirectory(consumer);
@@ -48,8 +48,19 @@ public sealed partial class ToolPackagingIntegrationTests
                 "red" => "using Example; using Xunit; public class FlagTests { [Fact] public void Red() => Assert.False(Flag.Value()); }",
                 "empty" => "using Example; using Xunit; public class FlagTests { [Fact(Skip=\"Intentional empty executed baseline\")] public void Skipped() => Assert.True(Flag.Value()); }",
                 "zero" => "using Example; using Xunit; public class FlagTests { [Fact] public void Identity() => Assert.True(Flag.Value(true)); }",
+                "timeout" => "using Example; using Xunit; public class FlagTests { [Fact] public void Slow() { System.Threading.Thread.Sleep(20_000); Assert.True(Flag.Value()); } }",
                 _ => "using Example; using Xunit; public class FlagTests { [Fact] public void Behavior() => Assert.True(Flag.Value()); }"
             });
+            if (scenario == "timeout")
+            {
+                var policyPath = Path.Combine(consumer, "mutate4csharp.json");
+                File.WriteAllText(policyPath, File.ReadAllText(policyPath).Replace("\"baselineTimeoutSeconds\": 600", "\"baselineTimeoutSeconds\": 1"));
+            }
+            if (scenario == "unsupported")
+            {
+                var project = Path.Combine(consumer, "src", "Example", "Example.csproj");
+                File.WriteAllText(project, File.ReadAllText(project).Replace("</Project>", "<PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup></Project>"));
+            }
             File.WriteAllText(source, scenario == "zero"
                 ? "namespace Example; public static class Flag { public static bool Value(bool input) { return input; } }"
                 : "namespace Example;\npublic static class Flag\n{\n public static bool Other(bool input) => input;\n public static bool Value() => false;\n}\n");
@@ -74,6 +85,7 @@ public sealed partial class ToolPackagingIntegrationTests
                     var reportPath = Path.Combine(_root, $"contract-{scenario}-{noState}.json");
                     var arguments = new List<string> { "check", "--base", baseline, "--report", reportPath };
                     if (noState) arguments.Add("--no-state");
+                    if (scenario == "partial") arguments.Add("--plan");
                     var result = await RunAsync(consumer, command, arguments.ToArray());
                     using var report = JsonDocument.Parse(File.ReadAllBytes(reportPath));
                     var outcome = scenario switch { "strong" => "PASS", "weak" or "uncovered" => "FAIL", "zero" => "NOT_APPLICABLE", _ => "INCOMPLETE" };
@@ -81,7 +93,25 @@ public sealed partial class ToolPackagingIntegrationTests
                     Assert.True(result.ExitCode == exit, scenario + ": " + result.Diagnostic);
                     Assert.Equal(outcome, report.RootElement.GetProperty("outcome").GetString());
                     var counts = report.RootElement.GetProperty("counts");
-                    Assert.Equal(scenario == "zero" ? 0 : 1, counts.GetProperty("enumerated").GetInt32());
+                    Assert.Equal("2", report.RootElement.GetProperty("schemaVersion").GetString());
+                    Assert.False(string.IsNullOrWhiteSpace(report.RootElement.GetProperty("runId").GetString()));
+                    var units = report.RootElement.GetProperty("units").EnumerateArray().ToArray();
+                    Assert.Equal(counts.GetProperty("selected").GetInt32(), units.Length);
+                    Assert.Equal(units.Length, units.Select(unit => unit.GetProperty("evaluationUnitId").GetString()).Distinct().Count());
+                    Assert.Equal(units.Length, counts.GetProperty("executed").GetInt32() + counts.GetProperty("freshUncovered").GetInt32() + counts.GetProperty("omitted").GetInt32());
+                    if (scenario is not ("partial" or "unsupported"))
+                        Assert.Equal(scenario == "zero" ? 0 : 1, counts.GetProperty("enumerated").GetInt32());
+                    if (scenario is "strong" or "weak" or "uncovered" or "zero")
+                        foreach (var suite in report.RootElement.GetProperty("suites").EnumerateArray())
+                        {
+                            Assert.Equal("GREEN", suite.GetProperty("baseline").GetString());
+                            var accounting = suite.GetProperty("accounting");
+                            Assert.Equal(report.RootElement.GetProperty("runId").GetString(), accounting.GetProperty("runId").GetString());
+                            Assert.True(accounting.GetProperty("collectedFresh").GetBoolean());
+                            Assert.Equal(64, accounting.GetProperty("coverageReportSha256").GetString()!.Length);
+                            Assert.True(accounting.GetProperty("coverageReportLength").GetInt64() > 0);
+                            Assert.NotEmpty(accounting.GetProperty("accountedMembers").EnumerateArray());
+                        }
                     if (scenario == "strong") Assert.True(counts.GetProperty("executed").GetInt32() > 0 && counts.GetProperty("killed").GetInt32() > 0);
                     if (scenario == "weak") Assert.True(counts.GetProperty("survived").GetInt32() > 0);
                     if (scenario == "uncovered") Assert.Equal(1, counts.GetProperty("freshUncovered").GetInt32());
