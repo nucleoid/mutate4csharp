@@ -631,6 +631,24 @@ public sealed class SidecarStoreTests : IDisposable
         Assert.Equal("INCOMPLETE", current.RootElement.GetProperty("outcome").GetString());
     }
 
+    [Theory]
+    [InlineData(EvaluationPublicationPhase.Report)]
+    [InlineData(EvaluationPublicationPhase.Proven)]
+    public void CancellationDuringSuccessPublicationRewritesReportAndRevokesProof(EvaluationPublicationPhase cancelAt)
+    {
+        var (store, report, record, material, plan) = ValidProven();
+        using var cancellation = new CancellationTokenSource();
+        var path = Path.Combine(_directory, "cancelled-publication.json");
+        var result = EvaluationPublication.Publish(path, [], report,
+            plan.FinalizeFacts(report.Baseline, report.Units, false), store, record.SnapshotId, material, plan, record.Coverage,
+            phase => { if (phase == cancelAt) cancellation.Cancel(); }, cancellation.Token);
+        Assert.Equal(EvaluationOutcome.Incomplete, result.Outcome);
+        Assert.Contains(result.IncompleteConditions, condition => condition.Code == "EXECUTION_CANCELLED");
+        Assert.False(store.ReadProvenForInspection(record.EvaluationFingerprint).IsValid);
+        using var current = JsonDocument.Parse(File.ReadAllBytes(path));
+        Assert.Equal("INCOMPLETE", current.RootElement.GetProperty("outcome").GetString());
+    }
+
     private static MutationCandidate Candidate(string site = "site/1")
     {
         var identityMaterial = new MutationIdentityMaterial("src/A.cs", "Type.M", site,

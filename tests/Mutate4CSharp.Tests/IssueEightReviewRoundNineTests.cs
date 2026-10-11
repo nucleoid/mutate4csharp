@@ -311,11 +311,15 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
     [InlineData("units")]
     [InlineData("snapshot")]
     [InlineData("suites")]
+    [InlineData("execution-snapshot")]
     public async Task GateRejectsContradictoryUnboundCancellation(string retained)
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "The shipped workflow is a Bash integration.");
-        var report = EvaluationReport.CreateSynthetic(EvaluationOutcome.Incomplete, "cancelled-fixture", "SNAPSHOT_CANCELLED");
+        var report = EvaluationReport.CreateSynthetic(EvaluationOutcome.Pass, "cancelled-fixture", "STRUCTURAL_FIXTURE");
         var envelope = JsonNode.Parse(Encoding.UTF8.GetString(ReportWriter.Serialize(report)))!;
+        envelope["outcome"] = "INCOMPLETE";
+        envelope["exitCode"] = 4;
+        envelope["incompleteConditions"] = new JsonArray(new JsonObject { ["code"] = retained == "execution-snapshot" ? "EXECUTION_CANCELLED" : "SNAPSHOT_CANCELLED" });
         envelope["baseline"] = "UNKNOWN";
         envelope["counts"]!["enumerated"] = null;
         if (retained != "units")
@@ -324,7 +328,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
             foreach (var key in new[] { "selected", "executed", "freshUncovered", "omitted", "compileInvalid", "killed", "survived", "errors" })
                 envelope["counts"]![key] = 0;
         }
-        if (retained != "snapshot") envelope["evidence"] = new JsonArray();
+        if (retained is not ("snapshot" or "execution-snapshot")) envelope["evidence"] = new JsonArray();
         if (retained != "suites") envelope["suites"] = new JsonArray();
         var target = Path.Combine(_root, "contradictory-cancel");
         await CreateRepositoryAsync(target);
@@ -333,8 +337,8 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
         var result = await RunAsync(target, "bash", Path.Combine(RepositoryRoot, "scripts", "agent-gate.sh"),
             "gate", target, fixture.Receipt, fixture.PackageSha, fixture.PayloadSha, fixture.ToolCommit,
             head, head, Path.Combine(_root, "cancelled.json"), "no-state");
-        Assert.Equal(OrchestrationRefusal, result.ExitCode);
-        Assert.Contains("unbound cancellation contradicts", result.Diagnostic, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(retained == "execution-snapshot" ? 4 : OrchestrationRefusal, result.ExitCode);
+        if (retained != "execution-snapshot") Assert.Contains("unbound cancellation contradicts", result.Diagnostic, StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<ToolFixture> CreateToolFixtureAsync(string json, int processExit, string action = "")

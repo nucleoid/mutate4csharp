@@ -69,7 +69,8 @@ unsupported encoding, baseline timeout, cancellation during baseline execution a
 Ordinary outcome fixtures invoke the gate extracted from the exact package in both state modes; drift
 must normalize to orchestration ERROR. Plan-only operation and baseline cancellation invoke the installed
 tool directly. The cancellation test signals only that owned process and checks its baseline child exits.
-Cancellation stops execution but original-input revalidation uses a separate 30-second integrity-audit
-budget; a cancellation flag still blocks success publication. A bound ledger is retained, while cancellation
+After cancellation, original-input revalidation uses a separate 30-second integrity-audit budget;
+ordinary runs retain caller-controlled validation. Cancellation is checked during success publication,
+which revokes proof and rewrites the report when interrupted. A bound ledger is retained, while cancellation
 before binding cannot claim known unit counts. Fixture observations record before, observed-after and
 restored source/index/status/head/tree digests; drift restoration happens only after refusal is verified.

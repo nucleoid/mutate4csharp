@@ -9,7 +9,8 @@ internal static class EvaluationPublication
     internal static EvaluationReport Publish(string path, IReadOnlyList<string> inputs,
         EvaluationReport report, EvaluationFacts facts, SidecarStore? store,
         string? snapshotId, EvaluationFingerprintMaterial? material, MutationSelectionPlan? plan,
-        IReadOnlyList<CoverageProvenance> coverage, Action<EvaluationPublicationPhase>? beforePublication = null)
+        IReadOnlyList<CoverageProvenance> coverage, Action<EvaluationPublicationPhase>? beforePublication = null,
+        CancellationToken cancellationToken = default)
     {
         ReportWriter.ValidateDestination(path, inputs);
         string? fingerprint = null;
@@ -45,7 +46,9 @@ internal static class EvaluationPublication
             }
             phase = EvaluationPublicationPhase.Report;
             beforePublication?.Invoke(phase);
+            if (report.Outcome == EvaluationOutcome.Pass) cancellationToken.ThrowIfCancellationRequested();
             ReportWriter.Write(path, report, inputs);
+            if (report.Outcome == EvaluationOutcome.Pass) cancellationToken.ThrowIfCancellationRequested();
             if (store is null) return report;
             phase = EvaluationPublicationPhase.Discovery;
             beforePublication?.Invoke(phase);
@@ -54,15 +57,18 @@ internal static class EvaluationPublication
             {
                 phase = EvaluationPublicationPhase.Proven;
                 beforePublication?.Invoke(phase);
+                cancellationToken.ThrowIfCancellationRequested();
                 store.PublishProven(proven, report, material!, plan!);
+                cancellationToken.ThrowIfCancellationRequested();
             }
             return report;
         }
         catch (Exception failure) when (failure is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
         {
-            var code = phase == EvaluationPublicationPhase.Eligibility ? "PROOF_ELIGIBILITY_FAILED" :
+            var cancelled = failure is OperationCanceledException && cancellationToken.IsCancellationRequested;
+            var code = cancelled ? "EXECUTION_CANCELLED" : phase == EvaluationPublicationPhase.Eligibility ? "PROOF_ELIGIBILITY_FAILED" :
                 phase == EvaluationPublicationPhase.Report ? "REPORT_PUBLICATION_FAILED" : "SIDECAR_WRITE_FAILED";
-            var condition = new EvaluationReason(code, phase == EvaluationPublicationPhase.Eligibility
+            var condition = new EvaluationReason(code, cancelled ? "Cancellation interrupted success publication." : phase == EvaluationPublicationPhase.Eligibility
                 ? "Evaluation did not satisfy complete proof eligibility."
                 : phase == EvaluationPublicationPhase.Report
                 ? "The current report could not be published safely."

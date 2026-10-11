@@ -250,7 +250,9 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             if (snapshot is not null)
             {
                 // Cancellation stops execution, but must not skip the final integrity audit.
-                using var integrityAudit = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                using var integrityAudit = cancellationToken.IsCancellationRequested
+                    ? new CancellationTokenSource(TimeSpan.FromSeconds(30))
+                    : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 try { await snapshot.ValidateOriginalAsync(integrityAudit.Token); }
                 catch (SnapshotCaptureException ex)
                 {
@@ -361,7 +363,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                         truncationLabel: "ids-truncated")));
             }
             var incompleteConditions = new List<EvaluationReason>();
-            if (executionStarted && cancellationToken.IsCancellationRequested)
+            if (executionStarted && cancellationToken.IsCancellationRequested &&
+                reason?.Code != "EXECUTION_CANCELLED" && enumerationReasons.All(item => item.Code != "EXECUTION_CANCELLED"))
                 incompleteConditions.Add(new("EXECUTION_CANCELLED", "Cancellation prevents success publication even when execution already returned."));
             if (reason is not null) incompleteConditions.Add(reason);
             incompleteConditions.AddRange(enumerationReasons);
@@ -398,7 +401,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 report = WithFingerprintFailure(report, facts, evidence, fingerprintMaterialFailure);
             report = EvaluationPublication.Publish(reportPath, options.Inputs, report, facts,
                 fingerprintMaterialFailure is null ? sidecarStore : null, snapshotId, fingerprintMaterial,
-                finalizingPlan, coverageProvenance, _beforePublication);
+                finalizingPlan, coverageProvenance, _beforePublication, cancellationToken);
             if (fingerprintMaterialFailure is OperationCanceledException cancellation)
                 throw cancellation;
             return new(report, reportPath, snapshotId);

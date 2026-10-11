@@ -144,6 +144,7 @@ public sealed partial class ToolPackagingIntegrationTests
                     var outcome = scenario switch { "strong" => "PASS", "weak" or "uncovered" => "FAIL", "zero" or "zero-allowed" => "NOT_APPLICABLE", _ => "INCOMPLETE" };
                     var exit = scenario switch { "strong" or "zero-allowed" => 0, "weak" or "uncovered" => 3, "zero" => 5, "red" or "empty" => 2, "drift" => 73, _ => 4 };
                     Assert.True(result.ExitCode == exit, scenario + ": " + result.Diagnostic);
+                    if (scenario == "drift") Assert.Contains("source bytes, index, status or tree changed during gate", result.Diagnostic);
                     Assert.Equal(outcome, report.RootElement.GetProperty("outcome").GetString());
                     Assert.Contains("Run ID: " + report.RootElement.GetProperty("runId").GetString(), result.StandardOutput);
                     if (scenario != "plan") Assert.Contains("Strict evaluation " + outcome + ";", result.StandardOutput);

@@ -668,7 +668,7 @@ gate() {
   [[ "$state_mode" = no-state ]] && arguments+=(--no-state)
   local state_script source_before source_after
   state_script=$(realpath -e -- "$(dirname -- "${BASH_SOURCE[0]}")/source-state.py") || fail "source-state contract is missing"
-  [[ "$(sha256_file "$state_script")" = "cd9db967e82de634cc6126e37faf3709a9c5e501cbb81aa3d28ff447da270ad6" ]] || fail "source-state contract changed"
+  [[ "$(sha256_file "$state_script")" = "600a64f86113d06317750bacbafe7d1bc509e1e675f2d78f2c8cf7e63eee92de" ]] || fail "source-state contract changed"
   source_before=$(python3 -I "$state_script" "$target_repository" "$state_mode") || fail "source-state capture failed"
   local exit_code
   if (cd "$target_repository" && trusted_tool "${arguments[@]}"); then

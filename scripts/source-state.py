@@ -10,6 +10,8 @@ root, state_mode = sys.argv[1:]
 if state_mode not in ("no-state", "default-state"):
     raise ValueError("unknown state mode")
 digest = hashlib.sha256()
+def refuse_walk_error(error):
+    raise error
 if os.path.lexists(os.path.join(root, ".gitmodules")):
     raise ValueError("source-state profile refuses submodules")
 git_environment = {**{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
@@ -30,7 +32,7 @@ if state_mode == "default-state":
     if os.path.lexists(state_root):
         if os.path.islink(state_root) or not os.path.isdir(state_root):
             raise ValueError("sidecar root is not ordinary")
-        for directory, names, files in os.walk(state_root, followlinks=False):
+        for directory, names, files in os.walk(state_root, followlinks=False, onerror=refuse_walk_error):
             for name in names + files:
                 path = os.path.join(directory, name)
                 relative = os.path.relpath(path, state_root).replace(os.sep, "/")
@@ -64,7 +66,7 @@ for command in (["rev-parse", "HEAD"], ["rev-parse", "HEAD^{tree}"],
         env=git_environment, timeout=30))
 
 paths = []
-for directory, names, files in os.walk(root, followlinks=False):
+for directory, names, files in os.walk(root, followlinks=False, onerror=refuse_walk_error):
     relative = os.path.relpath(directory, root)
     if relative == ".":
         names[:] = [name for name in names if name != ".git" and
