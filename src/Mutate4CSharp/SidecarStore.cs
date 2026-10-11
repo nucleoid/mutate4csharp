@@ -48,6 +48,7 @@ internal sealed class SidecarStore
     {
         if (!EvaluationFingerprint.IsFingerprint(fingerprint))
             throw new EvaluationContractException("Invalid proven fingerprint for revocation.");
+        if (!ExistingOrdinaryDirectory(_stateRoot)) return;
         var directory = Path.Combine(_stateRoot, "proven");
         if (!Directory.Exists(directory))
         {
@@ -103,6 +104,8 @@ internal sealed class SidecarStore
         var path = StatePath("proven", FingerprintKey(fingerprint));
         try
         {
+            if (!ExistingOrdinaryDirectory(_stateRoot) || !ExistingOrdinaryDirectory(Path.GetDirectoryName(path)!))
+                return new(null, "No current proven state exists.");
             var bytes = ReadBoundedRegular(path);
             ValidateRawProvenSchema(bytes);
             var record = JsonSerializer.Deserialize<ProvenEvaluationSidecar>(bytes, JsonOptions)
@@ -237,6 +240,16 @@ internal sealed class SidecarStore
             .LastOrDefault(line => line.Length > 0 && !line.StartsWith('#'));
         if (lastPattern != "*")
             throw new IOException("Existing .mutate4csharp/.gitignore conflicts with the required owned-state contract.");
+    }
+
+    private static bool ExistingOrdinaryDirectory(string path)
+    {
+        if (new DirectoryInfo(path).LinkTarget is not null || File.Exists(path))
+            throw new IOException("Owned state directory must be ordinary.");
+        if (!Directory.Exists(path)) return false;
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new IOException("Owned state directory cannot be a reparse point.");
+        return true;
     }
 
     private static void EnsureOrdinaryDirectory(string path)

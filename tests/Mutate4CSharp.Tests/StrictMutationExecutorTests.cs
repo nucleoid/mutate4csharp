@@ -672,7 +672,7 @@ public sealed class StrictMutationExecutorTests : IDisposable
         _repository.WriteText("mutate4csharp.json", configuration.ToJsonString());
         _repository.WriteText("tests/App.Tests/FlagTests.cs", scenario switch
         {
-            "empty" => "public sealed class FlagTests { public void NoDiscoverableTests() {} }",
+            "empty" => "using App; using Xunit; public sealed class FlagTests { [Fact(Skip = \"Intentional zero executed baseline\")] public void NoExecutedTests() => Assert.True(Flag.Value()); }",
             "unstable" => $$"""
                 using App; using Xunit; using System.IO;
                 public sealed class FlagTests { [Fact] public void AlternatesOnlyForMutant() {
@@ -707,6 +707,7 @@ public sealed class StrictMutationExecutorTests : IDisposable
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var validations = 0;
         var coverageInspections = 0;
+        var coverageReports = 0;
         var snapshotParent = OwnedDirectory.PrivateParent("snapshots");
         var oldSnapshots = Directory.Exists(snapshotParent) ? Directory.EnumerateDirectories(snapshotParent)
             .ToHashSet(StringComparer.Ordinal) : [];
@@ -733,11 +734,17 @@ public sealed class StrictMutationExecutorTests : IDisposable
             var result = await new EvaluationCoordinator(capture, beforeCoverageParsing: (_, reports) =>
             {
                 coverageInspections++;
-                if (scenario == "malformed-coverage") File.WriteAllText(Assert.Single(reports), "malformed XML");
+                coverageReports += reports.Count;
+                if (scenario == "malformed-coverage")
+                    foreach (var collected in reports) File.WriteAllText(collected, "malformed XML");
             }).RunAsync(
                 new(false, "HEAD", [], report, "boundary-" + scenario), cancellation.Token);
             Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
-            Assert.Equal(scenario == "empty" ? 2 : 4, result.Report.ExitCode);
+            Assert.True(result.Report.ExitCode == (scenario == "empty" ? 2 : 4),
+                string.Join("; ", result.Report.Reasons.Select(item => item.Code + ": " + item.Message)
+                    .Concat(result.Report.Suites.SelectMany(item => item.Evidence).SelectMany(item => item.Diagnostics ?? [])))
+                    .Replace(_repository.Root, "<fixture>", StringComparison.OrdinalIgnoreCase)
+                    .Replace(Path.GetTempPath(), "<temp>/", StringComparison.OrdinalIgnoreCase));
             Assert.False(Directory.Exists(Path.Combine(_repository.Root, ".mutate4csharp", "proven")) &&
                 Directory.EnumerateFiles(Path.Combine(_repository.Root, ".mutate4csharp", "proven"), "*.json").Any());
             if (scenario == "budget") Assert.True(result.Report.Counts.Omitted > 0);
@@ -758,6 +765,7 @@ public sealed class StrictMutationExecutorTests : IDisposable
             if (scenario == "malformed-coverage")
             {
                 Assert.Equal(1, coverageInspections);
+                Assert.True(coverageReports > 0);
                 Assert.Equal(BaselineStatus.Green, result.Report.Baseline);
                 Assert.Contains(result.Report.IncompleteConditions, item => item.Code == "COVERAGE_PROVENANCE_INCOMPLETE");
             }

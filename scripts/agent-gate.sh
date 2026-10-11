@@ -179,7 +179,9 @@ trusted_tool() {
 validate_report() {
   local report=$1 process_exit=$2 state_mode=$3 target_repository=$4
   [[ -f "$report" && ! -L "$report" ]] || fail "tool did not publish a fresh report"
-  (cd "$SDK_DIRECTORY" && python3 -I - "$report" "$process_exit" "$state_mode" "$target_repository" "$TOOL_SDK_RECEIPT") <<'PY' || exit "$ORCHESTRATION_REFUSAL"
+  local casing_table
+  casing_table=$(realpath -e -- "$(dirname -- "${BASH_SOURCE[0]}")/../docs/contracts/invariant-upper-v1.json") || fail "casing contract is missing"
+  (cd "$SDK_DIRECTORY" && python3 -I - "$report" "$process_exit" "$state_mode" "$target_repository" "$TOOL_SDK_RECEIPT" "$casing_table") <<'PY' || exit "$ORCHESTRATION_REFUSAL"
 import glob, hashlib, json, os, stat, sys
 path, process_exit, state_mode, repository, sdk_receipt = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
 def unique_object(pairs):
@@ -200,6 +202,14 @@ try:
         report = read_json(stream)
     if not isinstance(report, dict):
         raise ValueError("report root must be an object")
+    with open(sys.argv[6], "rb") as stream:
+        casing_bytes = stream.read(65537)
+    if len(casing_bytes) > 65536 or hashlib.sha256(casing_bytes).hexdigest() != "a71e26998ab4368c42aab083d7040ac7c04a320aa65b4912c2168a6165b5ae2a":
+        raise ValueError("pinned simple-casing contract changed")
+    casing = json.loads(casing_bytes, object_pairs_hook=unique_object)
+    if casing.get("schemaVersion") != "1" or casing.get("unicodeVersion") != "15.0.0":
+        raise ValueError("unsupported simple-casing contract")
+    upper_map = {int(key, 16): chr(int(value, 16)) for key, value in casing["upper"].items()}
     if report.get("schemaVersion") != "2" or report.get("mode") != "check":
         raise ValueError("functional gate requires a schema v2 check report")
     def identity(domain, components):
@@ -213,8 +223,8 @@ try:
     def sha(value):
         return isinstance(value, str) and len(value) == 64 and all(item in "0123456789abcdef" for item in value)
     def invariant_upper(value):
-        # .NET uses simple invariant casing, never Python's multi-character expansions.
-        return "".join(char if char == "\u0131" or len(char.upper()) != 1 else char.upper() for char in value)
+        # Pinned Unicode simple mappings, with .NET's invariant dotless-i exception.
+        return "".join(char if char == "\u0131" else upper_map.get(ord(char), char) for char in value)
     def ordinal_ignore_case(value):
         # OrdinalIgnoreCase also keeps non-ASCII characters separate from ASCII
         # (e.g. long-s and S), even when invariant uppercase maps them together.
@@ -255,7 +265,7 @@ try:
         raise ValueError("report contains SIDECAR_PUBLICATION_FAILURE")
     execution_codes = {
         "TARGETED_DIAGNOSTIC", "MUTATION_EXECUTION_FAILED", "COVERAGE_PROVENANCE_INCOMPLETE",
-        "BASELINE_ACCOUNTING_INCOMPLETE", "PROOF_ELIGIBILITY_FAILED",
+        "BASELINE_ACCOUNTING_INCOMPLETE",
         "OVERALL_DEADLINE_EXCEEDED", "EXECUTION_CANCELLED",
         "BASELINE_TIMEOUT", "BASELINE_INCONCLUSIVE", "COVERAGE_MISSING",
         "SUITE_MEMBERS_MISSING", "MUTATION_ATTEMPT_OMITTED",

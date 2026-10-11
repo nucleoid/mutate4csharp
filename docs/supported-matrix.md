@@ -40,3 +40,11 @@ child testhosts, or separate uninstrumented assembly copies. Those scenarios do 
 coverage under this profile. Uncovered evidence records the collector profile and PDB aggregate projection.
 
 Methods with calls, branches, exception handlers, generated state or hidden points do not receive aggregate-zero uncovered proof; their mutants execute. This avoids the instruction-skipping cases in [Coverlet 6.0.4 instrumentation](https://github.com/coverlet-coverage/coverlet/blob/v6.0.4/src/coverlet.core/Instrumentation/Instrumenter.cs).
+
+The Bash gate's simple-casing interop is pinned to UnicodeData 15.0.0, with the .NET invariant
+dotless-i exception and ordinal ASCII/non-ASCII distinction. The shipped table is checksum-bound;
+Greek simple uppercase mappings are tested separately from Python's full uppercase expansions.
+Names requiring newer Unicode casing are outside this verified interop profile and fail closed.
+The table and Unicode license ship together. Source: [UnicodeData 15.0.0](https://www.unicode.org/Public/15.0.0/ucd/UnicodeData.txt).
+Aggregate-zero projection is verified with Release compilation; Debug block-bodied methods commonly
+contain return branches and therefore execute conservatively instead of receiving uncovered proof.

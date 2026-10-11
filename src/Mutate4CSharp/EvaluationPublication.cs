@@ -14,16 +14,22 @@ internal static class EvaluationPublication
         ReportWriter.ValidateDestination(path, inputs);
         string? fingerprint = null;
         ProvenEvaluationSidecar? proven = null;
-        var phase = EvaluationPublicationPhase.Eligibility;
+        var phase = EvaluationPublicationPhase.Report;
         try
         {
             // No positive artifact is written until proof eligibility is checked.
             var bytes = ReportWriter.Serialize(report);
+            if (store is not null && material is not null)
+                fingerprint = EvaluationFingerprint.Compute(material);
             if (report.Outcome == EvaluationOutcome.Pass)
             {
+                phase = EvaluationPublicationPhase.Eligibility;
                 if (snapshotId is null || material is null || plan is null)
                     throw new EvaluationContractException("PASS requires captured provenance and its issuing selection plan.");
-                fingerprint = EvaluationFingerprint.ComputeForProven(material);
+                var eligibleFingerprint = EvaluationFingerprint.ComputeForProven(material);
+                if (fingerprint is not null && fingerprint != eligibleFingerprint)
+                    throw new EvaluationContractException("Proof eligibility changed the captured evaluation identity.");
+                fingerprint = eligibleFingerprint;
                 proven = new("2", SidecarRecordKind.Proven, report.RunId, report.GeneratedAtUtc,
                     fingerprint, snapshotId, Hash(bytes), bytes.LongLength, true, coverage, report.Counts);
                 SidecarStore.ValidateProvenPublication(proven, report, material, plan);

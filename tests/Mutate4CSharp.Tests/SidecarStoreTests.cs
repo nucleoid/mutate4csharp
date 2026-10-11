@@ -549,13 +549,48 @@ public sealed class SidecarStoreTests : IDisposable
     {
         var (store, report, record, material, plan) = ValidProven();
         var path = Path.Combine(_directory, "eligibility-" + noState + ".json");
+        store.PublishProven(record, report, material, plan);
         var facts = plan.FinalizeFacts(report.Baseline, report.Units, false);
         var result = EvaluationPublication.Publish(path, [], report, facts, noState ? null : store,
             record.SnapshotId, material with { ProvenanceComplete = false }, plan, record.Coverage);
         Assert.Equal(EvaluationOutcome.Incomplete, result.Outcome);
         Assert.Contains(result.IncompleteConditions, item => item.Code == "PROOF_ELIGIBILITY_FAILED");
         Assert.DoesNotContain(result.IncompleteConditions, item => item.Code == "SIDECAR_WRITE_FAILED");
-        Assert.False(File.Exists(store.ProvenPath(record.EvaluationFingerprint)));
+        Assert.Equal(noState, File.Exists(store.ProvenPath(record.EvaluationFingerprint)));
+        if (!noState)
+        {
+            using var discovery = JsonDocument.Parse(File.ReadAllBytes(Assert.Single(Directory.EnumerateFiles(
+                Path.Combine(_directory, ".mutate4csharp", "discovery"), "*.json"))));
+            Assert.Equal("2", discovery.RootElement.GetProperty("schemaVersion").GetString());
+            Assert.Equal(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant(),
+                discovery.RootElement.GetProperty("reportSha256").GetString());
+            Assert.Equal("INCOMPLETE", discovery.RootElement.GetProperty("evaluationOutcome").GetString());
+        }
+    }
+
+    [Fact]
+    public void MalformedConclusiveReportRemainsPublicationError()
+    {
+        var report = EvaluationReport.CreateSynthetic(EvaluationOutcome.Fail, "malformed-fail", "STRUCTURAL_FIXTURE");
+        var facts = new EvaluationFacts(report.Baseline, report.Counts.Enumerated, report.Units, false, []);
+        var result = EvaluationPublication.Publish(Path.Combine(_directory, "malformed-fail.json"), [],
+            report with { Suites = [] }, facts, null, null, null, null, []);
+        Assert.Contains(result.IncompleteConditions, item => item.Code == "REPORT_PUBLICATION_FAILED");
+        Assert.DoesNotContain(result.IncompleteConditions, item => item.Code == "PROOF_ELIGIBILITY_FAILED");
+    }
+
+    [Fact]
+    public void StatePreparationFailureStillRevokesPriorRecognizedProof()
+    {
+        var (store, report, record, material, plan) = ValidProven();
+        var proof = store.PublishProven(record, report, material, plan);
+        File.WriteAllText(Path.Combine(_directory, ".mutate4csharp", ".gitignore"), "foreign-contract\n");
+        var result = EvaluationPublication.Publish(Path.Combine(_directory, "preparation-failed.json"), [], report,
+            plan.FinalizeFacts(report.Baseline, report.Units, false), store, record.SnapshotId, material, plan, record.Coverage);
+        Assert.Equal(EvaluationOutcome.Incomplete, result.Outcome);
+        Assert.Contains(result.IncompleteConditions, item => item.Code == "SIDECAR_WRITE_FAILED");
+        Assert.False(File.Exists(proof));
+        Assert.Equal("foreign-contract\n", File.ReadAllText(Path.Combine(_directory, ".mutate4csharp", ".gitignore")));
     }
 
     [Fact]

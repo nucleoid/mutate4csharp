@@ -82,6 +82,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
     [InlineData("non-object", "[]", 4, "report root must be an object")]
     [InlineData("unknown-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"NOT_A_GATE_CONDITION\"}],\"counts\":{\"enumerated\":null}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
     [InlineData("retired-enumeration", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"ENUMERATION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":null}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
+    [InlineData("eligibility-integrity", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"PROOF_ELIGIBILITY_FAILED\"}],\"counts\":{\"enumerated\":0}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
     [InlineData("sdk-unavailable", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"ENUMERATION_SDK_UNAVAILABLE\"}],\"counts\":{\"enumerated\":null}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
     [InlineData("execution-with-foreign-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"BASELINE_INCONCLUSIVE\"},{\"code\":\"SNAPSHOT_DIVERGED\"}],\"counts\":{\"enumerated\":1}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
     [InlineData("zero-with-report", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":0,\"incompleteConditions\":[{\"code\":\"BASELINE_INCONCLUSIVE\"}],\"counts\":{\"enumerated\":0}}", 0, "outcome does not match")]
@@ -143,7 +144,6 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
     [InlineData("SUITE_MEMBERS_MISSING")]
     [InlineData("MUTATION_ATTEMPT_OMITTED")]
     [InlineData("BASELINE_ACCOUNTING_INCOMPLETE")]
-    [InlineData("PROOF_ELIGIBILITY_FAILED")]
     public async Task GateAcceptsValidatedExecutionIncompletenessWithoutAcceptingIntegrityFailures(string code)
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "The shipped workflow is a Bash integration.");
@@ -252,6 +252,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
     [Theory]
     [InlineData("PASS", false, "tests/Straße.Tests.csproj", "Straße.Tests.dll")]
     [InlineData("PASS", false, "tests/ı.Tests.csproj", "ı.Tests.dll")]
+    [InlineData("PASS", false, "tests/ᾳ.Tests.csproj", "ᾳ.Tests.dll")]
     [InlineData("NOT_APPLICABLE", false, "tests/App.Tests.csproj", "Tests.dll")]
     [InlineData("NOT_APPLICABLE", true, "tests/App.Tests.csproj", "Tests.dll")]
     public async Task GateAcceptsConclusiveReportAccountingAndPolicy(string outcome, bool allowNa,

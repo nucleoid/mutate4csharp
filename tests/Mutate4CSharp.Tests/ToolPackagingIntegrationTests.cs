@@ -62,6 +62,10 @@ public sealed class ToolPackagingIntegrationTests : IDisposable
             Assert.Contains("docs/contracts/discovery-state-v1.schema.json", entries);
             Assert.Contains("docs/contracts/evaluation-report-v1.schema.json", entries);
             Assert.Contains("docs/contracts/proven-state-v1.schema.json", entries);
+            Assert.Contains("docs/contracts/proven-state-v2.schema.json", entries);
+            Assert.Contains("docs/contracts/discovery-state-v2.schema.json", entries);
+            Assert.Contains("docs/contracts/invariant-upper-v1.json", entries);
+            Assert.Contains("docs/contracts/invariant-upper-v1.LICENSE.txt", entries);
             Assert.Contains("NuGet.local.config", entries);
             Assert.Contains("examples/agent-gate/NuGet.Config", entries);
             Assert.Contains("examples/agent-gate/.gitignore", entries);

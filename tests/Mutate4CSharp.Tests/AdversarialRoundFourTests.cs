@@ -32,12 +32,14 @@ public sealed class AdversarialRoundFourTests : IDisposable
             fullPlan.FinalizeFacts(BaselineStatus.Green, completed, false));
     }
 
-    [Fact]
-    public void ProvenPublicationRefusesTheTargetedLedgerToFullPlanPath()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ProvenPublicationRefusesTheTargetedLedgerToFullPlanPath(bool stripFlags)
     {
         var context = TargetedContext();
 
-        PublishThroughFullPlan(context);
+        PublishThroughFullPlan(context, stripFlags);
     }
 
     [Fact]
@@ -118,14 +120,17 @@ public sealed class AdversarialRoundFourTests : IDisposable
         Assert.False(Evaluate(CurrentSchema, node));
     }
 
-    private void PublishThroughFullPlan(TargetedTestContext context)
+    private void PublishThroughFullPlan(TargetedTestContext context, bool stripFlags)
     {
         var completed = context.TargetedPlan.CreatePendingLedger()
-            .Select(item => new EvaluationUnitResult(item.UnitId, item.EvaluationUnitId,
-                UnitDisposition.Killed, [new("MUTANT_KILLED", "Attacker stripped the targeted flags and plan provenance.")]))
+            .Select(item => stripFlags ? new EvaluationUnitResult(item.UnitId, item.EvaluationUnitId,
+                UnitDisposition.Killed, [new("MUTANT_KILLED", "Attacker stripped the targeted flags and plan provenance.")]) :
+                context.TargetedPlan.Reduce(item, [new(1, UnitDisposition.Killed,
+                    [new("MUTANT_KILLED", "Actual targeted execution evidence.")])]))
             .ToArray();
         var fullPlan = MutationSelection.Plan(context.Bound, context.Material);
-        var facts = new EvaluationFacts(BaselineStatus.Green, completed.Length, completed, false, []);
+        var facts = stripFlags ? new EvaluationFacts(BaselineStatus.Green, completed.Length, completed, false, []) :
+            context.TargetedPlan.FinalizeFacts(BaselineStatus.Green, completed, false);
         var decision = EvaluationReducer.Reduce(facts);
         var report = Report(facts, decision, context.Scope, context.SnapshotId);
         var reportBytes = ReportWriter.Serialize(report);
@@ -139,7 +144,8 @@ public sealed class AdversarialRoundFourTests : IDisposable
 
         var failure = Assert.Throws<EvaluationContractException>(() =>
             new SidecarStore(_directory).PublishProven(record, report, context.Material, fullPlan));
-        Assert.Contains("finalizing mutation plan", failure.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Proven publication report provenance does not match the finalizing mutation plan.", failure.Message);
+        Assert.IsType<EvaluationContractException>(failure.InnerException);
     }
 
     private static JsonObject TargetedReportNode()

@@ -379,7 +379,6 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 try
                 {
                     sidecarStore = new SidecarStore(stateRoot);
-                    sidecarStore.PrepareForPublication();
                 }
                 catch (Exception ex) when (!IsFatal(ex))
                 {

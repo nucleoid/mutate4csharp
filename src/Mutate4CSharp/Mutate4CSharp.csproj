@@ -50,6 +50,8 @@
     <None Include="../../docs/contracts/report-v2-migration.md" Pack="true" PackagePath="docs/contracts/" />
     <None Include="../../docs/contracts/proven-state-v1.schema.json" Pack="true" PackagePath="docs/contracts/" />
     <None Include="../../docs/contracts/proven-state-v2.schema.json" Pack="true" PackagePath="docs/contracts/" />
+    <None Include="../../docs/contracts/invariant-upper-v1.json" Pack="true" PackagePath="docs/contracts/" />
+    <None Include="../../docs/contracts/invariant-upper-v1.LICENSE.txt" Pack="true" PackagePath="docs/contracts/" />
     <None Include="../../examples/agent-gate/NuGet.Config" Pack="true" PackagePath="examples/agent-gate/" />
     <None Include="../../examples/agent-gate/.gitignore" Pack="true" PackagePath="examples/agent-gate/" />
     <None Include="../../examples/agent-gate/mutate4csharp.json" Pack="true" PackagePath="examples/agent-gate/" />
