@@ -307,6 +307,36 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
         Assert.Contains(diagnostic, result.Diagnostic, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("units")]
+    [InlineData("snapshot")]
+    [InlineData("suites")]
+    public async Task GateRejectsContradictoryUnboundCancellation(string retained)
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "The shipped workflow is a Bash integration.");
+        var report = EvaluationReport.CreateSynthetic(EvaluationOutcome.Incomplete, "cancelled-fixture", "SNAPSHOT_CANCELLED");
+        var envelope = JsonNode.Parse(Encoding.UTF8.GetString(ReportWriter.Serialize(report)))!;
+        envelope["baseline"] = "UNKNOWN";
+        envelope["counts"]!["enumerated"] = null;
+        if (retained != "units")
+        {
+            envelope["units"] = new JsonArray();
+            foreach (var key in new[] { "selected", "executed", "freshUncovered", "omitted", "compileInvalid", "killed", "survived", "errors" })
+                envelope["counts"]![key] = 0;
+        }
+        if (retained != "snapshot") envelope["evidence"] = new JsonArray();
+        if (retained != "suites") envelope["suites"] = new JsonArray();
+        var target = Path.Combine(_root, "contradictory-cancel");
+        await CreateRepositoryAsync(target);
+        var head = (await RunAsync(target, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
+        var fixture = await CreateToolFixtureAsync(envelope.ToJsonString(), 4);
+        var result = await RunAsync(target, "bash", Path.Combine(RepositoryRoot, "scripts", "agent-gate.sh"),
+            "gate", target, fixture.Receipt, fixture.PackageSha, fixture.PayloadSha, fixture.ToolCommit,
+            head, head, Path.Combine(_root, "cancelled.json"), "no-state");
+        Assert.Equal(OrchestrationRefusal, result.ExitCode);
+        Assert.Contains("unbound cancellation contradicts", result.Diagnostic, StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task<ToolFixture> CreateToolFixtureAsync(string json, int processExit, string action = "")
     {
         // Complete the unchanged structural fields around each deliberate fault.

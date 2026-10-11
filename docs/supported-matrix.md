@@ -59,7 +59,17 @@ contain return branches and therefore execute conservatively instead of receivin
 
 The Bash source-state guard inventories all ordinary consumer files, including ignored outputs, up to
 100,000 files and 1 GiB total. Symlinks, special files, configured Git filters and undocumented state paths
-are orchestration refusals. It uses `/usr/bin/git`, disables fsmonitor/untracked-cache/hooks, clears Git
+are orchestration refusals, as are submodules, gitlinks and nested repositories. It uses `/usr/bin/git`, disables fsmonitor/untracked-cache/hooks, clears Git
 environment overrides and system/global configuration, and binds local configuration into the digest.
 Default state permits only the documented one-level JSON/lock directories and canonical `*\n` ignore bytes.
 Repositories outside these bounds require a separately reviewed orchestration profile.
+
+Installed fixtures cover policy-authorized N/A exit zero, plan-only operation, actual budget omissions,
+unsupported encoding, baseline timeout, cancellation during baseline execution and original-input drift.
+Ordinary outcome fixtures invoke the gate extracted from the exact package in both state modes; drift
+must normalize to orchestration ERROR. Plan-only operation and baseline cancellation invoke the installed
+tool directly. The cancellation test signals only that owned process and checks its baseline child exits.
+Cancellation stops execution but original-input revalidation uses a separate 30-second integrity-audit
+budget; a cancellation flag still blocks success publication. A bound ledger is retained, while cancellation
+before binding cannot claim known unit counts. Fixture observations record before, observed-after and
+restored source/index/status/head/tree digests; drift restoration happens only after refusal is verified.

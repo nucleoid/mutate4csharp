@@ -62,5 +62,11 @@ public sealed class SourceStateContractTests
         repository.Git("config", "filter.untrusted.clean", "touch '" + hookMarker + "'");
         Assert.Contains("refuses configured Git filters", await Capture("no-state", false));
         Assert.False(File.Exists(hookMarker));
+        repository.Git("config", "--unset", "filter.untrusted.clean");
+        repository.WriteText(".gitmodules", "[submodule \"unsupported\"]\n");
+        Assert.Contains("refuses submodules", await Capture("no-state", false));
+        File.Delete(Path.Combine(repository.Root, ".gitmodules"));
+        Directory.CreateDirectory(Path.Combine(repository.Root, "nested/.git"));
+        Assert.Contains("refuses nested repositories", await Capture("no-state", false));
     }
 }

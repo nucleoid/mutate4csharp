@@ -34,8 +34,37 @@ public sealed partial class ToolPackagingIntegrationTests
         foreach (var installedPackage in installedPackages)
             Assert.Equal(SHA256.HashData(File.ReadAllBytes(packagePath)), SHA256.HashData(File.ReadAllBytes(installedPackage)));
         var payload = GateCompatiblePayloadHash(toolPath);
+        var assets = Path.Combine(_root, "contract-assets");
+        using (var package = ZipFile.OpenRead(packagePath))
+            foreach (var entry in package.Entries.Where(entry => entry.Name.Length > 0 &&
+                         (entry.FullName.StartsWith("scripts/", StringComparison.Ordinal) || entry.FullName.StartsWith("docs/contracts/", StringComparison.Ordinal))))
+            {
+                var target = Path.GetFullPath(Path.Combine(assets, entry.FullName));
+                Assert.StartsWith(Path.GetFullPath(assets) + Path.DirectorySeparatorChar, target);
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                entry.ExtractToFile(target);
+                Assert.Equal(File.ReadAllBytes(Path.Combine(RepositoryRoot, entry.FullName)), File.ReadAllBytes(target));
+            }
+        var gate = Path.Combine(assets, "scripts", "agent-gate.sh");
+        var sdk = Path.Combine(_root, "sdk");
+        Directory.CreateDirectory(sdk);
+        File.Copy(Path.Combine(RepositoryRoot, "global.json"), Path.Combine(sdk, "global.json"));
+        var runtime = await RunAsync(sdk, DotnetHost(), "--version");
+        Assert.Equal(0, runtime.ExitCode);
+        var host = await RunAsync(_root, "bash", "-c", "command -v -- \"$1\"", "host", DotnetHost());
+        Assert.Equal(0, host.ExitCode);
+        var canonicalHost = await RunAsync(_root, "realpath", "-e", "--", host.StandardOutput.Trim());
+        Assert.Equal(0, canonicalHost.ExitCode);
+        var receipt = Path.Combine(_root, "contract-gate.tsv");
+        File.WriteAllText(receipt, $"format\tmutate4csharp-agent-gate-v4\nlocal_tool_version\t{PackageVersion}\ntool_package\t{packagePath}\ntool_payload\t{toolPath}\nruntime_version\t{runtime.StandardOutput.Trim()}\ndotnet_host\t{canonicalHost.StandardOutput.Trim()}\n");
+        var packageHash = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(packagePath)));
 
-        foreach (var scenario in new[] { "strong", "weak", "uncovered", "red", "empty", "zero", "zero-allowed", "plan", "partial", "unsupported", "timeout", "cancel", "drift" })
+        var scenarios = new[] { "strong", "weak", "uncovered", "red", "empty", "zero", "zero-allowed", "plan", "partial", "unsupported", "timeout", "cancel", "drift" };
+        var requested = Environment.GetEnvironmentVariable("MUTATE4CSHARP_CERTIFICATION_SCENARIOS");
+        var selectedScenarios = requested is null ? scenarios : requested.Split(',');
+        Assert.NotEmpty(selectedScenarios);
+        Assert.All(selectedScenarios, scenario => Assert.Contains(scenario, scenarios));
+        foreach (var scenario in selectedScenarios)
         {
             var consumer = Path.Combine(_root, "contract-" + scenario);
             Directory.CreateDirectory(consumer);
@@ -59,7 +88,7 @@ public sealed partial class ToolPackagingIntegrationTests
                 "empty" => "using Example; using Xunit; public class FlagTests { [Fact(Skip=\"Intentional empty executed baseline\")] public void Skipped() => Assert.True(Flag.Value()); }",
                 "zero" or "zero-allowed" => "using Example; using Xunit; public class FlagTests { [Fact] public void Identity() => Assert.True(Flag.Value(true)); }",
                 "timeout" => "using Example; using Xunit; public class FlagTests { [Fact] public void Slow() { System.Threading.Thread.Sleep(20_000); Assert.True(Flag.Value()); } }",
-                "cancel" => "using Example; using Xunit; public class FlagTests { [Fact] public void WaitForSignal() { System.IO.File.WriteAllText(" + JsonSerializer.Serialize(cancelMarker) + ", \"ready\"); System.Threading.Thread.Sleep(300_000); Assert.True(Flag.Value()); } }",
+                "cancel" => "using Example; using Xunit; public class FlagTests { [Fact] public void WaitForSignal() { System.IO.File.WriteAllText(" + JsonSerializer.Serialize(cancelMarker) + ", System.Environment.ProcessId.ToString()); System.Threading.Thread.Sleep(300_000); Assert.True(Flag.Value()); } }",
                 "drift" => "using Example; using Xunit; public class FlagTests { [Fact] public void ChangeOriginal() { System.IO.File.WriteAllText(" + JsonSerializer.Serialize(source) + ", \"changed original during frozen execution\"); Assert.True(Flag.Value()); } }",
                 _ => "using Example; using Xunit; public class FlagTests { [Fact] public void Behavior() => Assert.True(Flag.Value()); }"
             });
@@ -95,6 +124,7 @@ public sealed partial class ToolPackagingIntegrationTests
             var indexFlags = (await RunAsync(consumer, "git", "ls-files", "--stage", "-v")).StandardOutput;
             var head = (await RunAsync(consumer, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
             var tree = (await RunAsync(consumer, "git", "rev-parse", "HEAD^{tree}")).StandardOutput.Trim();
+            var beforeObservation = new ConsumerObservation(sourceState, indexFlags, status, head, tree);
             JsonDocument? first = null;
             try
             {
@@ -106,10 +136,13 @@ public sealed partial class ToolPackagingIntegrationTests
                     if (scenario == "plan") arguments.Add("--plan");
                     File.Delete(cancelMarker);
                     var result = scenario == "cancel" ? await RunAndCancelAsync(consumer, command, cancelMarker, arguments.ToArray())
-                        : await RunAsync(consumer, command, arguments.ToArray());
+                        : scenario == "plan" ? await RunAsync(consumer, command, arguments.ToArray())
+                        : await RunAsync(consumer, "bash", gate, "gate", consumer, receipt, packageHash, payload, SourceCommit,
+                            baseline, head, reportPath, noState ? "no-state" : "default-state");
+                    var afterObservation = await ObserveConsumerAsync(consumer);
                     using var report = JsonDocument.Parse(File.ReadAllBytes(reportPath));
                     var outcome = scenario switch { "strong" => "PASS", "weak" or "uncovered" => "FAIL", "zero" or "zero-allowed" => "NOT_APPLICABLE", _ => "INCOMPLETE" };
-                    var exit = scenario switch { "strong" or "zero-allowed" => 0, "weak" or "uncovered" => 3, "zero" => 5, "red" or "empty" => 2, _ => 4 };
+                    var exit = scenario switch { "strong" or "zero-allowed" => 0, "weak" or "uncovered" => 3, "zero" => 5, "red" or "empty" => 2, "drift" => 73, _ => 4 };
                     Assert.True(result.ExitCode == exit, scenario + ": " + result.Diagnostic);
                     Assert.Equal(outcome, report.RootElement.GetProperty("outcome").GetString());
                     Assert.Contains("Run ID: " + report.RootElement.GetProperty("runId").GetString(), result.StandardOutput);
@@ -142,7 +175,7 @@ public sealed partial class ToolPackagingIntegrationTests
                         .Select(reason => reason.GetProperty("code").GetString()).ToArray();
                     var expectedReason = scenario switch { "red" => "BASELINE_RED", "empty" => "BASELINE_EMPTY", "plan" => "PLAN_ONLY",
                         "partial" => "BUDGET_OMITTED", "unsupported" => "ENUMERATION_ENCODING_UNSUPPORTED", "timeout" => "BASELINE_TIMEOUT",
-                        "cancel" => "SNAPSHOT_CANCELLED", "drift" => "SNAPSHOT_DIVERGED", _ => null };
+                        "cancel" => "EXECUTION_CANCELLED", "drift" => "SNAPSHOT_DIVERGED", _ => null };
                     if (expectedReason is not null) Assert.Contains(expectedReason, reasonCodes);
                     if (scenario == "partial") Assert.True(counts.GetProperty("omitted").GetInt32() > 0);
                     if (scenario == "drift")
@@ -151,6 +184,7 @@ public sealed partial class ToolPackagingIntegrationTests
                         // Restore the deliberately changed fixture only after verifying drift refusal.
                         File.WriteAllBytes(source, bytes);
                     }
+                    var restoredObservation = scenario == "drift" ? await ObserveConsumerAsync(consumer) : afterObservation;
                     if (first is null) first = JsonDocument.Parse(File.ReadAllBytes(reportPath));
                     else Assert.Equal(first.RootElement.GetProperty("counts").GetRawText(), counts.GetRawText());
                     Assert.Equal(bytes, File.ReadAllBytes(source));
@@ -163,7 +197,8 @@ public sealed partial class ToolPackagingIntegrationTests
                     if (noState) Assert.False(Directory.Exists(Path.Combine(consumer, ".mutate4csharp")));
                     else AssertDocumentedSidecars(consumer);
                     SaveCertification(scenario, noState, baseline, head, tree, sourceState, packagePath,
-                        payload, indexFlags, status, arguments, result.ExitCode, File.ReadAllBytes(reportPath), report.RootElement);
+                        payload, indexFlags, status, arguments, result.ExitCode, File.ReadAllBytes(reportPath), report.RootElement,
+                        beforeObservation, afterObservation, restoredObservation);
                 }
                 var proof = Path.Combine(consumer, ".mutate4csharp", "proven");
                 Assert.Equal(scenario == "strong", Directory.Exists(proof) && Directory.EnumerateFiles(proof, "*.json").Any());
@@ -180,18 +215,29 @@ public sealed partial class ToolPackagingIntegrationTests
         using var process = Process.Start(info)!;
         var output = process.StandardOutput.ReadToEndAsync();
         var error = process.StandardError.ReadToEndAsync();
+        Process? baselineHost = null;
         try
         {
             using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(8));
             while (!File.Exists(marker) && !process.HasExited) await Task.Delay(100, deadline.Token);
             Assert.True(File.Exists(marker), "Installed cancellation fixture never reached real baseline execution.");
+            int baselinePid;
+            while (!int.TryParse(File.ReadAllText(marker), out baselinePid)) await Task.Delay(100, deadline.Token);
+            baselineHost = Process.GetProcessById(baselinePid);
             Assert.Equal(0, (await RunAsync(_root, "/usr/bin/kill", "-TERM", process.Id.ToString())).ExitCode);
             await process.WaitForExitAsync(deadline.Token);
+            using var cleanupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await baselineHost.WaitForExitAsync(cleanupDeadline.Token);
             return new(process.ExitCode, await output, await error);
         }
         finally
         {
             if (!process.HasExited) { process.Kill(entireProcessTree: true); await process.WaitForExitAsync(); }
+            if (baselineHost is not null)
+            {
+                if (!baselineHost.HasExited) { baselineHost.Kill(entireProcessTree: true); await baselineHost.WaitForExitAsync(); }
+                baselineHost.Dispose();
+            }
         }
     }
 
@@ -233,7 +279,7 @@ public sealed partial class ToolPackagingIntegrationTests
 
     private static void SaveCertification(string scenario, bool noState, string baseline, string head,
         string tree, string[] sourceState, string package, string payload, string indexFlags, string status, List<string> arguments,
-        int exit, byte[] reportBytes, JsonElement report)
+        int exit, byte[] reportBytes, JsonElement report, ConsumerObservation before, ConsumerObservation after, ConsumerObservation restored)
     {
         var directory = Environment.GetEnvironmentVariable("MUTATE4CSHARP_CERTIFICATION_DIRECTORY");
         if (string.IsNullOrEmpty(directory)) return;
@@ -246,8 +292,13 @@ public sealed partial class ToolPackagingIntegrationTests
             packageSha256 = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(package))),
             payloadSha256 = payload, baseline, head, tree, noState, exit,
             argv = arguments.Select((value, index) => index > 0 && arguments[index - 1] == "--report" ? "<external-report>" : value).ToArray(),
-            sourceFiles = sourceState, sourceStateUnchanged = scenario != "drift", indexStatusHeadUnchanged = scenario != "drift",
-            fixtureRestoredOriginalAfterDriftRefusal = scenario == "drift",
+            sourceFiles = sourceState, sourceStateUnchanged = before.Files.SequenceEqual(after.Files),
+            indexStatusHeadUnchanged = before.Index == after.Index && before.Status == after.Status && before.Head == after.Head && before.Tree == after.Tree,
+            fixtureRestoredOriginalAfterDriftRefusal = scenario == "drift" && !before.Files.SequenceEqual(after.Files) && before.Files.SequenceEqual(restored.Files) &&
+                before.Index == restored.Index && before.Status == restored.Status && before.Head == restored.Head && before.Tree == restored.Tree,
+            observations = new[] { SanitizeObservation(before), SanitizeObservation(after), SanitizeObservation(restored) },
+            toolExit = report.GetProperty("exitCode").GetInt32(), orchestrationExit = exit,
+            normalizedOutcome = exit == 73 ? "ERROR" : report.GetProperty("outcome").GetString(),
             sourceStateDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n", sourceState)))),
             indexDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(indexFlags))),
             statusDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(status))),
@@ -268,4 +319,20 @@ public sealed partial class ToolPackagingIntegrationTests
         File.WriteAllBytes(path, bytes);
         File.WriteAllText(path + ".sha256", Convert.ToHexStringLower(SHA256.HashData(bytes)) + "\n");
     }
+
+    private sealed record ConsumerObservation(string[] Files, string Index, string Status, string Head, string Tree);
+
+    private async Task<ConsumerObservation> ObserveConsumerAsync(string consumer) => new(ConsumerFiles(consumer),
+        (await RunAsync(consumer, "git", "ls-files", "--stage", "-v")).StandardOutput,
+        (await RunAsync(consumer, "git", "status", "--porcelain=v1", "--untracked-files=all")).StandardOutput,
+        (await RunAsync(consumer, "git", "rev-parse", "HEAD")).StandardOutput.Trim(),
+        (await RunAsync(consumer, "git", "rev-parse", "HEAD^{tree}")).StandardOutput.Trim());
+
+    private static object SanitizeObservation(ConsumerObservation value) => new
+    {
+        files = value.Files, value.Head, value.Tree,
+        sourceDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n", value.Files)))),
+        indexDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value.Index))),
+        statusDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value.Status)))
+    };
 }

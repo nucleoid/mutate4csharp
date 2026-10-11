@@ -63,6 +63,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         IReadOnlyList<CoverageProvenance> coverageProvenance = [];
         EvaluationReason? reason = null;
         var evidence = new List<EvaluationEvidence>();
+        var executionStarted = false;
         try
         {
             var inputPaths = options.Inputs.Select(Path.GetFullPath).ToArray();
@@ -134,6 +135,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             }
             else
             {
+                executionStarted = true;
                 var execution = await StrictExecutionPipeline.RunAsync(snapshot, snapshotId!, runId, scopePlan,
                     checkConfiguration, exactMutationIds, options.PlanFingerprint, cancellationToken, _beforeCoverageParsing);
                 fingerprintMaterial = execution.FingerprintMaterial;
@@ -197,9 +199,11 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         }
         catch (OperationCanceledException)
         {
-            reason = new("SNAPSHOT_CANCELLED", "Immutable capture or scope planning was cancelled.");
-            evidence.Add(new("SNAPSHOT_CANCELLATION",
-                "Cancellation was observed and owned capture state was cleaned up."));
+            reason = executionStarted
+                ? new("EXECUTION_CANCELLED", "Strict execution was cancelled before it returned a bound final ledger.")
+                : new("SNAPSHOT_CANCELLED", "Immutable capture or scope planning was cancelled.");
+            evidence.Add(new(executionStarted ? "EXECUTION_CANCELLATION" : "SNAPSHOT_CANCELLATION",
+                "Cancellation was observed; original inputs are revalidated before owned state is disposed."));
         }
         catch (System.Text.DecoderFallbackException ex)
         {
@@ -245,7 +249,9 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         {
             if (snapshot is not null)
             {
-                try { await snapshot.ValidateOriginalAsync(cancellationToken); }
+                // Cancellation stops execution, but must not skip the final integrity audit.
+                using var integrityAudit = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                try { await snapshot.ValidateOriginalAsync(integrityAudit.Token); }
                 catch (SnapshotCaptureException ex)
                 {
                     var previousReason = reason;
@@ -355,6 +361,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                         truncationLabel: "ids-truncated")));
             }
             var incompleteConditions = new List<EvaluationReason>();
+            if (executionStarted && cancellationToken.IsCancellationRequested)
+                incompleteConditions.Add(new("EXECUTION_CANCELLED", "Cancellation prevents success publication even when execution already returned."));
             if (reason is not null) incompleteConditions.Add(reason);
             incompleteConditions.AddRange(enumerationReasons);
             incompleteConditions.AddRange(scopePlan.Reasons.Concat(scopePlan.Files.SelectMany(file => file.Reasons))

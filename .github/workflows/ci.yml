@@ -34,6 +34,7 @@ jobs:
           scripts/agent-gate.sh prepare "$GITHUB_WORKSPACE" "$WORKSPACE" "$RECEIPT" | tee "${WORKSPACE}.prepare.txt"
           echo "MUTATE4CSHARP_PACKED_FEED=${WORKSPACE}/feed" >> "$GITHUB_ENV"
       - name: local-tool-workflow
+        id: installed_contract
         if: runner.os == 'Linux'
         env:
           MUTATE4CSHARP_CERTIFICATION_DIRECTORY: ${{ runner.temp }}/mutate4csharp-installed-certification
@@ -42,9 +43,9 @@ jobs:
         if: runner.os == 'Linux' && always()
         uses: actions/upload-artifact@v4
         with:
-          name: installed-certification-${{ github.sha }}
+          name: installed-certification-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ runner.temp }}/mutate4csharp-installed-certification
-          if-no-files-found: error
+          if-no-files-found: ${{ steps.installed_contract.outcome == 'success' && 'error' || 'warn' }}
       - name: round-seven-shipped-workflow
         if: runner.os == 'Linux'
         shell: bash

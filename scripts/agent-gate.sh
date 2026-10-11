@@ -340,6 +340,11 @@ try:
         if execution_valid:
             cancelled_before_binding = enumerated is None and all(
                 item["code"] in {"EXECUTION_CANCELLED", "SNAPSHOT_CANCELLED"} for item in conditions)
+            if cancelled_before_binding and (units or report.get("suites") or any(
+                    isinstance(item, dict) and (item.get("kind") == "MUTATION_PLAN" or
+                    (any(reason["code"] == "SNAPSHOT_CANCELLED" for reason in conditions) and item.get("kind") == "INPUT_SNAPSHOT"))
+                    for item in evidence)):
+                raise ValueError("unbound cancellation contradicts retained unit, suite or snapshot evidence")
             if not cancelled_before_binding and (not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated < 0):
                 raise ValueError("report lacks a bounded nonnegative enumeration count")
         elif enumeration_refusal and enumerated is not None:
@@ -663,7 +668,7 @@ gate() {
   [[ "$state_mode" = no-state ]] && arguments+=(--no-state)
   local state_script source_before source_after
   state_script=$(realpath -e -- "$(dirname -- "${BASH_SOURCE[0]}")/source-state.py") || fail "source-state contract is missing"
-  [[ "$(sha256_file "$state_script")" = "41df0030e3432c0e84c6da19af76f3a27e811a54038c096d64e616974d4dd7f6" ]] || fail "source-state contract changed"
+  [[ "$(sha256_file "$state_script")" = "cd9db967e82de634cc6126e37faf3709a9c5e501cbb81aa3d28ff447da270ad6" ]] || fail "source-state contract changed"
   source_before=$(python3 -I "$state_script" "$target_repository" "$state_mode") || fail "source-state capture failed"
   local exit_code
   if (cd "$target_repository" && trusted_tool "${arguments[@]}"); then
