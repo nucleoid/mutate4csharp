@@ -21,11 +21,20 @@ public sealed class PortablePdbCoverageTests
     [InlineData("bare-ambiguous")]
     [InlineData("bare-missing-pdb")]
     [InlineData("bare-linked-bin")]
+    [InlineData("with-call")]
+    [InlineData("with-branch")]
+    [InlineData("generated")]
     public async Task PlaceholderCoverageNeedsVerifiedAssemblyPdbSourceAndSequenceOffset(string alteration)
     {
         Assert.SkipWhen(OperatingSystem.IsWindows() && alteration == "bare-linked-bin", "Link creation is exercised on Linux without changing Windows privileges.");
         using var repository = new SnapshotTestRepository();
-        repository.WriteText("src/A.cs", "public static class A { public static bool Value() => true; }\n");
+        repository.WriteText("src/A.cs", alteration switch
+        {
+            "with-call" => "public static class A { public static bool Value() => System.Math.Abs(1) > 0; }\n",
+            "with-branch" => "public static class A { public static bool Value(int input) { if (input > 0) return true; return input == -1; } }\n",
+            "generated" => "public static class A { [System.Runtime.CompilerServices.CompilerGenerated] public static bool Value() => true; }\n",
+            _ => "public static class A { public static bool Value() => true; }\n"
+        });
         repository.Git("add", ".");
         repository.Git("commit", "-m", "PDB coverage fixture");
         await using var snapshot = await SnapshotCapture.CaptureAsync(repository.Root, "HEAD", [],
@@ -38,7 +47,8 @@ public sealed class PortablePdbCoverageTests
         var tree = CSharpSyntaxTree.ParseText(text, path: file, cancellationToken: TestContext.Current.CancellationToken);
         var compilation = CSharpCompilation.Create("PdbFixture", [tree],
             [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)],
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, deterministic: true));
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, deterministic: true,
+                optimizationLevel: OptimizationLevel.Release));
         var assembly = Path.Combine(clone.Root, "PdbFixture.dll");
         var pdb = Path.ChangeExtension(assembly, ".pdb");
         using (var pe = File.Create(assembly))
@@ -93,8 +103,9 @@ public sealed class PortablePdbCoverageTests
             if (alteration == "bare-linked-bin") Directory.CreateSymbolicLink(Path.Combine(clone.Root, "bin"), Path.Combine(clone.Root, "stored"));
         }
         var report = Path.Combine(clone.Root, "coverage.xml");
+        var signature = alteration == "with-branch" ? "System.Boolean A::Value(System.Int32)" : "System.Boolean A::Value()";
         var tokenXml = alteration == "wrong-offset" ? $"<MetadataToken>{token}</MetadataToken>" :
-            "<MetadataToken/><Name>System.Boolean A::Value()</Name>";
+            $"<MetadataToken/><Name>{signature}</Name>";
         var visits = alteration == "coverlet-visited-line" ? 1 : 0;
         var offsetXml = alteration == "wrong-offset" ? $"offset=\"{offset}\"" : "";
         File.WriteAllText(report, $"""

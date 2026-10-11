@@ -104,7 +104,8 @@ internal sealed class OpenCoverPortablePdb
                 if (row > metadata.MethodDefinitions.Count) return null;
                 var method = metadata.GetMethodDefinition(MetadataTokens.MethodDefinitionHandle(row));
                 if (method.RelativeVirtualAddress == 0) continue;
-                var length = pe.GetMethodBody(method.RelativeVirtualAddress).GetILBytes()?.Length ?? 0;
+                var body = pe.GetMethodBody(method.RelativeVirtualAddress);
+                var length = body.GetILBytes()?.Length ?? 0;
                 var debug = reader.GetMethodDebugInformation(handle);
                 string? methodName = null;
                 try
@@ -112,7 +113,7 @@ internal sealed class OpenCoverPortablePdb
                     var signature = method.DecodeSignature(new CecilSignatureNames(), (object?)null);
                     methodName = signature.ReturnType + " " + CecilSignatureNames.TypeName(metadata, method.GetDeclaringType()) +
                         "::" + metadata.GetString(method.Name) + "(" + string.Join(',', signature.ParameterTypes) + ")";
-                    if (methodName.Contains('<') || debug.GetSequencePoints().Any(point => point.IsHidden) ||
+                    if (!IsStraightLine(body) || methodName.Contains('<') || debug.GetSequencePoints().Any(point => point.IsHidden) ||
                         method.GetCustomAttributes().Any(attribute => GeneratedAttribute(metadata, attribute)))
                         methodName = null;
                 }
@@ -169,6 +170,48 @@ internal sealed class OpenCoverPortablePdb
     }
 
     private static string IdentityPath(string path) => OperatingSystem.IsWindows() ? path.ToUpperInvariant() : path;
+
+    private static readonly Dictionary<ushort, System.Reflection.Emit.OpCode> OpCodes =
+        typeof(System.Reflection.Emit.OpCodes).GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .Where(field => field.FieldType == typeof(System.Reflection.Emit.OpCode))
+            .Select(field => (System.Reflection.Emit.OpCode)field.GetValue(null)!)
+            .ToDictionary(opcode => unchecked((ushort)opcode.Value));
+
+    private static bool IsStraightLine(MethodBodyBlock body)
+    {
+        // Coverlet can skip instructions through reachability, async machinery and
+        // expression-breakpoint branches. Calls, branches and handlers therefore do
+        // not receive aggregate-zero proof; executing their mutants remains safe.
+        if (body.ExceptionRegions.Length != 0 || body.GetILBytes() is not { Length: > 0 } bytes) return false;
+        var offset = 0;
+        while (offset < bytes.Length)
+        {
+            ushort value = bytes[offset++];
+            if (value == 0xfe)
+            {
+                if (offset == bytes.Length) return false;
+                value = (ushort)(0xfe00 | bytes[offset++]);
+            }
+            if (!OpCodes.TryGetValue(value, out var opcode) || opcode.FlowControl is not
+                (System.Reflection.Emit.FlowControl.Next or System.Reflection.Emit.FlowControl.Return)) return false;
+            if (opcode.FlowControl == System.Reflection.Emit.FlowControl.Return) return offset == bytes.Length;
+            var operandLength = opcode.OperandType switch
+            {
+                System.Reflection.Emit.OperandType.InlineNone => 0,
+                System.Reflection.Emit.OperandType.ShortInlineI or System.Reflection.Emit.OperandType.ShortInlineVar => 1,
+                System.Reflection.Emit.OperandType.InlineVar => 2,
+                System.Reflection.Emit.OperandType.InlineI or System.Reflection.Emit.OperandType.ShortInlineR or
+                    System.Reflection.Emit.OperandType.InlineType or System.Reflection.Emit.OperandType.InlineField or
+                    System.Reflection.Emit.OperandType.InlineMethod or System.Reflection.Emit.OperandType.InlineSig or
+                    System.Reflection.Emit.OperandType.InlineString or System.Reflection.Emit.OperandType.InlineTok => 4,
+                System.Reflection.Emit.OperandType.InlineI8 or System.Reflection.Emit.OperandType.InlineR => 8,
+                _ => -1
+            };
+            if (operandLength < 0 || offset > bytes.Length - operandLength) return false;
+            offset += operandLength;
+        }
+        return false;
+    }
 
     private static bool GeneratedAttribute(MetadataReader metadata, CustomAttributeHandle handle)
     {

@@ -133,8 +133,10 @@ The behavior and workflow were inspired by Robert C. Martin's [`unclebob/mutate4
 No upstream Java source or tests are vendored, copied, translated, or executed here. The upstream snapshot had no declared license, so its code is **not** relicensed. The MIT license in this repository covers only the independently authored `mutate4csharp` code and documentation.
 
 Strict coverage uses the pinned Coverlet/VSTest in-process collector profile. A zero aggregate line
-count may establish an uncovered ordinary-method span only after matching the portable PDB and
+count may establish an uncovered ordinary straight-line method span only after matching the portable PDB and
 captured source. Generated/async methods, hidden sequence points, unsupported report producers,
 and ambiguous mappings remain unknown and execute. Coverage from child applications or separately
 loaded assembly copies is outside this collector profile; their execution does not establish measured
 in-process coverage. See [the supported matrix](docs/supported-matrix.md).
+
+Methods with calls, branches, exception handlers, generated state or hidden points do not receive aggregate-zero uncovered proof; their mutants execute. This avoids the instruction-skipping cases in [Coverlet 6.0.4 instrumentation](https://github.com/coverlet-coverage/coverlet/blob/v6.0.4/src/coverlet.core/Instrumentation/Instrumenter.cs).
