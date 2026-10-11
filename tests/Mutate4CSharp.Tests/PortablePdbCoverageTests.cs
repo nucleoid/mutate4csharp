@@ -15,6 +15,8 @@ public sealed class PortablePdbCoverageTests
     [InlineData("changed-source")]
     [InlineData("changed-pdb")]
     [InlineData("wrong-offset")]
+    [InlineData("coverlet-line")]
+    [InlineData("coverlet-visited-line")]
     public async Task PlaceholderCoverageNeedsVerifiedAssemblyPdbSourceAndSequenceOffset(string alteration)
     {
         using var repository = new SnapshotTestRepository();
@@ -67,16 +69,20 @@ public sealed class PortablePdbCoverageTests
         }
         if (alteration == "wrong-offset") offset += 10000;
         var report = Path.Combine(clone.Root, "coverage.xml");
+        var tokenXml = alteration.StartsWith("coverlet-", StringComparison.Ordinal)
+            ? "<MetadataToken/><Name>System.Boolean A::Value()</Name>" : $"<MetadataToken>{token}</MetadataToken>";
+        var visits = alteration == "coverlet-visited-line" ? 1 : 0;
+        var offsetXml = alteration.StartsWith("coverlet-", StringComparison.Ordinal) ? "" : $"offset=\"{offset}\"";
         File.WriteAllText(report, $"""
             <CoverageSession><Modules><Module><ModulePath>{System.Security.SecurityElement.Escape(assembly)}</ModulePath>
             <Files><File uid="1" fullPath="{System.Security.SecurityElement.Escape(file)}"/></Files>
-            <Classes><Class><Methods><Method><MetadataToken>{token}</MetadataToken><FileRef uid="1"/><SequencePoints>
-            <SequencePoint vc="0" offset="{offset}" sl="{line}" sc="1" el="{line}" ec="2"/>
+            <Classes><Class><Methods><Method>{tokenXml}<FileRef uid="1"/><SequencePoints>
+            <SequencePoint vc="{visits}" {offsetXml} sl="{line}" sc="1" el="{line}" ec="2"/>
             </SequencePoints></Method></Methods></Class></Classes></Module></Modules></CoverageSession>
             """);
         var map = CoverageMap.Load([report], clone, snapshot)!;
 
-        Assert.Equal(alteration == "valid" ? CoverageState.Uncovered : CoverageState.Unknown,
+        Assert.Equal(alteration is "valid" or "coverlet-line" ? CoverageState.Uncovered : CoverageState.Unknown,
             map.GetState("src/A.cs", line, column, endLine, endColumn));
     }
 }

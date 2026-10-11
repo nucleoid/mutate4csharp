@@ -361,7 +361,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                     checkConfiguration?.Policy.AllowNotApplicable ?? false, distinctConditions);
             var decision = EvaluationReducer.Reduce(facts);
             var reportEvidence = decision.Evidence.Concat(evidence).ToArray();
-            var report = new EvaluationReport("1", runId, DateTimeOffset.UtcNow,
+            var report = new EvaluationReport(ReportWriter.SchemaVersion, runId, DateTimeOffset.UtcNow,
                 options.Plan ? "plan" : "check", selection, scopePlan,
                 checkConfiguration?.Policy ?? EvaluationReport.DefaultPolicy,
                 facts.Baseline, reportSuites, facts.Units, decision.Counts, facts.IncompleteConditions,

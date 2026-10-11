@@ -194,7 +194,7 @@ being confused with tool usage or a validated strict incomplete result. An accep
 
 ```json
 {
-  "schemaVersion": "1",
+  "schemaVersion": "2",
   "outcome": "PASS",
   "exitCode": 0,
   "incompleteConditions": [],

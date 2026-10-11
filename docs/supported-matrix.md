@@ -25,8 +25,9 @@ local restore, invocation, strict configuration/scope loading, fresh coverage, a
 The representative changed expression has a surviving mutant, so the complete nonzero ledger returns `FAIL` / exit
 `3`. Separate in-repository fixtures prove an all-killed `PASS`, incomplete execution, and explicit zero-effective
 `NOT_APPLICABLE` reduction.
-Coverlet 6.0.4 OpenCover reports are line-granular (`sc=1`, `ec=2` placeholders), so strict execution treats
-their exact-span coverage as unknown and executes those mutants conservatively. Strict `Uncovered` evidence is
-available only from a collector that supplies non-placeholder complete sequence-point spans; the tool never falls
-back to line-only coverage for this decision.
+Coverlet 6.0.4 OpenCover reports contain line-granular placeholders. Strict execution can recover precise spans
+from a portable PDB only after matching the assembly/PDB identity and checksum, captured source bytes and exact
+compiled method signature. Zero visits must account for all relevant PDB sequence-point lines. Ambiguous or
+unverified mappings remain unknown and execute conservatively; positive aggregate line visits do not prove
+that an individual span executed. The tool never treats an unverified line-only report as uncovered proof.
 Build/test/restore timing varies with host, cache, and project size; no universal runtime promise is made.

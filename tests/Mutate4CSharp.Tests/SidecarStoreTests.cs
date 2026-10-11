@@ -152,7 +152,12 @@ public sealed class SidecarStoreTests : IDisposable
     {
         var (store, report, record, material, plan) = ValidProven();
         store.PublishProven(record, report, material, plan);
-        var nextReport = report with { RunId = "next-fresh-run", GeneratedAtUtc = report.GeneratedAtUtc.AddSeconds(1) };
+        var nextReport = report with
+        {
+            RunId = "next-fresh-run", GeneratedAtUtc = report.GeneratedAtUtc.AddSeconds(1),
+            Suites = report.Suites.Select(suite => suite with
+                { Accounting = suite.Accounting! with { RunId = "next-fresh-run" } }).ToArray()
+        };
         var bytes = ReportWriter.Serialize(nextReport);
         var nextRecord = record with
         {
@@ -234,7 +239,7 @@ public sealed class SidecarStoreTests : IDisposable
         {
             Suites = report.Suites.Append(ValidSuite("suite-b")).ToArray(),
             Evidence = report.Evidence.Where(item => item.Kind != "CHECK_CONFIGURATION")
-                .Append(ReportWriter.ConfigurationSuiteEvidence(["suite-a", "suite-b"])).ToArray()
+                .Append(ReportWriter.ConfigurationSuiteEvidence([report.Suites[0].SuiteId, ValidSuite("suite-b").SuiteId])).ToArray()
         };
         var twoSuiteBytes = ReportWriter.Serialize(twoSuiteReport);
         var oneCoverageRecord = record with
@@ -453,7 +458,7 @@ public sealed class SidecarStoreTests : IDisposable
                 [new("MUTANT_KILLED", "Fresh suite killed the mutation.")])]);
         var facts = new EvaluationFacts(BaselineStatus.Green, 1, [unit], false, []);
         var decision = EvaluationReducer.Reduce(facts);
-        var report = new EvaluationReport("1", "valid-pass-run", DateTimeOffset.UnixEpoch, "check",
+        var report = new EvaluationReport(ReportWriter.SchemaVersion, "valid-pass-run", DateTimeOffset.UnixEpoch, "check",
             new("inputs", null, ["src/A.cs"]), ScopePlan.Empty("inputs", ".", null),
             EvaluationReport.DefaultPolicy, BaselineStatus.Green,
             [ValidSuite("suite-a")],
@@ -461,11 +466,11 @@ public sealed class SidecarStoreTests : IDisposable
             decision.Evidence.Concat([
                 new EvaluationEvidence("INPUT_SNAPSHOT", "Frozen input snapshot.",
                     [$"captureId={snapshotId}"]),
-                ReportWriter.ConfigurationSuiteEvidence(["suite-a"])
+                ReportWriter.ConfigurationSuiteEvidence([ValidSuite("suite-a").SuiteId])
             ]).ToArray(), decision.Outcome, decision.ExitCode);
         var bytes = ReportWriter.Serialize(report);
         var fingerprint = EvaluationFingerprint.ComputeForProven(material);
-        var coverage = new CoverageProvenance("1", report.RunId, "suite-a", fingerprint, snapshotId,
+        var coverage = new CoverageProvenance("1", report.RunId, report.Suites[0].SuiteId, fingerprint, snapshotId,
             BaselineStatus.Green, Digest("coverage"), 8, "baseline-clone-to-snapshot-v1", CompleteRunnerIdentity, true);
         var record = new ProvenEvaluationSidecar("1", SidecarRecordKind.Proven, report.RunId,
             DateTimeOffset.UnixEpoch, fingerprint, snapshotId,
@@ -474,11 +479,18 @@ public sealed class SidecarStoreTests : IDisposable
         return (new SidecarStore(_directory), report, record, material, plan);
     }
 
-    private static SuiteEvidence ValidSuite(string identity) => new(identity, BaselineStatus.Green,
-        [new("SUITE_BASELINE", "Fixture baseline with complete coverage and member accounting.",
-            ["disposition=Passed", "tests=1", "accountedMembers=Tests.dll", "expectedMembers=Tests.dll",
-             "coverageSha256=" + Digest("coverage"), "coverageLength=8",
-             "pathMap=baseline-clone-to-snapshot-v1"])]);
+    private static SuiteEvidence ValidSuite(string identity)
+    {
+        var configuration = new CheckTestSuite(identity, "tests/" + identity + ".csproj", "vstest", "net10.0", "Release", ["Tests.dll"]);
+        return new(CheckConfiguration.SuiteIdentity(configuration), BaselineStatus.Green,
+            [new("SUITE_BASELINE", "Fixture baseline with complete coverage and member accounting.",
+                ["disposition=Passed", "tests=1", "accountedMembers=Tests.dll", "expectedMembers=Tests.dll",
+                 "coverageSha256=" + Digest("coverage"), "coverageLength=8", "pathMap=baseline-clone-to-snapshot-v1"])])
+        {
+            Accounting = new("valid-pass-run", Digest("snapshot"), configuration, ["Tests.dll"], Digest("coverage"), 8,
+                Digest("canonical-coverage"), "baseline-clone-to-snapshot-v1", true)
+        };
+    }
 
     [Theory]
     [InlineData(false)]

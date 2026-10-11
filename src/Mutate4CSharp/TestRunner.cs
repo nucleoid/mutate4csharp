@@ -291,6 +291,14 @@ internal sealed class CoverageMap
                             if (startColumn == 1 && endLine == line && endColumn == 2)
                             {
                                 var precise = portablePdb?.Resolve(method, point, cloneFiles[fileId], line);
+                                var aggregate = precise is null ? portablePdb?.ResolveCoverletLine(method, cloneFiles[fileId], line) : null;
+                                if (aggregate is not null)
+                                {
+                                    if (!spans.TryGetValue(file, out var projected)) spans[file] = projected = [];
+                                    projected.AddRange(aggregate.Select(item => new CoveragePoint(item.StartLine,
+                                        item.StartColumn, item.EndLine, item.EndColumn, visits == 0 ? false : null)));
+                                    continue;
+                                }
                                 if (precise is null) spanIncompleteFiles.Add(file);
                                 else
                                 {
@@ -360,7 +368,7 @@ internal sealed class CoverageMap
             {
                 var point = spans[span];
                 components.Add((prefix + $"span-{span:D8}", string.Create(CultureInfo.InvariantCulture,
-                    $"{point.StartLine}:{point.StartColumn}:{point.EndLine}:{point.EndColumn}:{(point.Covered ? 1 : 0)}")));
+                    $"{point.StartLine}:{point.StartColumn}:{point.EndLine}:{point.EndColumn}:{(point.Covered is null ? -1 : point.Covered.Value ? 1 : 0)}")));
             }
         }
         return MutationIdentity.ComputeDigest("canonical-coverage-v1", components.ToArray());
@@ -387,7 +395,8 @@ internal sealed class CoverageMap
         var end = new SourcePosition(endLine, endColumn);
         var overlapping = points.Where(point => point.Start.CompareTo(end) < 0 &&
             start.CompareTo(point.End) < 0).ToArray();
-        if (overlapping.Any(point => point.Covered)) return CoverageState.Covered;
+        if (overlapping.Any(point => point.Covered == true)) return CoverageState.Covered;
+        if (overlapping.Any(point => point.Covered is null)) return CoverageState.Unknown;
         if (_incomplete || _spanIncompleteFiles.Contains(normalized)) return CoverageState.Unknown;
         return overlapping.Any(point => point.Start.CompareTo(start) <= 0 &&
                 point.End.CompareTo(end) >= 0)
@@ -411,7 +420,7 @@ internal sealed class CoverageMap
     }
 
     private sealed record CoveragePoint(int StartLine, int StartColumn, int EndLine, int EndColumn,
-        bool Covered)
+        bool? Covered)
     {
         public SourcePosition Start => new(StartLine, StartColumn);
         public SourcePosition End => new(EndLine, EndColumn);

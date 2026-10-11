@@ -6,7 +6,7 @@ namespace Mutate4CSharp.Tests;
 public sealed class ReportContractTests : IDisposable
 {
     private static readonly JsonSchema ReportSchema = JsonSchema.FromText(File.ReadAllText(
-        Path.GetFullPath("../../../../../docs/contracts/evaluation-report-v1.schema.json", AppContext.BaseDirectory)));
+        Path.GetFullPath("../../../../../docs/contracts/evaluation-report-v2.schema.json", AppContext.BaseDirectory)));
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "mutate4csharp-report-tests", Guid.NewGuid().ToString("N"));
 
     public ReportContractTests() => Directory.CreateDirectory(_directory);
@@ -16,14 +16,14 @@ public sealed class ReportContractTests : IDisposable
     [InlineData((int)EvaluationOutcome.Fail)]
     [InlineData((int)EvaluationOutcome.Incomplete)]
     [InlineData((int)EvaluationOutcome.NotApplicable)]
-    public void SerializesEveryVersionOneOutcomeWithStableEnvelope(int outcomeValue)
+    public void SerializesEveryVersionTwoOutcomeWithStableEnvelope(int outcomeValue)
     {
         var outcome = (EvaluationOutcome)outcomeValue;
         var report = EvaluationReport.CreateSynthetic(outcome, $"test-{outcome}", "TEST_FIXTURE");
         var json = System.Text.Encoding.UTF8.GetString(ReportWriter.Serialize(report));
         using var document = JsonDocument.Parse(json);
 
-        Assert.Equal("1", document.RootElement.GetProperty("schemaVersion").GetString());
+        Assert.Equal("2", document.RootElement.GetProperty("schemaVersion").GetString());
         var expected = outcome == EvaluationOutcome.NotApplicable ? "NOT_APPLICABLE" : outcome.ToString().ToUpperInvariant();
         Assert.Equal(expected, document.RootElement.GetProperty("outcome").GetString());
         Assert.NotEqual(JsonValueKind.Undefined, document.RootElement.GetProperty("evidence").ValueKind);
@@ -194,11 +194,7 @@ public sealed class ReportContractTests : IDisposable
     public void SuccessCapableReportsRequireExactUniqueGreenSuiteEvidence()
     {
         var original = EvaluationReport.CreateSynthetic(EvaluationOutcome.Pass, "suite-contract", "TEST_FIXTURE");
-        var suite = new SuiteEvidence("configured-suite", BaselineStatus.Green,
-            [new("SUITE_BASELINE", "Fresh baseline passed.",
-                ["disposition=Passed", "tests=1", "accountedMembers=Tests.dll",
-                 "expectedMembers=Tests.dll", "coverageSha256=" + new string('a', 64),
-                 "coverageLength=1", "pathMap=baseline-clone-to-snapshot-v1"])]);
+        var suite = Assert.Single(original.Suites);
 
         var pass = original with
         {
@@ -228,7 +224,7 @@ public sealed class ReportContractTests : IDisposable
     }
 
     [Theory]
-    [InlineData("tests=", "2")]
+    [InlineData("memberCount", "2")]
     [InlineData("accountedMembers=", "Synthetic.Tests.dll,Synthetic.Tests.dll")]
     [InlineData("expectedMembers=", "Synthetic.Tests.dll,Synthetic.Tests.dll")]
     [InlineData("accountedMembers=", ",Synthetic.Tests.dll")]
@@ -240,16 +236,19 @@ public sealed class ReportContractTests : IDisposable
     {
         var report = EvaluationReport.CreateSynthetic(EvaluationOutcome.Pass, "suite-accounting", "TEST_FIXTURE");
         var suite = Assert.Single(report.Suites);
-        var baseline = Assert.Single(suite.Evidence);
-        var invalid = baseline with
+        var accounting = suite.Accounting!;
+        var invalid = prefix switch
         {
-            Diagnostics = baseline.Diagnostics!.Select(item => item.StartsWith(prefix, StringComparison.Ordinal)
-                ? prefix + value : item).ToArray()
+            "memberCount" => accounting with { AccountedMembers = ["Synthetic.Tests.dll", "Another.dll"] },
+            "accountedMembers=" => accounting with { AccountedMembers = value.Split(',') },
+            "expectedMembers=" => accounting with { Configuration = accounting.Configuration with { ExpectedMembers = value.Split(',') } },
+            "coverageLength=" => accounting with { CoverageReportLength = long.Parse(value, System.Globalization.CultureInfo.InvariantCulture) },
+            _ => accounting with { CoverageReportSha256 = value }
         };
 
         Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(report with
         {
-            Suites = [suite with { Evidence = [invalid] }]
+            Suites = [suite with { Accounting = invalid }]
         }));
     }
 

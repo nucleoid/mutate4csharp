@@ -8,6 +8,7 @@ namespace Mutate4CSharp;
 
 internal static class ReportWriter
 {
+    internal const string SchemaVersion = "2";
     private static readonly Regex CodePattern = new("^[A-Z][A-Z0-9_]*$",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -104,7 +105,7 @@ internal static class ReportWriter
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object ||
                 !root.TryGetProperty("schemaVersion", out var version) ||
-                version.ValueKind != JsonValueKind.String || version.GetString() != "1" ||
+                version.ValueKind != JsonValueKind.String || version.GetString() is not ("1" or "2") ||
                 !root.TryGetProperty("runId", out var runId) || runId.ValueKind != JsonValueKind.String ||
                 string.IsNullOrWhiteSpace(runId.GetString()) ||
                 !root.TryGetProperty("mode", out var mode) || mode.ValueKind != JsonValueKind.String ||
@@ -122,7 +123,7 @@ internal static class ReportWriter
 
     private static void Validate(EvaluationReport report)
     {
-        if (report.SchemaVersion != "1") throw new EvaluationContractException("Unsupported report schema version.");
+        if (report.SchemaVersion != SchemaVersion) throw new EvaluationContractException("Unsupported report schema version.");
         if (string.IsNullOrWhiteSpace(report.RunId)) throw new EvaluationContractException("A report run ID is required.");
         if (report.Evidence.Count == 0) throw new EvaluationContractException("Every report outcome requires evidence.");
         ExecutionPolicy.ValidateContract(report.Policy);
@@ -194,8 +195,8 @@ internal static class ReportWriter
              report.Counts.Executed == 0 || report.Counts.Killed == 0 || report.Suites.Count == 0))
             throw new EvaluationContractException(
                 "PASS requires nonzero enumerated, selected, executed, killed, and suite evidence.");
-        if (report.Outcome == EvaluationOutcome.Pass)
-            foreach (var suite in report.Suites) ValidatePassSuite(suite);
+        if (report.Outcome != EvaluationOutcome.Incomplete)
+            foreach (var suite in report.Suites) ValidateConclusiveSuite(suite, report);
         var expected = EvaluationReducer.Reduce(new(report.Baseline, report.Counts.Enumerated,
             report.Units, report.Policy.AllowNotApplicable, report.IncompleteConditions));
         if (report.Outcome != expected.Outcome || report.ExitCode != expected.ExitCode)
@@ -215,43 +216,40 @@ internal static class ReportWriter
         return values[0];
     }
 
-    private static void ValidatePassSuite(SuiteEvidence suite)
+    private static void ValidateConclusiveSuite(SuiteEvidence suite, EvaluationReport report)
     {
         var baselines = suite.Evidence.Where(item => item.Kind == "SUITE_BASELINE").ToArray();
-        if (baselines.Length != 1 || baselines[0].Diagnostics is null || suite.Evidence.Count != 1)
+        var accounting = suite.Accounting;
+        if (baselines.Length != 1 || suite.Evidence.Count != 1 || accounting is null ||
+            suite.Baseline != BaselineStatus.Green || accounting.RunId != report.RunId || !accounting.CollectedFresh)
             throw new EvaluationContractException(
-                "PASS suite evidence requires one exact fresh baseline record.");
-        var baseline = baselines[0];
-        if (SingleDiagnostic(baseline, "disposition=") != SuiteRunDisposition.Passed.ToString() ||
-            !int.TryParse(SingleDiagnostic(baseline, "tests="),
-                System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture,
-                out var tests) || tests <= 0 ||
-            !EvaluationFingerprint.IsSha256(SingleDiagnostic(baseline, "coverageSha256=")) ||
-            !long.TryParse(SingleDiagnostic(baseline, "coverageLength="),
-                System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture,
-                out var coverageLength) || coverageLength <= 0 ||
-            SingleDiagnostic(baseline, "pathMap=") != "baseline-clone-to-snapshot-v1")
+                "Conclusive suite evidence requires one bound fresh baseline record.");
+        var snapshots = report.Evidence.Where(item => item.Kind == "INPUT_SNAPSHOT")
+            .SelectMany(item => item.Diagnostics ?? []).Where(item => item.StartsWith("captureId=", StringComparison.Ordinal))
+            .Select(item => item["captureId=".Length..]).ToArray();
+        if (snapshots.Length != 1 || snapshots[0] != accounting.SnapshotId ||
+            !EvaluationFingerprint.IsSha256(accounting.SnapshotId) ||
+            !EvaluationFingerprint.IsSha256(accounting.CoverageReportSha256) || accounting.CoverageReportLength <= 0 ||
+            !EvaluationFingerprint.IsSha256(accounting.CoverageIdentity) ||
+            accounting.PathMap != "baseline-clone-to-snapshot-v1" ||
+            accounting.Configuration.Runner != "vstest" || accounting.Configuration.Framework != "net10.0" ||
+            accounting.Configuration.Path.Replace('\\', '/').Split('/').Any(item => item is "" or "." or "..") ||
+            Path.IsPathRooted(accounting.Configuration.Path) ||
+            CheckConfiguration.SuiteIdentity(accounting.Configuration) != suite.SuiteId)
             throw new EvaluationContractException(
-                "PASS suite evidence requires green tests and fresh exact coverage provenance.");
-        var accounted = ParseMembers(SingleDiagnostic(baseline, "accountedMembers="));
-        var expected = ParseMembers(SingleDiagnostic(baseline, "expectedMembers="));
-        if (accounted.Length == 0 || expected.Length == 0 || tests != accounted.Length ||
-            accounted.Distinct(StringComparer.OrdinalIgnoreCase).Count() != accounted.Length ||
-            expected.Distinct(StringComparer.OrdinalIgnoreCase).Count() != expected.Length ||
+                "Conclusive suite evidence requires exact configured identity, snapshot and coverage provenance.");
+        var accounted = accounting.AccountedMembers;
+        var expected = accounting.Configuration.ExpectedMembers;
+        if (!ValidMembers(accounted) || !ValidMembers(expected) ||
             !accounted.Order(StringComparer.OrdinalIgnoreCase)
                 .SequenceEqual(expected.Order(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase))
             throw new EvaluationContractException(
-                "PASS suite evidence must account for every expected test member exactly.");
+                "Conclusive suites must account for every configured test member exactly.");
 
-        static string[] ParseMembers(string value)
-        {
-            if (value == "<none>") return [];
-            var members = value.Split(',');
-            if (members.Any(member => string.IsNullOrWhiteSpace(member) || member != member.Trim() ||
-                    member.Contains('/') || member.Contains('\\') || member is "." or ".."))
-                throw new EvaluationContractException("PASS suite member accounting is malformed.");
-            return members;
-        }
+        static bool ValidMembers(IReadOnlyList<string> members) => members.Count is > 0 and <= 256 &&
+            members.Distinct(StringComparer.OrdinalIgnoreCase).Count() == members.Count &&
+            members.All(member => !string.IsNullOrWhiteSpace(member) && member.Length <= 256 && member == member.Trim() &&
+                !member.Contains('/') && !member.Contains('\\') && member is not ("." or ".."));
     }
 
     private static string SuiteSetIdentity(IEnumerable<string> suiteIds)

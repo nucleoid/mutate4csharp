@@ -292,6 +292,11 @@ internal sealed class SidecarStore
             throw new EvaluationContractException("Proven coverage must bind every report suite exactly once.");
         foreach (var coverage in record.Coverage)
         {
+            var accounting = report.Suites.Single(suite => suite.SuiteId == coverage.SuiteId).Accounting!;
+            if (accounting.CoverageReportSha256 != coverage.CoverageReportSha256 ||
+                accounting.CoverageReportLength != coverage.CoverageReportLength ||
+                accounting.PathMap != coverage.PathMapVersion)
+                throw new EvaluationContractException("Proven coverage differs from the bound baseline accounting.");
             if (coverage.RunnerIdentity != fingerprintMaterial.RunnerIdentity)
                 throw new EvaluationContractException("Coverage runner identity does not match the evaluation fingerprint.");
             coverage.Validate(expectedFingerprint, reportSnapshotId, report.RunId, coverage.SuiteId);

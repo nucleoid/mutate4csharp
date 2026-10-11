@@ -155,7 +155,7 @@ class C { bool M(int value) => value == 2; }
 
     private static JsonSchema LoadReportSchema()
     {
-        var path = Path.GetFullPath("../../../../../docs/contracts/evaluation-report-v1.schema.json",
+        var path = Path.GetFullPath("../../../../../docs/contracts/evaluation-report-v2.schema.json",
             AppContext.BaseDirectory);
         var schema = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
         schema.Remove("$id");

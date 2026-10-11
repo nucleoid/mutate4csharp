@@ -90,7 +90,7 @@ internal static class StrictExecutionPipeline
             Clock).RunBaselinesAsync(snapshotId, configuration.ExecutionSuites,
             TimeSpan.FromSeconds(policy.BaselineTimeoutSeconds), deadline, cancellationToken);
         var aliases = MapBaselineExecutions(configuration.ExecutionSuites, baselines.Executions);
-        var suiteEvidence = ToSuiteEvidence(configuration.ExecutionSuites, aliases);
+        var suiteEvidence = ToSuiteEvidence(configuration.ExecutionSuites, aliases, runId, snapshotId);
         var material = EvaluationCoordinator.BuildEvaluationFingerprintMaterial(snapshot, snapshotId,
             scopePlan, policy, semanticContext, environment.SdkVersion, environment,
             configuration.ExecutionSuites, aliases, enumeration.Candidates);
@@ -362,7 +362,7 @@ internal static class StrictExecutionPipeline
     }
 
     private static IReadOnlyList<SuiteEvidence> ToSuiteEvidence(IReadOnlyList<SuiteExecution> suites,
-        IReadOnlyDictionary<string, SuiteBaselineExecution> baselines) => suites
+        IReadOnlyDictionary<string, SuiteBaselineExecution> baselines, string runId, string snapshotId) => suites
         .OrderBy(item => item.Identity, StringComparer.Ordinal).Select(suite =>
         {
             if (!baselines.TryGetValue(suite.Identity, out var execution))
@@ -393,7 +393,14 @@ internal static class StrictExecutionPipeline
             return new SuiteEvidence(suite.Identity, baseline,
                 [new("SUITE_BASELINE", $"Fresh baseline classified suite as {baseline}.",
                     EvaluationEvidence.BoundDiagnostics(run.Diagnostics.Select(value => "diagnostic=" + value), details,
-                        "diagnostics-truncated"))]);
+                        "diagnostics-truncated"))])
+            {
+                Accounting = baseline == BaselineStatus.Green && run.CoverageSha256 is not null && run.CoverageMap is not null
+                    ? new(runId, snapshotId, new(suite.Aliases[0], suite.Path, suite.Runner, suite.Framework,
+                        suite.Configuration, suite.ExpectedMembers), run.AccountedMembers,
+                        run.CoverageSha256, run.CoverageLength, run.CoverageMap.CanonicalIdentity(),
+                        "baseline-clone-to-snapshot-v1", true) : null
+            };
         }).ToArray();
 
     private static IReadOnlyList<CoverageProvenance> ToCoverageProvenance(string runId, string snapshotId,

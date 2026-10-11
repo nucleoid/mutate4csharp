@@ -230,7 +230,7 @@ public sealed class AdversarialRoundFourTests : IDisposable
 
     private static JsonObject LoadSchemaNode()
     {
-        var path = Path.GetFullPath("../../../../../docs/contracts/evaluation-report-v1.schema.json",
+        var path = Path.GetFullPath("../../../../../docs/contracts/evaluation-report-v2.schema.json",
             AppContext.BaseDirectory);
         return JsonNode.Parse(File.ReadAllText(path))!.AsObject();
     }

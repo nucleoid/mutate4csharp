@@ -35,6 +35,11 @@ the owned ignore contract before capture, including plan, `--no-state`, and capt
 but does not skip evaluation or its report.
 If default/requested state publication fails, the current report is finalized as `INCOMPLETE` with
 `SIDECAR_WRITE_FAILED`; an older report or sidecar is not current evidence.
+Proof eligibility is checked before any conclusive report publication. A fresh stateful run revokes an older
+proof for the same evaluation fingerprint before publishing its report. Proof is published last. A publication
+fault revokes proof again and replaces the current report and its owned discovery observation with incomplete
+evidence. If report recovery cannot write safely, the tool invalidates only its own current-run report or exposes
+the unresolved I/O failure; process/report disagreement is an orchestration error.
 Report publication necessarily precedes discovery publication. A process or machine crash in that
 window can leave a report without discovery; such a report is not
 reusable proof. Consumers may treat only a separately validated proven record as reusable evidence.

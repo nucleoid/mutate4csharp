@@ -100,17 +100,18 @@ public sealed class AdversarialRoundSevenTests : IDisposable
     {
         var facts = new EvaluationFacts(BaselineStatus.Green, units.Count, units, false, []);
         var decision = EvaluationReducer.Reduce(facts);
-        var report = new EvaluationReport("1", "round-seven", DateTimeOffset.UnixEpoch, "check",
+        var suite = SuiteAccountingFixture.Create("round-seven", material.SnapshotId, Digest("coverage"), 8);
+        var report = new EvaluationReport(ReportWriter.SchemaVersion, "round-seven", DateTimeOffset.UnixEpoch, "check",
             new("inputs", null, ["src/A.cs"]), ScopePlan.Empty("inputs", ".", null), material.Policy,
             BaselineStatus.Green,
-            [new("suite-a", BaselineStatus.Green, [new("BASELINE_GREEN", "Fresh baseline passed.")])],
+            [suite],
             units, decision.Counts, [], decision.Reasons,
             decision.Evidence.Concat([new EvaluationEvidence("INPUT_SNAPSHOT", "Frozen input snapshot.",
-                [$"captureId={material.SnapshotId}"])]).ToArray(), decision.Outcome, decision.ExitCode);
+                [$"captureId={material.SnapshotId}"]), ReportWriter.ConfigurationSuiteEvidence([suite.SuiteId])]).ToArray(), decision.Outcome, decision.ExitCode);
         var bytes = ReportWriter.Serialize(report);
         var fingerprint = EvaluationFingerprint.ComputeForProven(material);
-        var coverage = new CoverageProvenance("1", report.RunId, "suite-a", fingerprint, material.SnapshotId,
-            BaselineStatus.Green, Digest("coverage"), 8, "path-map-v1", "vstest-v1", true);
+        var coverage = new CoverageProvenance("1", report.RunId, suite.SuiteId, fingerprint, material.SnapshotId,
+            BaselineStatus.Green, Digest("coverage"), 8, "baseline-clone-to-snapshot-v1", material.RunnerIdentity, true);
         var record = new ProvenEvaluationSidecar("1", SidecarRecordKind.Proven, report.RunId,
             DateTimeOffset.UnixEpoch, fingerprint, material.SnapshotId,
             Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), bytes.LongLength,
@@ -143,7 +144,7 @@ public sealed class AdversarialRoundSevenTests : IDisposable
                 EvaluationFingerprint.FromBytes("source", "src/A.cs", Encoding.UTF8.GetBytes(value)),
                 EvaluationFingerprint.FromBytes("dependency", "packages.lock.json", "dependency"u8)
             ], Digest(value), ReportWriter.SerializeCanonicalScope(scope), "configuration-v1", "tool-v1",
-            "operator-v1", "sdk-v1", "runtime-v1", "vstest-v1", policy, ProvenanceComplete: true);
+            "operator-v1", "sdk-v1", "runtime-v1", SuiteAccountingFixture.Runner, policy, ProvenanceComplete: true);
     }
 
     private static string Digest(string value) => Convert.ToHexString(

@@ -14,6 +14,7 @@ internal sealed record ProvenSequenceSpan(int StartLine, int StartColumn, int En
 internal sealed class OpenCoverPortablePdb
 {
     private readonly Dictionary<(int Token, int Offset, string File), ProvenSequenceSpan> _spans = new();
+    private readonly Dictionary<(string Method, string File), List<ProvenSequenceSpan>> _methods = new();
     private readonly string _root;
 
     private OpenCoverPortablePdb(string root) => _root = root;
@@ -25,7 +26,29 @@ internal sealed class OpenCoverPortablePdb
         {
             var modulePaths = module.Elements().Where(item => item.Name.LocalName == "ModulePath").ToArray();
             if (modulePaths.Length != 1) return Reject("module-path-missing");
-            var assembly = Path.GetFullPath(modulePaths[0].Value, clone.Root);
+            var modulePath = modulePaths[0].Value;
+            var assembly = Path.GetFullPath(modulePath, clone.Root);
+            if (!File.Exists(assembly) && modulePath == Path.GetFileName(modulePath) &&
+                !modulePath.Contains('*') && !modulePath.Contains('?'))
+            {
+                var candidates = Directory.EnumerateFiles(clone.Root, modulePath, new EnumerationOptions
+                {
+                    RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint
+                }).Where(path => path.Split(Path.DirectorySeparatorChar).Contains("bin", StringComparer.OrdinalIgnoreCase))
+                    .Order(StringComparer.Ordinal).Take(129).ToArray();
+                if (candidates.Length is 0 or > 128) return Reject("module-output-missing-or-unbounded");
+                var identities = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var candidate in candidates)
+                {
+                    EnsureWithin(clone.Root, candidate);
+                    var symbols = Path.ChangeExtension(candidate, ".pdb");
+                    EnsureWithin(clone.Root, symbols);
+                    identities.Add(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(candidate))) + ":" +
+                        Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(symbols))));
+                }
+                if (identities.Count != 1) return Reject("module-output-ambiguous");
+                assembly = candidates[0];
+            }
             EnsureWithin(clone.Root, assembly);
             var pdbPath = Path.ChangeExtension(assembly, ".pdb");
             EnsureWithin(clone.Root, pdbPath);
@@ -83,6 +106,14 @@ internal sealed class OpenCoverPortablePdb
                 if (method.RelativeVirtualAddress == 0) continue;
                 var length = pe.GetMethodBody(method.RelativeVirtualAddress).GetILBytes()?.Length ?? 0;
                 var debug = reader.GetMethodDebugInformation(handle);
+                string? methodName = null;
+                try
+                {
+                    var signature = method.DecodeSignature(new CecilSignatureNames(), (object?)null);
+                    methodName = signature.ReturnType + " " + CecilSignatureNames.TypeName(metadata, method.GetDeclaringType()) +
+                        "::" + metadata.GetString(method.Name) + "(" + string.Join(',', signature.ParameterTypes) + ")";
+                }
+                catch (NotSupportedException) { }
                 foreach (var point in debug.GetSequencePoints())
                 {
                     var document = point.Document.IsNil ? debug.Document : point.Document;
@@ -92,6 +123,12 @@ internal sealed class OpenCoverPortablePdb
                         point.StartLine == point.EndLine && point.EndColumn <= point.StartColumn) continue;
                     if (!result._spans.TryAdd((0x06000000 | row, point.Offset, IdentityPath(file)),
                             new(point.StartLine, point.StartColumn, point.EndLine, point.EndColumn))) return null;
+                    if (methodName is not null)
+                    {
+                        var key = (methodName, IdentityPath(file));
+                        if (!result._methods.TryGetValue(key, out var methodSpans)) result._methods[key] = methodSpans = [];
+                        methodSpans.Add(new(point.StartLine, point.StartColumn, point.EndLine, point.EndColumn));
+                    }
                 }
             }
             diagnostic?.Invoke($"pdb-documents={documents.Count};pdb-spans={result._spans.Count}");
@@ -117,6 +154,20 @@ internal sealed class OpenCoverPortablePdb
             !int.TryParse(point.Attribute("offset")?.Value, NumberStyles.None, CultureInfo.InvariantCulture, out var offset)) return null;
         var path = Path.GetFullPath(file, _root);
         return _spans.TryGetValue((token, offset, IdentityPath(path)), out var span) && span.StartLine == line ? span : null;
+    }
+
+    internal IReadOnlyList<ProvenSequenceSpan>? ResolveCoverletLine(XElement method, string file, int line)
+    {
+        var names = method.Elements().Where(item => item.Name.LocalName == "Name").ToArray();
+        if (names.Length != 1 || !_methods.TryGetValue((names[0].Value, IdentityPath(Path.GetFullPath(file, _root))), out var spans))
+            return null;
+        var reported = method.Descendants().Where(item => item.Name.LocalName == "SequencePoint")
+            .Select(item => int.TryParse(item.Attribute("sl")?.Value, NumberStyles.None, CultureInfo.InvariantCulture,
+                out var value) ? value : -1).ToArray();
+        if (reported.Any(item => item <= 0) || reported.Distinct().Count() != reported.Length ||
+            spans.Select(item => item.StartLine).Except(reported).Any()) return null;
+        var matching = spans.Where(item => item.StartLine == line).Distinct().ToArray();
+        return matching.Length == 0 ? null : matching;
     }
 
     private static string IdentityPath(string path) => OperatingSystem.IsWindows() ? path.ToUpperInvariant() : path;
