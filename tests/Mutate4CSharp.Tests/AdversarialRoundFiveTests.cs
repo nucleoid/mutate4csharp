@@ -63,10 +63,10 @@ public sealed class AdversarialRoundFiveTests : IDisposable
         var report = Report(facts, decision, material.SnapshotId);
         var reportBytes = ReportWriter.Serialize(report);
         var fingerprint = EvaluationFingerprint.ComputeForProven(material);
-        var coverage = new CoverageProvenance("1", report.RunId, "suite-a", fingerprint,
+        var coverage = new CoverageProvenance("1", report.RunId, report.Suites[0].SuiteId, fingerprint,
             material.SnapshotId, BaselineStatus.Green, Digest("coverage"), 8,
-            "path-map-v1", "vstest-v1", true);
-        var record = new ProvenEvaluationSidecar("1", SidecarRecordKind.Proven, report.RunId,
+            "baseline-clone-to-snapshot-v1", SuiteAccountingFixture.Runner, true);
+        var record = new ProvenEvaluationSidecar("2", SidecarRecordKind.Proven, report.RunId,
             DateTimeOffset.UnixEpoch, fingerprint, material.SnapshotId,
             Convert.ToHexString(SHA256.HashData(reportBytes)).ToLowerInvariant(), reportBytes.LongLength,
             true, [coverage], report.Counts);
@@ -87,13 +87,13 @@ public sealed class AdversarialRoundFiveTests : IDisposable
         }).ToArray();
 
     private static EvaluationReport Report(EvaluationFacts facts, EvaluationDecision decision,
-        string snapshotId) => new("1", "round-five-publication", DateTimeOffset.UnixEpoch, "check",
+        string snapshotId) => new(ReportWriter.SchemaVersion, "round-five-publication", DateTimeOffset.UnixEpoch, "check",
         new("inputs", null, ["src/A.cs"]), ScopePlan.Empty("inputs", ".", null),
         EvaluationReport.DefaultPolicy, facts.Baseline,
-        [new("suite-a", BaselineStatus.Green, [new("BASELINE_GREEN", "Fresh baseline passed.")])],
+        [SuiteAccountingFixture.Create("round-five-publication", snapshotId, Digest("coverage"), 8)],
         facts.Units, decision.Counts, facts.IncompleteConditions, decision.Reasons,
         decision.Evidence.Concat([new EvaluationEvidence("INPUT_SNAPSHOT", "Frozen input snapshot.",
-            [$"captureId={snapshotId}"])]).ToArray(), decision.Outcome, decision.ExitCode);
+            [$"captureId={snapshotId}"]), ReportWriter.ConfigurationSuiteEvidence([SuiteAccountingFixture.Create("round-five-publication", snapshotId, Digest("coverage"), 8).SuiteId])]).ToArray(), decision.Outcome, decision.ExitCode);
 
     private static MutationCandidate Candidate()
     {
@@ -117,7 +117,7 @@ public sealed class AdversarialRoundFiveTests : IDisposable
                 EvaluationFingerprint.FromBytes("source", "src/A.cs", Encoding.UTF8.GetBytes(value)),
                 EvaluationFingerprint.FromBytes("dependency", "packages.lock.json", "dependency"u8)
             ], Digest(value), ReportWriter.SerializeCanonicalScope(scope), "configuration-v1", "tool-v1",
-            "operator-v1", "sdk-v1", "runtime-v1", "vstest-v1", EvaluationReport.DefaultPolicy,
+            "operator-v1", "sdk-v1", "runtime-v1", SuiteAccountingFixture.Runner, EvaluationReport.DefaultPolicy,
             ProvenanceComplete: true);
     }
 

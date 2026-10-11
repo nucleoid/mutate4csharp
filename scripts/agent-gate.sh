@@ -167,7 +167,7 @@ read_receipt() {
       *) fail "receipt contains unknown key: $key" ;;
     esac
   done < "$receipt"
-  [[ "$RECEIPT_FORMAT" = mutate4csharp-agent-gate-v3 ]] || fail "unsupported receipt format"
+  [[ "$RECEIPT_FORMAT" = mutate4csharp-agent-gate-v4 ]] || fail "unsupported receipt format"
   [[ -n "$LOCAL_TOOL_VERSION" && -n "$TOOL_PACKAGE" && -n "$TOOL_PAYLOAD" && -n "$ORCHESTRATION_SDK_VERSION" && -n "$DOTNET_HOST" ]] ||
     fail "receipt is incomplete"
 }
@@ -179,28 +179,79 @@ trusted_tool() {
 validate_report() {
   local report=$1 process_exit=$2 state_mode=$3 target_repository=$4
   [[ -f "$report" && ! -L "$report" ]] || fail "tool did not publish a fresh report"
-  (cd "$SDK_DIRECTORY" && python3 -I - "$report" "$process_exit" "$state_mode" "$target_repository" "$TOOL_SDK_RECEIPT") <<'PY' || exit "$ORCHESTRATION_REFUSAL"
+  local casing_table
+  casing_table=$(realpath -e -- "$(dirname -- "${BASH_SOURCE[0]}")/../docs/contracts/invariant-upper-v1.json") || fail "casing contract is missing"
+  (cd "$SDK_DIRECTORY" && python3 -I - "$report" "$process_exit" "$state_mode" "$target_repository" "$TOOL_SDK_RECEIPT" "$casing_table") <<'PY' || exit "$ORCHESTRATION_REFUSAL"
 import glob, hashlib, json, os, stat, sys
 path, process_exit, state_mode, repository, sdk_receipt = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key: " + key)
+        result[key] = value
+    return result
+def read_json(stream):
+    return json.load(stream, object_pairs_hook=unique_object,
+                     parse_constant=lambda value: (_ for _ in ()).throw(ValueError("nonfinite JSON number")))
 try:
     metadata = os.lstat(path)
     if not stat.S_ISREG(metadata.st_mode):
         raise ValueError("report is not a regular file")
     with open(path, "rb") as stream:
-        report = json.load(stream)
+        report = read_json(stream)
     if not isinstance(report, dict):
         raise ValueError("report root must be an object")
-    if report.get("exitCode") != process_exit:
+    with open(sys.argv[6], "rb") as stream:
+        casing_bytes = stream.read(65537)
+    if len(casing_bytes) > 65536 or hashlib.sha256(casing_bytes).hexdigest() != "a71e26998ab4368c42aab083d7040ac7c04a320aa65b4912c2168a6165b5ae2a":
+        raise ValueError("pinned simple-casing contract changed")
+    casing = json.loads(casing_bytes, object_pairs_hook=unique_object)
+    if casing.get("schemaVersion") != "1" or casing.get("unicodeVersion") != "15.0.0":
+        raise ValueError("unsupported simple-casing contract")
+    upper_map = {int(key, 16): chr(int(value, 16)) for key, value in casing["upper"].items()}
+    if report.get("schemaVersion") != "2" or report.get("mode") != "check":
+        raise ValueError("functional gate requires a schema v2 check report")
+    def identity(domain, components):
+        digest = hashlib.sha256()
+        for label, value in [("identity-domain", domain)] + components:
+            for item in (label, value):
+                encoded = item.encode("utf-8")
+                digest.update(len(encoded).to_bytes(8, "big"))
+                digest.update(encoded)
+        return digest.hexdigest()
+    def sha(value):
+        return isinstance(value, str) and len(value) == 64 and all(item in "0123456789abcdef" for item in value)
+    def invariant_upper(value):
+        # Pinned Unicode simple mappings, with .NET's invariant dotless-i exception.
+        return "".join(char if char == "\u0131" else upper_map.get(ord(char), char) for char in value)
+    def ordinal_ignore_case(value):
+        # OrdinalIgnoreCase also keeps non-ASCII characters separate from ASCII
+        # (e.g. long-s and S), even when invariant uppercase maps them together.
+        return "".join(char if ord(char) > 127 and ord(invariant_upper(char)) < 128
+                       else invariant_upper(char) for char in value)
+    def net_trim(value):
+        return value.strip("\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000")
+    def members(value):
+        return isinstance(value, list) and 0 < len(value) <= 256 and all(
+            isinstance(item, str) and 0 < len(item.encode("utf-16-le", "surrogatepass")) <= 512 and item == net_trim(item) and
+            "/" not in item and "\\" not in item and item not in (".", "..") for item in value
+        ) and len({ordinal_ignore_case(item) for item in value}) == len(value)
+    if type(report.get("exitCode")) is not int or report["exitCode"] != process_exit:
         raise ValueError("report exitCode does not match process result")
-    if process_exit not in (2, 4) or report.get("outcome") != "INCOMPLETE":
-        raise ValueError("current gate requires exit 2 or 4 with outcome INCOMPLETE")
+    expected_outcomes = {0: "PASS", 2: "INCOMPLETE", 3: "FAIL", 4: "INCOMPLETE", 5: "NOT_APPLICABLE"}
+    allowed_na = process_exit == 0 and report.get("outcome") == "NOT_APPLICABLE" and report.get("policy", {}).get("allowNotApplicable") is True
+    if report.get("outcome") == "NOT_APPLICABLE" and process_exit != (0 if report.get("policy", {}).get("allowNotApplicable") is True else 5):
+        raise ValueError("N/A exit does not match its policy")
+    if not allowed_na and expected_outcomes.get(process_exit) != report.get("outcome"):
+        raise ValueError("report outcome does not match its strict process result")
     baseline = report.get("baseline")
     if process_exit == 2 and baseline not in ("RED", "EMPTY"):
         raise ValueError("exit 2 requires a RED or EMPTY baseline")
     if process_exit == 4 and baseline in ("RED", "EMPTY"):
         raise ValueError("RED or EMPTY baseline requires exit 2")
     conditions = report.get("incompleteConditions")
-    if not isinstance(conditions, list) or not conditions or not all(
+    if not isinstance(conditions, list) or not all(
         isinstance(item, dict) and isinstance(item.get("code"), str)
         for item in conditions
     ):
@@ -212,12 +263,9 @@ try:
         raise ValueError("report evidence is not an array")
     if any(isinstance(item, dict) and item.get("kind") == "SIDECAR_PUBLICATION_FAILURE" for item in evidence):
         raise ValueError("report contains SIDECAR_PUBLICATION_FAILURE")
-    execution_pending = any(
-        isinstance(item, dict) and item.get("code") == "FINALIZATION_PENDING"
-        for item in conditions
-    )
     execution_codes = {
-        "FINALIZATION_PENDING", "TARGETED_DIAGNOSTIC",
+        "TARGETED_DIAGNOSTIC", "MUTATION_EXECUTION_FAILED", "COVERAGE_PROVENANCE_INCOMPLETE",
+        "BASELINE_ACCOUNTING_INCOMPLETE",
         "OVERALL_DEADLINE_EXCEEDED", "EXECUTION_CANCELLED",
         "BASELINE_TIMEOUT", "BASELINE_INCONCLUSIVE", "COVERAGE_MISSING",
         "SUITE_MEMBERS_MISSING", "MUTATION_ATTEMPT_OMITTED",
@@ -246,25 +294,114 @@ try:
         "EXACT_ID_RERUN_UNAVAILABLE", "TARGET_SELECTION_INVALID",
     }
     environment_refusal_codes = {
-        "DEPENDENCY_INPUT_UNAVAILABLE", "EXECUTION_ENVIRONMENT_UNAVAILABLE",
+        "DEPENDENCY_INPUT_UNAVAILABLE", "EXECUTION_ENVIRONMENT_UNAVAILABLE", "FINGERPRINT_UNAVAILABLE",
     }
-    execution_valid = execution_pending and all(item["code"] in execution_codes for item in conditions)
-    enumeration_refusal = not execution_pending and all(
+    execution_valid = bool(conditions) and all(item["code"] in execution_codes for item in conditions)
+    enumeration_refusal = bool(conditions) and all(
         item["code"] in enumeration_codes or item["code"] in scope_refusal_codes or
         item["code"] in environment_refusal_codes
         for item in conditions
     )
-    if not execution_valid and not enumeration_refusal:
-        raise ValueError("report lacks an accepted execution or enumeration incomplete condition")
     counts = report.get("counts")
     if not isinstance(counts, dict):
         raise ValueError("report counts is not an object")
     enumerated = counts.get("enumerated")
-    if execution_pending:
+    units = report.get("units")
+    if not isinstance(units, list) or len(units) > 100000:
+        raise ValueError("report lacks a bounded unit ledger")
+    dispositions = [item.get("disposition") for item in units if isinstance(item, dict)]
+    allowed_dispositions = {"KILLED", "SURVIVED", "COMPILE_INVALID", "UNCOVERED", "OMITTED", "ERROR", "UNSTABLE"}
+    if len(dispositions) != len(units) or any(item not in allowed_dispositions for item in dispositions):
+        raise ValueError("unit ledger has an invalid terminal disposition")
+    import re
+    if any(not re.fullmatch(r"mutation:v1:[0-9a-f]{64}", item.get("unitId", "")) or
+           not re.fullmatch(r"evaluation:v1:[0-9a-f]{64}", item.get("evaluationUnitId", "")) for item in units):
+        raise ValueError("unit ledger has a noncanonical identity")
+    if len({item["evaluationUnitId"] for item in units}) != len(units):
+        raise ValueError("unit ledger contains duplicate evaluation identities")
+    computed = {"selected": len(units),
+                "executed": sum(item in {"KILLED", "SURVIVED", "COMPILE_INVALID", "ERROR", "UNSTABLE"} for item in dispositions),
+                "freshUncovered": dispositions.count("UNCOVERED"), "omitted": dispositions.count("OMITTED"),
+                "compileInvalid": dispositions.count("COMPILE_INVALID"), "killed": dispositions.count("KILLED"),
+                "survived": dispositions.count("SURVIVED"), "errors": dispositions.count("ERROR") + dispositions.count("UNSTABLE")}
+    if any(type(counts.get(key)) is not int or counts[key] != value for key, value in computed.items()):
+        raise ValueError("report counts do not match the unit ledger")
+    if enumerated is not None and (type(enumerated) is not int or enumerated != len(units)):
+        raise ValueError("enumerated count does not reconcile with the ledger")
+    reasons = report.get("reasons")
+    if not isinstance(reasons, list):
+        raise ValueError("report reasons are malformed")
+    if any(item.get("code") == "FINALIZATION_PENDING" for item in conditions + reasons if isinstance(item, dict)):
+        raise ValueError("preview finalization cannot satisfy a functional gate")
+    if report.get("outcome") == "INCOMPLETE":
+        reducer_incomplete = not conditions and (baseline in {"RED", "EMPTY", "UNKNOWN"} or computed["omitted"] > 0 or computed["errors"] > 0)
+        if not execution_valid and not enumeration_refusal and not reducer_incomplete:
+            raise ValueError("report lacks an accepted execution or enumeration incomplete condition")
+        if execution_valid:
+            if not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated < 0:
+                raise ValueError("report lacks a bounded nonnegative enumeration count")
+        elif enumeration_refusal and enumerated is not None:
+            raise ValueError("enumeration refusal must retain unknown enumeration count")
+    else:
+        if conditions:
+            raise ValueError("conclusive strict result contains incomplete conditions")
         if not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated < 0:
             raise ValueError("report lacks a bounded nonnegative enumeration count")
-    elif enumerated is not None:
-        raise ValueError("enumeration refusal must retain unknown enumeration count")
+        if report.get("outcome") in ("PASS", "FAIL") and enumerated <= 0:
+            raise ValueError("PASS and FAIL require a nonzero enumerated ledger")
+        if baseline != "GREEN" or computed["omitted"] or computed["errors"]:
+            raise ValueError("conclusive report lacks a complete green baseline and ledger")
+        if report.get("diagnosticPartial") or any(item.get("diagnosticPartial") for item in units):
+            raise ValueError("diagnostic work cannot authorize a conclusive gate")
+        if report.get("outcome") == "PASS" and (reasons or computed["killed"] <= 0 or
+                computed["survived"] or computed["freshUncovered"] or computed["executed"] <= 0):
+            raise ValueError("PASS lacks complete nonzero killed evidence")
+        if report.get("outcome") == "FAIL" and not (computed["survived"] or computed["freshUncovered"]):
+            raise ValueError("FAIL lacks surviving or conclusively uncovered evidence")
+        if report.get("outcome") == "NOT_APPLICABLE" and (computed["killed"] or computed["survived"] or
+                computed["freshUncovered"] or computed["executed"] != computed["compileInvalid"]):
+            raise ValueError("N/A is not known zero effective work")
+        suites = report.get("suites")
+        if not isinstance(suites, list) or not suites or any(not isinstance(item, dict) for item in suites):
+            raise ValueError("conclusive report lacks suite accounting")
+        suite_ids = [item.get("suiteId") for item in suites]
+        if any(not isinstance(item, str) for item in suite_ids) or len(set(suite_ids)) != len(suite_ids):
+            raise ValueError("suite identities are missing or duplicated")
+        configured = [item for item in evidence if isinstance(item, dict) and item.get("kind") == "CHECK_CONFIGURATION"]
+        if len(configured) != 1 or not isinstance(configured[0].get("diagnostics"), list):
+            raise ValueError("configured suite set is missing")
+        configured_diagnostics = configured[0]["diagnostics"]
+        suite_count = [item for item in configured_diagnostics if isinstance(item, str) and item.startswith("suiteCount=")]
+        suite_set = [item for item in configured_diagnostics if isinstance(item, str) and item.startswith("suiteSet=")]
+        expected_set = "suiteSet=sha256:" + identity("configured-suite-set", [(f"suite-{index:08d}", value)
+                                                     for index, value in enumerate(sorted(suite_ids))])
+        if suite_count != ["suiteCount=" + str(len(suites))] or suite_set != [expected_set]:
+            raise ValueError("suites do not match the configured set")
+        snapshots = [value.split("=", 1)[1] for item in evidence if isinstance(item, dict) and item.get("kind") == "INPUT_SNAPSHOT"
+                     for value in item.get("diagnostics", []) if isinstance(value, str) and value.startswith("captureId=")]
+        if len(snapshots) != 1 or not sha(snapshots[0]):
+            raise ValueError("conclusive report lacks captured snapshot identity")
+        for suite in suites:
+            accounting = suite.get("accounting")
+            if suite.get("baseline") != "GREEN" or not isinstance(accounting, dict) or accounting.get("collectedFresh") is not True:
+                raise ValueError("suite lacks fresh green accounting")
+            configuration = accounting.get("configuration")
+            if not isinstance(configuration, dict) or configuration.get("runner") != "vstest" or configuration.get("framework") != "net10.0":
+                raise ValueError("suite execution configuration is unsupported")
+            expected_members, actual_members = configuration.get("expectedMembers"), accounting.get("accountedMembers")
+            if not members(expected_members) or not members(actual_members) or sorted(ordinal_ignore_case(item) for item in expected_members) != sorted(ordinal_ignore_case(item) for item in actual_members):
+                raise ValueError("suite member accounting is incomplete")
+            execution_path = configuration.get("path")
+            if not isinstance(execution_path, str) or not execution_path or execution_path.startswith(("/", "\\")) or ":" in execution_path or any(part in ("", ".", "..") for part in execution_path.replace("\\", "/").split("/")):
+                raise ValueError("suite execution path is not canonical")
+            if not isinstance(configuration.get("configuration"), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", configuration["configuration"]):
+                raise ValueError("suite build configuration is missing")
+            expected_identity = "suite:v1:" + identity("suite-execution", [
+                ("path", invariant_upper(execution_path.replace("\\", "/"))), ("runner", "vstest"), ("framework", "net10.0"),
+                ("configuration", configuration["configuration"]), ("member-count", str(len(expected_members)))] +
+                [(f"member.{index}", value) for index, value in enumerate(expected_members)])
+            if suite["suiteId"] != expected_identity or accounting.get("runId") != report.get("runId") or accounting.get("snapshotId") != snapshots[0] or not sha(accounting.get("coverageReportSha256")) or not sha(accounting.get("coverageIdentity")) or type(accounting.get("coverageReportLength")) is not int or accounting["coverageReportLength"] <= 0 or accounting.get("pathMap") != "baseline-clone-to-snapshot-v1":
+                raise ValueError("suite identity or coverage provenance is unbound")
     if state_mode == "default-state":
         with open(path, "rb") as stream:
             report_bytes = stream.read()
@@ -276,14 +413,38 @@ try:
             if not stat.S_ISREG(candidate_metadata.st_mode):
                 continue
             with open(candidate, "rb") as stream:
-                discovery = json.load(stream)
-            if (isinstance(discovery, dict) and discovery.get("recordKind") == "DISCOVERY" and
+                discovery = read_json(stream)
+            if (isinstance(discovery, dict) and discovery.get("schemaVersion") == "2" and discovery.get("recordKind") == "DISCOVERY" and
                     discovery.get("reportSha256") == expected_hash and
                     discovery.get("reportLength") == len(report_bytes)):
                 matched = True
                 break
         if not matched:
             raise ValueError("default-state report lacks a report-bound discovery record")
+        if report.get("outcome") == "PASS":
+            plan_evidence = [item for item in evidence
+                             if isinstance(item, dict) and item.get("kind") == "MUTATION_PLAN"]
+            diagnostics = plan_evidence[0].get("diagnostics", []) if len(plan_evidence) == 1 else []
+            fingerprints = [item.split("=", 1)[1] for item in diagnostics
+                            if isinstance(item, str) and item.startswith("evaluationFingerprint=sha256:")]
+            if len(fingerprints) != 1:
+                raise ValueError("PASS report lacks one exact evaluation fingerprint")
+            proven_directory = os.path.join(repository, ".mutate4csharp", "proven")
+            proven_matches = []
+            for candidate in glob.glob(os.path.join(proven_directory, "*.json")):
+                candidate_metadata = os.lstat(candidate)
+                if not stat.S_ISREG(candidate_metadata.st_mode):
+                    continue
+                with open(candidate, "rb") as stream:
+                    proven = read_json(stream)
+                if (isinstance(proven, dict) and proven.get("schemaVersion") == "2" and proven.get("recordKind") == "PROVEN" and
+                        proven.get("evaluationFingerprint") == fingerprints[0] and
+                        proven.get("runId") == report.get("runId") and
+                        proven.get("reportSha256") == expected_hash and
+                        proven.get("reportLength") == len(report_bytes)):
+                    proven_matches.append(candidate)
+            if len(proven_matches) != 1:
+                raise ValueError("PASS report lacks exactly one report-bound proven record")
     if sdk_receipt:
         matches = [item for item in evidence
                    if isinstance(item, dict) and item.get("kind") == "TOOL_INTERNAL_SDK"]
@@ -429,8 +590,8 @@ prepare() {
   payload_sha256 "$payload" >/dev/null
   local orchestration_sdk_version
   orchestration_sdk_version=$(trusted_sdk_version)
-  # Receipt v3 retains the historical runtime_version key for compatibility; its value is the orchestration SDK.
-  write_receipt "$receipt" format mutate4csharp-agent-gate-v3 local_tool_version "$local_tool_version" tool_package "$package" tool_payload "$payload" runtime_version "$orchestration_sdk_version" dotnet_host "$TRUSTED_DOTNET"
+  # Receipt v4 retains the historical runtime_version key; its value is the orchestration SDK.
+  write_receipt "$receipt" format mutate4csharp-agent-gate-v4 local_tool_version "$local_tool_version" tool_package "$package" tool_payload "$payload" runtime_version "$orchestration_sdk_version" dotnet_host "$TRUSTED_DOTNET"
   printf 'RECEIPT=%s\nPACKAGE_SHA256=%s\nPAYLOAD_SHA256=%s\nTOOL_SOURCE_COMMIT=%s\nSDK_VERSION=%s\nDOTNET_HOST=%s\n' "$receipt" "$(sha256_file "$package")" "$(payload_sha256 "$payload")" "$source_commit" "$orchestration_sdk_version" "$TRUSTED_DOTNET"
 }
 
@@ -443,7 +604,8 @@ with open(sys.argv[1], "rb") as stream:
 codes = [item.get("code") for item in report.get("incompleteConditions", [])
          if isinstance(item, dict)]
 enumerated = report.get("counts", {}).get("enumerated")
-if codes != ["FINALIZATION_PENDING"] or not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated <= 0:
+if (report.get("outcome") != "FAIL" or report.get("exitCode") != 3 or codes or
+        not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated <= 0):
     print(f"unexpected strict example result: codes={codes!r}, enumerated={enumerated!r}", file=sys.stderr)
     raise SystemExit(1)
 PY
@@ -614,8 +776,8 @@ PY
   TOOL_SDK_RECEIPT=$tool_sdk_resolution
   if gate "$target_repository" "$receipt" "$package_sha" "$payload_sha" "$tool_commit" "$task_start" "$target_head" "$report_directory/default-state.json" default-state; then default_state_exit=0; else default_state_exit=$?; fi
   TOOL_SDK_RECEIPT=
-  [[ "$no_state_exit" -eq 4 ]] || fail "strict no-state example did not return expected incomplete exit 4"
-  [[ "$default_state_exit" -eq 4 ]] || fail "strict default-state example did not return expected incomplete exit 4"
+  [[ "$no_state_exit" -eq 3 ]] || fail "strict no-state example did not return expected survivor exit 3"
+  [[ "$default_state_exit" -eq 3 ]] || fail "strict default-state example did not return expected survivor exit 3"
   require_supported_example_enumeration "$report_directory/no-state.json"
   require_supported_example_enumeration "$report_directory/default-state.json"
 }

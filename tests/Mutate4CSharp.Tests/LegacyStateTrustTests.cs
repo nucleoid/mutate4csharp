@@ -29,7 +29,7 @@ public sealed class LegacyStateTrustTests : IDisposable
             "*.json", SearchOption.TopDirectoryOnly);
         var discovery = Assert.Single(discoveries);
         using var document = JsonDocument.Parse(File.ReadAllBytes(discovery));
-        Assert.Equal("1", document.RootElement.GetProperty("schemaVersion").GetString());
+        Assert.Equal("2", document.RootElement.GetProperty("schemaVersion").GetString());
         Assert.Equal("DISCOVERY", document.RootElement.GetProperty("recordKind").GetString());
         Assert.Equal("INCOMPLETE", document.RootElement.GetProperty("evaluationOutcome").GetString());
         Assert.False(Directory.Exists(Path.Combine(repository.Root, ".mutate4csharp", "proven")));
@@ -238,7 +238,7 @@ public sealed class LegacyStateTrustTests : IDisposable
     }
 
     [Fact]
-    public async Task FingerprintIdentityFailureUsesStatePublicationFailurePath()
+    public async Task FingerprintIdentityFailureUsesProvenanceFailurePath()
     {
         using var repository = CreateRepository();
         var report = Path.Combine(_directory, "fingerprint-failure.json");
@@ -252,6 +252,8 @@ public sealed class LegacyStateTrustTests : IDisposable
                 new(false, "HEAD", [], report, "fingerprint-failure"), CancellationToken.None);
 
             Assert.Contains(result.Report.IncompleteConditions,
+                reason => reason.Code == "FINGERPRINT_UNAVAILABLE");
+            Assert.DoesNotContain(result.Report.IncompleteConditions,
                 reason => reason.Code == "SIDECAR_WRITE_FAILED");
             Assert.Contains(result.Report.Reasons,
                 reason => reason.Code == "ENUMERATION_CONFIGURATION_REQUIRED");
@@ -287,10 +289,10 @@ public sealed class LegacyStateTrustTests : IDisposable
                 new(false, "HEAD", [], report, "single-fingerprint-failure"), CancellationToken.None);
 
             Assert.Contains(result.Report.IncompleteConditions,
-                reason => reason.Code == "SIDECAR_WRITE_FAILED");
+                reason => reason.Code == "FINGERPRINT_UNAVAILABLE");
             using var published = JsonDocument.Parse(File.ReadAllBytes(report));
             Assert.Contains(published.RootElement.GetProperty("incompleteConditions").EnumerateArray(),
-                reason => reason.GetProperty("code").GetString() == "SIDECAR_WRITE_FAILED");
+                reason => reason.GetProperty("code").GetString() == "FINGERPRINT_UNAVAILABLE");
             SpinWait.SpinUntil(() => Volatile.Read(ref temporaryWrites) >= 2, TimeSpan.FromSeconds(1));
             Assert.Equal(1, Volatile.Read(ref temporaryWrites));
         }
@@ -378,8 +380,8 @@ public sealed class LegacyStateTrustTests : IDisposable
                 new(false, "HEAD", [], report, "inherited-capture-sdk"), CancellationToken.None);
 
             Assert.Contains(result.Report.IncompleteConditions,
-                reason => reason.Code == "SIDECAR_WRITE_FAILED");
-            Assert.Contains(result.Report.Evidence, evidence => evidence.Kind == "SIDECAR_PUBLICATION_FAILURE" &&
+                reason => reason.Code == "FINGERPRINT_UNAVAILABLE");
+            Assert.Contains(result.Report.Evidence, evidence => evidence.Kind == "FINGERPRINT_FAILURE" &&
                 evidence.Summary.Contains("global.json", StringComparison.Ordinal));
             Assert.False(Directory.Exists(Path.Combine(repository.Root, ".mutate4csharp", "discovery")));
         }
@@ -434,7 +436,7 @@ public sealed class LegacyStateTrustTests : IDisposable
 
             using var published = JsonDocument.Parse(File.ReadAllBytes(report));
             Assert.Contains(published.RootElement.GetProperty("incompleteConditions").EnumerateArray(),
-                reason => reason.GetProperty("code").GetString() == "SIDECAR_WRITE_FAILED");
+                reason => reason.GetProperty("code").GetString() == "FINGERPRINT_UNAVAILABLE");
         }
         finally
         {

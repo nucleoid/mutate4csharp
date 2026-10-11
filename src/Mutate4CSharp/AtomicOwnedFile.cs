@@ -47,7 +47,24 @@ internal static class AtomicOwnedFile
             if ((before is null) != (after is null) || before is not null && after is not null &&
                 !CryptographicOperations.FixedTimeEquals(before, after))
                 throw new IOException("Destination changed while owned state was being written.");
-            File.Move(temporary, fullPath, overwrite: replaceExisting);
+            var retryStarted = System.Diagnostics.Stopwatch.StartNew();
+            while (true)
+            {
+                try
+                {
+                    File.Move(temporary, fullPath, overwrite: replaceExisting);
+                    break;
+                }
+                catch (IOException ex) when (OperatingSystem.IsWindows() &&
+                    (ex.HResult & 0xffff) is 32 or 33 && retryStarted.Elapsed < TimeSpan.FromSeconds(2))
+                {
+                    Thread.Sleep(25);
+                    var current = inspectExisting(fullPath);
+                    if ((before is null) != (current is null) || before is not null && current is not null &&
+                        !CryptographicOperations.FixedTimeEquals(before, current))
+                        throw new IOException("Destination changed while owned state publication was retried.");
+                }
+            }
         }
         finally
         {
@@ -65,5 +82,31 @@ internal static class AtomicOwnedFile
         var attributes = File.GetAttributes(path);
         if ((attributes & (FileAttributes.Directory | FileAttributes.Device | FileAttributes.ReparsePoint)) != 0)
             throw new IOException($"{kind} path must be a regular file.");
+    }
+
+    internal static void Delete(string destination, string lockPath, Func<string, byte[]?> inspectExisting)
+    {
+        RejectSpecialPath(lockPath, "Lock");
+        Directory.CreateDirectory(Path.GetDirectoryName(lockPath)!);
+        using var held = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.Write,
+            FileShare.None, 1, FileOptions.WriteThrough);
+        var before = inspectExisting(destination);
+        if (before is null) return;
+        var after = inspectExisting(destination);
+        if (after is null || !CryptographicOperations.FixedTimeEquals(before, after))
+            throw new IOException("Owned destination changed before invalidation.");
+        var retryStarted = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            try { File.Delete(destination); return; }
+            catch (IOException error) when (OperatingSystem.IsWindows() &&
+                (error.HResult & 0xffff) is 32 or 33 && retryStarted.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                Thread.Sleep(25);
+                var current = inspectExisting(destination);
+                if (current is null || !CryptographicOperations.FixedTimeEquals(before, current))
+                    throw new IOException("Owned destination changed while invalidation was retried.");
+            }
+        }
     }
 }

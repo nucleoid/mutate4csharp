@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Mutate4CSharp.Tests;
 
@@ -67,18 +69,25 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
     }
 
     [Theory]
-    [InlineData("mismatched-exit", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":3,\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":0}}", 4, "exitCode does not match")]
-    [InlineData("wrong-outcome", "{\"outcome\":\"COMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":0}}", 4, "requires exit 2 or 4 with outcome INCOMPLETE")]
-    [InlineData("missing-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[],\"counts\":{\"enumerated\":0}}", 4, "lacks valid incomplete conditions")]
+    [InlineData("duplicate-key", "{\"schemaVersion\":\"2\",\"mode\":\"check\",\"exitCode\":4,\"exitCode\":0}", 4, "duplicate JSON key")]
+    [InlineData("nested-duplicate-key", "{\"schemaVersion\":\"2\",\"mode\":\"check\",\"counts\":{\"killed\":0,\"killed\":1}}", 4, "duplicate JSON key")]
+    [InlineData("nonfinite-json", "{\"schemaVersion\":\"2\",\"mode\":\"check\",\"counts\":{\"killed\":NaN}}", 4, "nonfinite JSON number")]
+    [InlineData("preview-schema", "{\"schemaVersion\":\"1\",\"mode\":\"check\"}", 4, "schema v2 check report")]
+    [InlineData("na-policy-exit", "{\"schemaVersion\":\"2\",\"mode\":\"check\",\"outcome\":\"NOT_APPLICABLE\",\"exitCode\":5,\"policy\":{\"allowNotApplicable\":true}}", 5, "N/A exit does not match its policy")]
+    [InlineData("preview-finalization", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":0}}", 4, "preview finalization")]
+    [InlineData("mismatched-exit", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":3,\"incompleteConditions\":[{\"code\":\"BASELINE_INCONCLUSIVE\"}],\"counts\":{\"enumerated\":0}}", 4, "exitCode does not match")]
+    [InlineData("wrong-outcome", "{\"outcome\":\"COMPLETE\",\"exitCode\":4,\"baseline\":\"UNKNOWN\",\"incompleteConditions\":[{\"code\":\"BASELINE_INCONCLUSIVE\"}],\"counts\":{\"enumerated\":0}}", 4, "outcome does not match")]
+    [InlineData("missing-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[],\"counts\":{\"enumerated\":0}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
     [InlineData("malformed", "{", 4, "report validation failed")]
     [InlineData("non-object", "[]", 4, "report root must be an object")]
     [InlineData("unknown-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"NOT_A_GATE_CONDITION\"}],\"counts\":{\"enumerated\":null}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
     [InlineData("retired-enumeration", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"ENUMERATION_NOT_IMPLEMENTED\"}],\"counts\":{\"enumerated\":null}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
+    [InlineData("eligibility-integrity", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"PROOF_ELIGIBILITY_FAILED\"}],\"counts\":{\"enumerated\":0}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
     [InlineData("sdk-unavailable", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"ENUMERATION_SDK_UNAVAILABLE\"}],\"counts\":{\"enumerated\":null}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
-    [InlineData("execution-with-foreign-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"},{\"code\":\"SNAPSHOT_DIVERGED\"}],\"counts\":{\"enumerated\":1}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
-    [InlineData("zero-with-report", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":0,\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":0}}", 0, "requires exit 2 or 4 with outcome INCOMPLETE")]
-    [InlineData("exit-two-green", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":2,\"baseline\":\"GREEN\",\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":1}}", 2, "exit 2 requires a RED or EMPTY baseline")]
-    [InlineData("exit-four-red", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"baseline\":\"RED\",\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":1}}", 4, "RED or EMPTY baseline requires exit 2")]
+    [InlineData("execution-with-foreign-condition", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"BASELINE_INCONCLUSIVE\"},{\"code\":\"SNAPSHOT_DIVERGED\"}],\"counts\":{\"enumerated\":1}}", 4, "lacks an accepted execution or enumeration incomplete condition")]
+    [InlineData("zero-with-report", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":0,\"incompleteConditions\":[{\"code\":\"BASELINE_INCONCLUSIVE\"}],\"counts\":{\"enumerated\":0}}", 0, "outcome does not match")]
+    [InlineData("exit-two-green", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":2,\"baseline\":\"GREEN\",\"incompleteConditions\":[{\"code\":\"BASELINE_INCONCLUSIVE\"}],\"counts\":{\"enumerated\":1}}", 2, "exit 2 requires a RED or EMPTY baseline")]
+    [InlineData("exit-four-red", "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"baseline\":\"RED\",\"incompleteConditions\":[{\"code\":\"BASELINE_INCONCLUSIVE\"}],\"counts\":{\"enumerated\":1}}", 4, "RED or EMPTY baseline requires exit 2")]
     public async Task GateReportBindingNegativesRefuseExactly(string name, string json, int processExit, string diagnostic)
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "The shipped workflow is a Bash integration.");
@@ -134,6 +143,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
     [InlineData("COVERAGE_MISSING")]
     [InlineData("SUITE_MEMBERS_MISSING")]
     [InlineData("MUTATION_ATTEMPT_OMITTED")]
+    [InlineData("BASELINE_ACCOUNTING_INCOMPLETE")]
     public async Task GateAcceptsValidatedExecutionIncompletenessWithoutAcceptingIntegrityFailures(string code)
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "The shipped workflow is a Bash integration.");
@@ -141,7 +151,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
         await CreateRepositoryAsync(target);
         var head = (await RunAsync(target, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
         var fixture = await CreateToolFixtureAsync(
-            $"{{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{{\"code\":\"FINALIZATION_PENDING\"}},{{\"code\":\"{code}\"}}],\"counts\":{{\"enumerated\":1}},\"evidence\":[]}}", 4);
+            $"{{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{{\"code\":\"{code}\"}}],\"counts\":{{\"enumerated\":1}},\"evidence\":[]}}", 4);
 
         var result = await RunAsync(target, "bash", Path.Combine(RepositoryRoot, "scripts", "agent-gate.sh"),
             "gate", target, fixture.Receipt, fixture.PackageSha, fixture.PayloadSha, fixture.ToolCommit,
@@ -161,7 +171,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
         await CreateRepositoryAsync(target);
         var head = (await RunAsync(target, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
         var fixture = await CreateToolFixtureAsync(
-            $"{{\"outcome\":\"INCOMPLETE\",\"exitCode\":2,\"baseline\":\"{baseline}\",\"incompleteConditions\":[{{\"code\":\"FINALIZATION_PENDING\"}}],\"counts\":{{\"enumerated\":1}},\"evidence\":[]}}", 2);
+            $"{{\"outcome\":\"INCOMPLETE\",\"exitCode\":2,\"baseline\":\"{baseline}\",\"incompleteConditions\":[],\"counts\":{{\"enumerated\":1}},\"evidence\":[]}}", 2);
 
         var result = await RunAsync(target, "bash", Path.Combine(RepositoryRoot, "scripts", "agent-gate.sh"),
             "gate", target, fixture.Receipt, fixture.PackageSha, fixture.PayloadSha, fixture.ToolCommit,
@@ -228,7 +238,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
         await CreateRepositoryAsync(target);
         var head = (await RunAsync(target, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
         var fixture = await CreateToolFixtureAsync(
-            "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":0}}", 4);
+            "{\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"baseline\":\"UNKNOWN\",\"incompleteConditions\":[{\"code\":\"BASELINE_INCONCLUSIVE\"}],\"counts\":{\"enumerated\":0}}", 4);
 
         var result = await RunAsync(target, "bash", Path.Combine(RepositoryRoot, "scripts", "agent-gate.sh"),
             "gate", target, fixture.Receipt, fixture.PackageSha, fixture.PayloadSha, fixture.ToolCommit,
@@ -239,8 +249,73 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
             StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("PASS", false, "tests/Straße.Tests.csproj", "Straße.Tests.dll")]
+    [InlineData("PASS", false, "tests/ı.Tests.csproj", "ı.Tests.dll")]
+    [InlineData("PASS", false, "tests/ᾳ.Tests.csproj", "ᾳ.Tests.dll")]
+    [InlineData("NOT_APPLICABLE", false, "tests/App.Tests.csproj", "Tests.dll")]
+    [InlineData("NOT_APPLICABLE", true, "tests/App.Tests.csproj", "Tests.dll")]
+    public async Task GateAcceptsConclusiveReportAccountingAndPolicy(string outcome, bool allowNa,
+        string suitePath, string member)
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "The shipped workflow is a Bash integration.");
+        var report = EvaluationReport.CreateSynthetic(outcome == "PASS" ? EvaluationOutcome.Pass :
+            EvaluationOutcome.NotApplicable, "gate-conclusive", "STRUCTURAL_FIXTURE");
+        var suite = Assert.Single(report.Suites);
+        var configuration = suite.Accounting!.Configuration with { Path = suitePath, ExpectedMembers = [member] };
+        suite = suite with
+        {
+            SuiteId = CheckConfiguration.SuiteIdentity(configuration),
+            Accounting = suite.Accounting with { Configuration = configuration, AccountedMembers = [member] }
+        };
+        report = report with
+        {
+            Suites = [suite], Policy = report.Policy with { AllowNotApplicable = allowNa },
+            ExitCode = outcome == "PASS" || allowNa ? 0 : 5,
+            Evidence = report.Evidence.Where(item => item.Kind != "CHECK_CONFIGURATION")
+                .Append(ReportWriter.ConfigurationSuiteEvidence([suite.SuiteId])).ToArray()
+        };
+        var target = Path.Combine(_root, "conclusive-target");
+        await CreateRepositoryAsync(target);
+        var head = (await RunAsync(target, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
+        var fixture = await CreateToolFixtureAsync(Encoding.UTF8.GetString(ReportWriter.Serialize(report)), report.ExitCode);
+        var result = await RunAsync(target, "bash", Path.Combine(RepositoryRoot, "scripts", "agent-gate.sh"),
+            "gate", target, fixture.Receipt, fixture.PackageSha, fixture.PayloadSha, fixture.ToolCommit,
+            head, head, Path.Combine(_root, "conclusive-report.json"), "no-state");
+        Assert.True(result.ExitCode == report.ExitCode, result.Diagnostic);
+    }
+
     private async Task<ToolFixture> CreateToolFixtureAsync(string json, int processExit)
     {
+        // Complete the unchanged structural fields around each deliberate fault.
+        // Explicit v2 JSON is kept byte-for-byte for duplicate-key and malformed tests.
+        if (!json.Contains("schemaVersion", StringComparison.Ordinal))
+        {
+            try
+            {
+                if (JsonNode.Parse(json) is JsonObject envelope && envelope["counts"] is JsonObject count)
+                {
+                    envelope["schemaVersion"] = "2";
+                    envelope["mode"] = "check";
+                    envelope["baseline"] ??= "GREEN";
+                    envelope["reasons"] ??= new JsonArray();
+                    var selected = count["enumerated"]?.GetValue<int>() ?? 0;
+                    foreach (var key in new[] { "selected", "executed", "freshUncovered", "omitted", "compileInvalid", "killed", "survived", "errors" })
+                        count[key] = key is "selected" or "omitted" ? selected : 0;
+                    var units = new JsonArray();
+                    for (var index = 0; index < selected; index++)
+                        units.Add(new JsonObject
+                        {
+                            ["unitId"] = "mutation:v1:" + index.ToString("x64"),
+                            ["evaluationUnitId"] = "evaluation:v1:" + index.ToString("x64"),
+                            ["disposition"] = "OMITTED"
+                        });
+                    envelope["units"] = units;
+                    json = envelope.ToJsonString();
+                }
+            }
+            catch (JsonException) { /* Exercise the original malformed bytes. */ }
+        }
         var id = Guid.NewGuid().ToString("N");
         var package = Path.Combine(_root, $"candidate-{id}.nupkg");
         var payload = Path.Combine(_root, $"payload-{id}");
@@ -255,7 +330,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
         await File.WriteAllTextAsync(package, "package", TestContext.Current.CancellationToken);
         await WriteExecutableAsync(command, $"#!/usr/bin/env bash\nif [[ ${{1:-}} = --version ]]; then echo '{version}+{toolCommit}'; exit 0; fi\nprintf '%s\\n' '{json}' > \"$5\"\nexit {processExit}\n");
         var runtime = (await RunAsync(sdk, DotnetHost(), "--version")).StandardOutput.Trim();
-        await File.WriteAllTextAsync(receipt, $"format\tmutate4csharp-agent-gate-v3\nlocal_tool_version\t{version}\ntool_package\t{package}\ntool_payload\t{payload}\nruntime_version\t{runtime}\ndotnet_host\t{CanonicalDotnetHost()}\n", TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(receipt, $"format\tmutate4csharp-agent-gate-v4\nlocal_tool_version\t{version}\ntool_package\t{package}\ntool_payload\t{payload}\nruntime_version\t{runtime}\ndotnet_host\t{CanonicalDotnetHost()}\n", TestContext.Current.CancellationToken);
         return new(receipt, Sha256File(package), PayloadSha256(payload), toolCommit);
     }
 

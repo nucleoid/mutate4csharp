@@ -239,7 +239,16 @@ internal sealed record EvaluationPolicy(int MaxWorkers, int MutationCap,
     int BaselineTimeoutSeconds, int MutantTimeoutSeconds, int OverallDeadlineSeconds,
     bool AllowNotApplicable, int StabilityRepetitions);
 internal sealed record SuiteEvidence(string SuiteId, BaselineStatus Baseline,
-    IReadOnlyList<EvaluationEvidence> Evidence);
+    IReadOnlyList<EvaluationEvidence> Evidence)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SuiteBaselineAccounting? Accounting { get; init; }
+}
+
+internal sealed record SuiteBaselineAccounting(string RunId, string SnapshotId,
+    CheckTestSuite Configuration, IReadOnlyList<string> AccountedMembers,
+    string CoverageReportSha256, long CoverageReportLength, string CoverageIdentity,
+    string PathMap, bool CollectedFresh);
 
 internal sealed record EvaluationReport(
     string SchemaVersion,
@@ -278,10 +287,28 @@ internal sealed record EvaluationReport(
             : [];
         var facts = new EvaluationFacts(BaselineStatus.Green, units.Count, units, false, incompleteConditions);
         var decision = EvaluationReducer.Reduce(facts);
-        return new("1", runId, DateTimeOffset.UtcNow, "check",
+        var snapshotId = new string('c', 64);
+        var suiteConfiguration = new CheckTestSuite("synthetic", "tests/Synthetic.Tests.csproj", "vstest", "net10.0",
+            "Release", ["Synthetic.Tests.dll"]);
+        IReadOnlyList<SuiteEvidence> suites = outcome == EvaluationOutcome.Incomplete ? [] :
+            [new(CheckConfiguration.SuiteIdentity(suiteConfiguration), BaselineStatus.Green,
+                [new("SUITE_BASELINE", "Synthetic green baseline evidence.",
+                    ["disposition=Passed", "tests=1", "accountedMembers=Synthetic.Tests.dll",
+                     "expectedMembers=Synthetic.Tests.dll", "coverageSha256=" + new string('a', 64),
+                     "coverageLength=1", "pathMap=baseline-clone-to-snapshot-v1"])])
+            {
+                Accounting = new(runId, snapshotId, suiteConfiguration, ["Synthetic.Tests.dll"], new string('a', 64), 1,
+                    new string('b', 64), "baseline-clone-to-snapshot-v1", true)
+            }];
+        var evidence = decision.Evidence;
+        if (suites.Count > 0)
+            evidence = evidence.Concat([ReportWriter.ConfigurationSuiteEvidence(suites.Select(suite => suite.SuiteId)),
+                new EvaluationEvidence("INPUT_SNAPSHOT", "Synthetic format fixture; not execution certification.",
+                    ["captureId=" + snapshotId])]).ToArray();
+        return new(ReportWriter.SchemaVersion, runId, DateTimeOffset.UtcNow, "check",
             new("inputs", null, ["fixture.cs"]), ScopePlan.Empty("inputs", ".", null),
-            DefaultPolicy, facts.Baseline, [], facts.Units,
-            decision.Counts, facts.IncompleteConditions, decision.Reasons, decision.Evidence,
+            DefaultPolicy, facts.Baseline, suites, facts.Units,
+            decision.Counts, facts.IncompleteConditions, decision.Reasons, evidence,
             decision.Outcome, decision.ExitCode);
     }
 

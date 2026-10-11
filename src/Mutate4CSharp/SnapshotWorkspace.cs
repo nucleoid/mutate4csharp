@@ -27,7 +27,15 @@ internal sealed class OwnedDirectory : IAsyncDisposable
 
     internal static string PrivateParent(string category)
     {
-        var safeCategory = Sanitize(category, "owned");
+        var safeCategory = category switch
+        {
+            "snapshots" => "s",
+            "workspaces" => "w",
+            "environments" => "e",
+            "package-caches" => "p",
+            "coverage" => "c",
+            _ => Sanitize(category, "owned")
+        };
         lock (ProcessRootGate)
         {
             EnsureProcessRoot();
@@ -37,9 +45,10 @@ internal sealed class OwnedDirectory : IAsyncDisposable
 
     private static (string Path, string Token) CreateProcessPrivateRoot()
     {
-        var identity = $"{Environment.UserName}\0{Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)}";
-        var user = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..16].ToLowerInvariant();
-        var root = Path.Combine(Path.GetTempPath(), $"mutate4csharp-{user}-{Guid.NewGuid():N}");
+        // NuGet's conditional imports can silently omit long paths on Windows hosts
+        // without long-path policy. Keep scratch names short, retaining full random
+        // directory and ownership tokens and all existing permission checks.
+        var root = Path.Combine(Path.GetTempPath(), $"m4c-{Guid.NewGuid():N}");
         return (root, Guid.NewGuid().ToString("N"));
     }
 
@@ -69,6 +78,7 @@ internal sealed class OwnedDirectory : IAsyncDisposable
     {
         var token = Guid.NewGuid().ToString("N");
         var safePrefix = Sanitize(prefix, "owned");
+        safePrefix = safePrefix[..Math.Min(12, safePrefix.Length)];
         var fullParent = Path.GetFullPath(parent);
         var processManaged = false;
         lock (ProcessRootGate)

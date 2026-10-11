@@ -7,6 +7,11 @@ namespace Mutate4CSharp.Tests;
 
 public sealed class SidecarStoreTests : IDisposable
 {
+    private const string CompleteRunnerIdentity = "runner=vstest;suites=sha256:" +
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc;" +
+        "collector=coverlet-opencover-v1;coverage=sha256:" +
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;" +
+        "plan=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "mutate4csharp-sidecar",
         Guid.NewGuid().ToString("N"));
 
@@ -143,6 +148,61 @@ public sealed class SidecarStoreTests : IDisposable
     }
 
     [Fact]
+    public void ASecondFreshEligiblePassSupersedesTheSameFingerprintProof()
+    {
+        var (store, report, record, material, plan) = ValidProven();
+        store.PublishProven(record, report, material, plan);
+        var nextReport = report with
+        {
+            RunId = "next-fresh-run", GeneratedAtUtc = report.GeneratedAtUtc.AddSeconds(1),
+            Suites = report.Suites.Select(suite => suite with
+                { Accounting = suite.Accounting! with { RunId = "next-fresh-run" } }).ToArray()
+        };
+        var bytes = ReportWriter.Serialize(nextReport);
+        var nextRecord = record with
+        {
+            RunId = nextReport.RunId,
+            GeneratedAtUtc = nextReport.GeneratedAtUtc,
+            ReportSha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
+            ReportLength = bytes.LongLength,
+            Coverage = record.Coverage.Select(item => item with { RunId = nextReport.RunId }).ToArray()
+        };
+
+        store.PublishProven(nextRecord, nextReport, material, plan);
+
+        var inspected = store.ReadProvenForInspection(record.EvaluationFingerprint);
+        Assert.True(inspected.IsValid, inspected.Error);
+        Assert.Equal(nextReport.RunId, inspected.Record!.RunId);
+    }
+
+    [Theory]
+    [InlineData((int)EvaluationPublicationPhase.Report)]
+    [InlineData((int)EvaluationPublicationPhase.Discovery)]
+    [InlineData((int)EvaluationPublicationPhase.Proven)]
+    public void PublicationFaultRevokesProofAndReconcilesCurrentDiscovery(int failedPhase)
+    {
+        var (store, report, record, material, plan) = ValidProven();
+        store.PublishProven(record, report, material, plan);
+        var path = Path.Combine(_directory, "publication-fault.json");
+        var facts = plan.FinalizeFacts(report.Baseline, report.Units, false, []);
+        var result = EvaluationPublication.Publish(path, [], report, facts, store, report.Evidence
+            .Single(item => item.Kind == "INPUT_SNAPSHOT").Diagnostics![0]["captureId=".Length..],
+            material, plan, record.Coverage, phase =>
+            {
+                if ((int)phase == failedPhase) throw new IOException("Injected publication failure.");
+            });
+
+        Assert.Equal(EvaluationOutcome.Incomplete, result.Outcome);
+        Assert.False(store.ReadProvenForInspection(record.EvaluationFingerprint).IsValid);
+        var bytes = File.ReadAllBytes(path);
+        var discoveryPath = Assert.Single(Directory.EnumerateFiles(Path.Combine(_directory, ".mutate4csharp", "discovery"), "*.json"));
+        using var discovery = JsonDocument.Parse(File.ReadAllBytes(discoveryPath));
+        Assert.Equal("INCOMPLETE", discovery.RootElement.GetProperty("evaluationOutcome").GetString());
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
+            discovery.RootElement.GetProperty("reportSha256").GetString());
+    }
+
+    [Fact]
     public void FullyBoundPassPublishesAndReadsBack()
     {
         var (store, report, record, material, plan) = ValidProven();
@@ -156,6 +216,17 @@ public sealed class SidecarStoreTests : IDisposable
         Assert.Equal(record.SnapshotId, inspected.Record.SnapshotId);
         Assert.Equal(record.RunId, inspected.Record.RunId);
         Assert.Equal(record.Coverage, inspected.Record.Coverage);
+    }
+
+    [Fact]
+    public void InspectionRejectsPreviewSidecarEnvelope()
+    {
+        var (store, report, record, material, plan) = ValidProven();
+        var path = store.PublishProven(record, report, material, plan);
+        var node = JsonNode.Parse(File.ReadAllBytes(path))!.AsObject();
+        node["schemaVersion"] = "1";
+        File.WriteAllText(path, node.ToJsonString());
+        Assert.False(store.ReadProvenForInspection(record.EvaluationFingerprint).IsValid);
     }
 
     [Fact]
@@ -177,8 +248,9 @@ public sealed class SidecarStoreTests : IDisposable
 
         var twoSuiteReport = report with
         {
-            Suites = report.Suites.Append(new SuiteEvidence("suite-b", BaselineStatus.Green,
-                [new("BASELINE_GREEN", "Second fresh baseline passed.")])).ToArray()
+            Suites = report.Suites.Append(ValidSuite("suite-b")).ToArray(),
+            Evidence = report.Evidence.Where(item => item.Kind != "CHECK_CONFIGURATION")
+                .Append(ReportWriter.ConfigurationSuiteEvidence([report.Suites[0].SuiteId, ValidSuite("suite-b").SuiteId])).ToArray()
         };
         var twoSuiteBytes = ReportWriter.Serialize(twoSuiteReport);
         var oneCoverageRecord = record with
@@ -229,8 +301,8 @@ public sealed class SidecarStoreTests : IDisposable
         var material = ProvenMaterial();
         var fingerprint = EvaluationFingerprint.ComputeForProven(material);
         var coverage = new CoverageProvenance("1", report.RunId, "suite", fingerprint, Digest("snapshot"),
-            BaselineStatus.Green, Digest("coverage"), 8, "path-map-v1", "vstest-v1", true);
-        var record = new ProvenEvaluationSidecar("1", SidecarRecordKind.Proven, report.RunId,
+            BaselineStatus.Green, Digest("coverage"), 8, "path-map-v1", CompleteRunnerIdentity, true);
+        var record = new ProvenEvaluationSidecar("2", SidecarRecordKind.Proven, report.RunId,
             DateTimeOffset.UtcNow, fingerprint, Digest("snapshot"),
             Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), bytes.LongLength,
             true, [coverage], report.Counts);
@@ -246,7 +318,7 @@ public sealed class SidecarStoreTests : IDisposable
     {
         var fingerprint = Fingerprint();
         var valid = new CoverageProvenance("1", "run", "suite", fingerprint, Digest("snapshot"),
-            BaselineStatus.Green, Digest("coverage"), 8, "path-map-v1", "vstest-v1", true);
+            BaselineStatus.Green, Digest("coverage"), 8, "path-map-v1", CompleteRunnerIdentity, true);
 
         valid.Validate(fingerprint, valid.SnapshotId, valid.RunId, valid.SuiteId);
         Assert.Throws<EvaluationContractException>(() => valid.Validate(Fingerprint("other"), valid.SnapshotId,
@@ -380,7 +452,7 @@ public sealed class SidecarStoreTests : IDisposable
     {
         var report = EvaluationReport.CreateSynthetic(EvaluationOutcome.Incomplete, "discovery", "TEST_FIXTURE");
         var bytes = ReportWriter.Serialize(report);
-        return new("1", SidecarRecordKind.Discovery, report.RunId, DateTimeOffset.UnixEpoch,
+        return new("2", SidecarRecordKind.Discovery, report.RunId, DateTimeOffset.UnixEpoch,
             Fingerprint(), Digest("snapshot"), report.Outcome, false, ["src/A.cs:SCOPE_UNAVAILABLE"],
             Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), bytes.LongLength);
     }
@@ -397,27 +469,152 @@ public sealed class SidecarStoreTests : IDisposable
                 [new("MUTANT_KILLED", "Fresh suite killed the mutation.")])]);
         var facts = new EvaluationFacts(BaselineStatus.Green, 1, [unit], false, []);
         var decision = EvaluationReducer.Reduce(facts);
-        var report = new EvaluationReport("1", "valid-pass-run", DateTimeOffset.UnixEpoch, "check",
+        var report = new EvaluationReport(ReportWriter.SchemaVersion, "valid-pass-run", DateTimeOffset.UnixEpoch, "check",
             new("inputs", null, ["src/A.cs"]), ScopePlan.Empty("inputs", ".", null),
             EvaluationReport.DefaultPolicy, BaselineStatus.Green,
-            [new("suite-a", BaselineStatus.Green, [new("BASELINE_GREEN", "Fresh baseline passed.")])],
+            [ValidSuite("suite-a")],
             [unit], decision.Counts, [], decision.Reasons,
-            decision.Evidence.Concat([new EvaluationEvidence("INPUT_SNAPSHOT", "Frozen input snapshot.",
-                [$"captureId={snapshotId}"])]).ToArray(), decision.Outcome, decision.ExitCode);
+            decision.Evidence.Concat([
+                new EvaluationEvidence("INPUT_SNAPSHOT", "Frozen input snapshot.",
+                    [$"captureId={snapshotId}"]),
+                ReportWriter.ConfigurationSuiteEvidence([ValidSuite("suite-a").SuiteId])
+            ]).ToArray(), decision.Outcome, decision.ExitCode);
         var bytes = ReportWriter.Serialize(report);
         var fingerprint = EvaluationFingerprint.ComputeForProven(material);
-        var coverage = new CoverageProvenance("1", report.RunId, "suite-a", fingerprint, snapshotId,
-            BaselineStatus.Green, Digest("coverage"), 8, "path-map-v1", "vstest-v1", true);
-        var record = new ProvenEvaluationSidecar("1", SidecarRecordKind.Proven, report.RunId,
+        var coverage = new CoverageProvenance("1", report.RunId, report.Suites[0].SuiteId, fingerprint, snapshotId,
+            BaselineStatus.Green, Digest("coverage"), 8, "baseline-clone-to-snapshot-v1", CompleteRunnerIdentity, true);
+        var record = new ProvenEvaluationSidecar("2", SidecarRecordKind.Proven, report.RunId,
             DateTimeOffset.UnixEpoch, fingerprint, snapshotId,
             Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), bytes.LongLength,
             true, [coverage], report.Counts);
         return (new SidecarStore(_directory), report, record, material, plan);
     }
 
-    private static MutationCandidate Candidate()
+    private static SuiteEvidence ValidSuite(string identity)
     {
-        var identityMaterial = new MutationIdentityMaterial("src/A.cs", "Type.M", "site/1",
+        var configuration = new CheckTestSuite(identity, "tests/" + identity + ".csproj", "vstest", "net10.0", "Release", ["Tests.dll"]);
+        return new(CheckConfiguration.SuiteIdentity(configuration), BaselineStatus.Green,
+            [new("SUITE_BASELINE", "Fixture baseline with complete coverage and member accounting.",
+                ["disposition=Passed", "tests=1", "accountedMembers=Tests.dll", "expectedMembers=Tests.dll",
+                 "coverageSha256=" + Digest("coverage"), "coverageLength=8", "pathMap=baseline-clone-to-snapshot-v1"])])
+        {
+            Accounting = new("valid-pass-run", Digest("snapshot"), configuration, ["Tests.dll"], Digest("coverage"), 8,
+                Digest("canonical-coverage"), "baseline-clone-to-snapshot-v1", true)
+        };
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void InterruptedExecutionPreservesCompletedUnitsAndExplicitlyAccountsForPendingUnits(bool cancelled)
+    {
+        var material = ProvenMaterial();
+        var plan = MutationSelection.Plan(MutationSelection.Bind([Candidate(), Candidate("site/2")], material), material);
+        var issued = plan.CreatePendingLedger();
+        var killed = plan.Reduce(issued[0], [new(1, UnitDisposition.Killed,
+            [new("MUTANT_KILLED", "Completed execution evidence.")])]);
+        Exception failure = cancelled ? new OperationCanceledException() : new IOException("Executor failed.");
+
+        var ledger = StrictExecutionPipeline.CompleteInterruptedLedger(plan, issued, [killed], failure);
+        var facts = plan.FinalizeFacts(BaselineStatus.Green, ledger, false,
+            [new("EXECUTION_INTERRUPTED", "Interrupted execution cannot authorize success.")]);
+
+        Assert.Contains(ledger, item => item.Disposition == UnitDisposition.Killed);
+        Assert.Contains(ledger, item => item.Disposition == UnitDisposition.Omitted);
+        Assert.Equal(2, facts.EnumerationCount);
+        Assert.Equal(EvaluationOutcome.Incomplete, EvaluationReducer.Reduce(facts).Outcome);
+    }
+
+    [Fact]
+    public void FailedReductionCanOnlyRecoverAsOmittedAndCannotRetryExecution()
+    {
+        var material = ProvenMaterial();
+        var plan = MutationSelection.Plan(MutationSelection.Bind([Candidate()], material), material);
+        var issued = plan.CreatePendingLedger();
+        Assert.Throws<EvaluationContractException>(() => plan.Reduce(issued[0], []));
+        var ledger = StrictExecutionPipeline.CompleteInterruptedLedger(plan, issued, [], new IOException("Malformed executor evidence."));
+        Assert.Equal(UnitDisposition.Omitted, Assert.Single(ledger).Disposition);
+        Assert.Equal(EvaluationOutcome.Incomplete, EvaluationReducer.Reduce(
+            plan.FinalizeFacts(BaselineStatus.Green, ledger, false)).Outcome);
+        Assert.Throws<EvaluationContractException>(() => plan.Reduce(issued[0],
+            [new(1, UnitDisposition.Killed, [new("MUTANT_KILLED", "Retry cannot replace failed evidence.")])]));
+        Assert.Throws<EvaluationContractException>(() => plan.CompleteInterrupted(issued[0],
+            [new("EXECUTION_INTERRUPTED", "Cannot replace an already recovered slot.")]));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MissingProofEligibilityCannotPassWithOrWithoutState(bool noState)
+    {
+        var (store, report, record, material, plan) = ValidProven();
+        var path = Path.Combine(_directory, "eligibility-" + noState + ".json");
+        store.PublishProven(record, report, material, plan);
+        var facts = plan.FinalizeFacts(report.Baseline, report.Units, false);
+        var result = EvaluationPublication.Publish(path, [], report, facts, noState ? null : store,
+            record.SnapshotId, material with { ProvenanceComplete = false }, plan, record.Coverage);
+        Assert.Equal(EvaluationOutcome.Incomplete, result.Outcome);
+        Assert.Contains(result.IncompleteConditions, item => item.Code == "PROOF_ELIGIBILITY_FAILED");
+        Assert.DoesNotContain(result.IncompleteConditions, item => item.Code == "SIDECAR_WRITE_FAILED");
+        Assert.Equal(noState, File.Exists(store.ProvenPath(record.EvaluationFingerprint)));
+        if (!noState)
+        {
+            using var discovery = JsonDocument.Parse(File.ReadAllBytes(Assert.Single(Directory.EnumerateFiles(
+                Path.Combine(_directory, ".mutate4csharp", "discovery"), "*.json"))));
+            Assert.Equal("2", discovery.RootElement.GetProperty("schemaVersion").GetString());
+            Assert.Equal(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant(),
+                discovery.RootElement.GetProperty("reportSha256").GetString());
+            Assert.Equal("INCOMPLETE", discovery.RootElement.GetProperty("evaluationOutcome").GetString());
+        }
+    }
+
+    [Fact]
+    public void MalformedConclusiveReportRemainsPublicationError()
+    {
+        var report = EvaluationReport.CreateSynthetic(EvaluationOutcome.Fail, "malformed-fail", "STRUCTURAL_FIXTURE");
+        var facts = new EvaluationFacts(report.Baseline, report.Counts.Enumerated, report.Units, false, []);
+        var result = EvaluationPublication.Publish(Path.Combine(_directory, "malformed-fail.json"), [],
+            report with { Suites = [] }, facts, null, null, null, null, []);
+        Assert.Contains(result.IncompleteConditions, item => item.Code == "REPORT_PUBLICATION_FAILED");
+        Assert.DoesNotContain(result.IncompleteConditions, item => item.Code == "PROOF_ELIGIBILITY_FAILED");
+    }
+
+    [Fact]
+    public void StatePreparationFailureStillRevokesPriorRecognizedProof()
+    {
+        var (store, report, record, material, plan) = ValidProven();
+        var proof = store.PublishProven(record, report, material, plan);
+        File.WriteAllText(Path.Combine(_directory, ".mutate4csharp", ".gitignore"), "foreign-contract\n");
+        var result = EvaluationPublication.Publish(Path.Combine(_directory, "preparation-failed.json"), [], report,
+            plan.FinalizeFacts(report.Baseline, report.Units, false), store, record.SnapshotId, material, plan, record.Coverage);
+        Assert.Equal(EvaluationOutcome.Incomplete, result.Outcome);
+        Assert.Contains(result.IncompleteConditions, item => item.Code == "SIDECAR_WRITE_FAILED");
+        Assert.False(File.Exists(proof));
+        Assert.Equal("foreign-contract\n", File.ReadAllText(Path.Combine(_directory, ".mutate4csharp", ".gitignore")));
+    }
+
+    [Fact]
+    public void RevocationFailurePublishesIncompleteThenThrowsInsteadOfReturningNormally()
+    {
+        var (store, report, record, material, plan) = ValidProven();
+        var proof = store.PublishProven(record, report, material, plan);
+        var original = File.ReadAllBytes(proof);
+        var key = Path.GetFileNameWithoutExtension(proof);
+        using var held = new FileStream(Path.Combine(_directory, ".mutate4csharp", "locks", "proven-" + key + ".lock"),
+            FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
+        var path = Path.Combine(_directory, "revocation-failed.json");
+        Assert.Throws<IOException>(() => EvaluationPublication.Publish(path, [], report,
+            plan.FinalizeFacts(report.Baseline, report.Units, false), store, record.SnapshotId, material, plan, record.Coverage));
+        using var current = JsonDocument.Parse(File.ReadAllBytes(path));
+        Assert.Equal("INCOMPLETE", current.RootElement.GetProperty("outcome").GetString());
+        Assert.Contains(current.RootElement.GetProperty("evidence").EnumerateArray(),
+            item => item.GetProperty("kind").GetString() == "PROVEN_REVOCATION_FAILED");
+        Assert.Equal(original, File.ReadAllBytes(proof));
+    }
+
+    private static MutationCandidate Candidate(string site = "site/1")
+    {
+        var identityMaterial = new MutationIdentityMaterial("src/A.cs", "Type.M", site,
             "test.operator", "1", "replacement");
         var mutationId = MutationIdentity.Compute(identityMaterial);
         const string project = "src/App.csproj";
@@ -435,7 +632,7 @@ public sealed class SidecarStoreTests : IDisposable
         snapshotId ?? Digest("snapshot"),
         ReportWriter.SerializeCanonicalScope(scopePlan ?? ScopePlan.Empty("inputs", ".", null)),
         "configuration-v1", "tool-v1", "operator-v1", "sdk-v1", "runtime-v1",
-        "vstest-v1", EvaluationReport.DefaultPolicy, ProvenanceComplete: true);
+        CompleteRunnerIdentity, EvaluationReport.DefaultPolicy, ProvenanceComplete: true);
 
     private static string Fingerprint(string value = "fingerprint") => "sha256:" + Digest(value);
     private static string Digest(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))

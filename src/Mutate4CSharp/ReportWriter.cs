@@ -8,7 +8,10 @@ namespace Mutate4CSharp;
 
 internal static class ReportWriter
 {
+    internal const string SchemaVersion = "2";
     private static readonly Regex CodePattern = new("^[A-Z][A-Z0-9_]*$",
+        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+    private static readonly Regex ConfigurationIdentifier = new("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\z",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -26,6 +29,17 @@ internal static class ReportWriter
 
     public static string SerializeCanonicalScope(ScopePlan scopePlan) =>
         JsonSerializer.Serialize(scopePlan, JsonOptions);
+
+    internal static EvaluationEvidence ConfigurationSuiteEvidence(IEnumerable<string> suiteIds,
+        string summary = "Validated strict configuration suite identities.")
+    {
+        var ids = suiteIds.OrderBy(value => value, StringComparer.Ordinal).ToArray();
+        if (ids.Length == 0 || ids.Any(string.IsNullOrWhiteSpace) ||
+            ids.Distinct(StringComparer.Ordinal).Count() != ids.Length)
+            throw new EvaluationContractException("Configured execution identities must be non-empty and unique.");
+        return new("CHECK_CONFIGURATION", summary,
+            [$"suiteCount={ids.Length}", $"suiteSet={SuiteSetIdentity(ids)}"]);
+    }
 
     public static void Write(string path, EvaluationReport report, IReadOnlyList<string>? inputs = null)
     {
@@ -52,10 +66,26 @@ internal static class ReportWriter
         return fullPath;
     }
 
+    internal static void ValidateDestination(string path, IReadOnlyList<string> inputs) =>
+        _ = ValidateExistingDestination(ResolveSafeDestination(path, inputs));
+
     internal static string LockPath(string path)
     {
         var fullPath = Path.GetFullPath(path);
         return Path.Combine(Path.GetDirectoryName(fullPath)!, "." + Path.GetFileName(fullPath) + ".lock");
+    }
+
+    internal static void InvalidateCurrentRun(string path, string runId)
+    {
+        AtomicOwnedFile.Delete(path, LockPath(path), existing =>
+        {
+            var hash = ValidateExistingDestination(existing);
+            if (hash is null) return null;
+            using var document = JsonDocument.Parse(File.ReadAllBytes(existing));
+            if (document.RootElement.GetProperty("runId").GetString() != runId)
+                throw new IOException("Report invalidation cannot remove another run's artifact.");
+            return hash;
+        });
     }
 
     private static byte[]? ValidateExistingDestination(string path)
@@ -77,7 +107,7 @@ internal static class ReportWriter
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object ||
                 !root.TryGetProperty("schemaVersion", out var version) ||
-                version.ValueKind != JsonValueKind.String || version.GetString() != "1" ||
+                version.ValueKind != JsonValueKind.String || version.GetString() is not ("1" or "2") ||
                 !root.TryGetProperty("runId", out var runId) || runId.ValueKind != JsonValueKind.String ||
                 string.IsNullOrWhiteSpace(runId.GetString()) ||
                 !root.TryGetProperty("mode", out var mode) || mode.ValueKind != JsonValueKind.String ||
@@ -95,7 +125,7 @@ internal static class ReportWriter
 
     private static void Validate(EvaluationReport report)
     {
-        if (report.SchemaVersion != "1") throw new EvaluationContractException("Unsupported report schema version.");
+        if (report.SchemaVersion != SchemaVersion) throw new EvaluationContractException("Unsupported report schema version.");
         if (string.IsNullOrWhiteSpace(report.RunId)) throw new EvaluationContractException("A report run ID is required.");
         if (report.Evidence.Count == 0) throw new EvaluationContractException("Every report outcome requires evidence.");
         ExecutionPolicy.ValidateContract(report.Policy);
@@ -141,6 +171,34 @@ internal static class ReportWriter
         }
         if (report.Suites.Any(suite => string.IsNullOrWhiteSpace(suite.SuiteId) || suite.Evidence.Count == 0))
             throw new EvaluationContractException("Every suite requires an ID and evidence.");
+        var suiteIds = report.Suites.Select(suite => suite.SuiteId).ToArray();
+        if (suiteIds.Distinct(StringComparer.Ordinal).Count() != suiteIds.Length)
+            throw new EvaluationContractException("Report contains duplicate suite execution identities.");
+        if (report.Outcome != EvaluationOutcome.Incomplete)
+        {
+            var configurationEvidence = report.Evidence.Where(item => item.Kind == "CHECK_CONFIGURATION").ToArray();
+            if (configurationEvidence.Length != 1 || configurationEvidence[0].Diagnostics is null)
+                throw new EvaluationContractException(
+                    "Conclusive reports require exactly one configured suite identity set.");
+            var configuredCount = SingleDiagnostic(configurationEvidence[0], "suiteCount=");
+            var configuredSet = SingleDiagnostic(configurationEvidence[0], "suiteSet=");
+            if (!int.TryParse(configuredCount, System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out var count) || count != suiteIds.Length ||
+                configuredSet != SuiteSetIdentity(suiteIds))
+                throw new EvaluationContractException(
+                    "Report suites do not match the configured execution identities exactly.");
+            if (report.Baseline == BaselineStatus.Green &&
+                report.Suites.Any(suite => suite.Baseline != BaselineStatus.Green))
+                throw new EvaluationContractException(
+                    "Green report baseline requires every configured suite baseline to be green.");
+        }
+        if (report.Outcome == EvaluationOutcome.Pass &&
+            (report.Counts.Enumerated is not > 0 || report.Counts.Selected == 0 ||
+             report.Counts.Executed == 0 || report.Counts.Killed == 0 || report.Suites.Count == 0))
+            throw new EvaluationContractException(
+                "PASS requires nonzero enumerated, selected, executed, killed, and suite evidence.");
+        if (report.Outcome != EvaluationOutcome.Incomplete)
+            foreach (var suite in report.Suites) ValidateConclusiveSuite(suite, report);
         var expected = EvaluationReducer.Reduce(new(report.Baseline, report.Counts.Enumerated,
             report.Units, report.Policy.AllowNotApplicable, report.IncompleteConditions));
         if (report.Outcome != expected.Outcome || report.ExitCode != expected.ExitCode)
@@ -149,6 +207,61 @@ internal static class ReportWriter
             throw new EvaluationContractException("Report reasons do not match its evaluation facts.");
         if (report.Mode == "plan" && report.Outcome == EvaluationOutcome.Pass)
             throw new EvaluationContractException("Plan reports cannot represent reusable success.");
+    }
+
+    private static string SingleDiagnostic(EvaluationEvidence evidence, string prefix)
+    {
+        var values = evidence.Diagnostics!.Where(value => value.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(value => value[prefix.Length..]).ToArray();
+        if (values.Length != 1)
+            throw new EvaluationContractException("Configured suite identity evidence is incomplete or ambiguous.");
+        return values[0];
+    }
+
+    private static void ValidateConclusiveSuite(SuiteEvidence suite, EvaluationReport report)
+    {
+        var baselines = suite.Evidence.Where(item => item.Kind == "SUITE_BASELINE").ToArray();
+        var accounting = suite.Accounting;
+        if (baselines.Length != 1 || suite.Evidence.Count != 1 || accounting is null ||
+            suite.Baseline != BaselineStatus.Green || accounting.RunId != report.RunId || !accounting.CollectedFresh)
+            throw new EvaluationContractException(
+                "Conclusive suite evidence requires one bound fresh baseline record.");
+        var snapshots = report.Evidence.Where(item => item.Kind == "INPUT_SNAPSHOT")
+            .SelectMany(item => item.Diagnostics ?? []).Where(item => item.StartsWith("captureId=", StringComparison.Ordinal))
+            .Select(item => item["captureId=".Length..]).ToArray();
+        if (snapshots.Length != 1 || snapshots[0] != accounting.SnapshotId ||
+            !EvaluationFingerprint.IsSha256(accounting.SnapshotId) ||
+            !EvaluationFingerprint.IsSha256(accounting.CoverageReportSha256) || accounting.CoverageReportLength <= 0 ||
+            !EvaluationFingerprint.IsSha256(accounting.CoverageIdentity) ||
+            accounting.PathMap != "baseline-clone-to-snapshot-v1" ||
+            accounting.Configuration.Runner != "vstest" || accounting.Configuration.Framework != "net10.0" ||
+            !ConfigurationIdentifier.IsMatch(accounting.Configuration.Id) ||
+            !ConfigurationIdentifier.IsMatch(accounting.Configuration.Configuration) ||
+            accounting.Configuration.Path.Contains(':') ||
+            accounting.Configuration.Path.Replace('\\', '/').Split('/').Any(item => item is "" or "." or "..") ||
+            Path.IsPathRooted(accounting.Configuration.Path) ||
+            CheckConfiguration.SuiteIdentity(accounting.Configuration) != suite.SuiteId)
+            throw new EvaluationContractException(
+                "Conclusive suite evidence requires exact configured identity, snapshot and coverage provenance.");
+        var accounted = accounting.AccountedMembers;
+        var expected = accounting.Configuration.ExpectedMembers;
+        if (!ValidMembers(accounted) || !ValidMembers(expected) ||
+            !accounted.Order(StringComparer.OrdinalIgnoreCase)
+                .SequenceEqual(expected.Order(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase))
+            throw new EvaluationContractException(
+                "Conclusive suites must account for every configured test member exactly.");
+
+        static bool ValidMembers(IReadOnlyList<string> members) => members.Count is > 0 and <= 256 &&
+            members.Distinct(StringComparer.OrdinalIgnoreCase).Count() == members.Count &&
+            members.All(member => !string.IsNullOrWhiteSpace(member) && member.Length <= 256 && member == member.Trim() &&
+                !member.Contains('/') && !member.Contains('\\') && member is not ("." or ".."));
+    }
+
+    private static string SuiteSetIdentity(IEnumerable<string> suiteIds)
+    {
+        var ids = suiteIds.OrderBy(value => value, StringComparer.Ordinal).ToArray();
+        var components = ids.Select((value, index) => ($"suite-{index:D8}", value)).ToArray();
+        return "sha256:" + MutationIdentity.ComputeDigest("configured-suite-set", components);
     }
 
     private static void ValidateText(string code, string message, string kind)

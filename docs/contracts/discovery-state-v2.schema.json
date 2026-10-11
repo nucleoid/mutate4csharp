@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mutate4csharp.dev/contracts/discovery-state-v2.schema.json",
+  "title": "mutate4csharp discovery state v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recordKind", "runId", "generatedAtUtc", "evaluationFingerprint", "snapshotId", "evaluationOutcome", "scopeComplete", "scopeExclusions", "reportSha256", "reportLength"],
+  "properties": {
+    "schemaVersion": { "const": "2" },
+    "recordKind": { "const": "DISCOVERY" },
+    "runId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "generatedAtUtc": { "type": "string", "format": "date-time" },
+    "evaluationFingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "snapshotId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "evaluationOutcome": { "enum": ["PASS", "FAIL", "INCOMPLETE", "NOT_APPLICABLE"] },
+    "scopeComplete": { "type": "boolean" },
+    "scopeExclusions": { "type": "array", "maxItems": 100000, "items": { "type": "string", "minLength": 1, "maxLength": 4096 } },
+    "reportSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reportLength": { "type": "integer", "minimum": 1 }
+  }
+}

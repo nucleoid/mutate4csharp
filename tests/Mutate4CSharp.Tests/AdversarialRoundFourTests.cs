@@ -32,12 +32,14 @@ public sealed class AdversarialRoundFourTests : IDisposable
             fullPlan.FinalizeFacts(BaselineStatus.Green, completed, false));
     }
 
-    [Fact]
-    public void ProvenPublicationRefusesTheTargetedLedgerToFullPlanPath()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ProvenPublicationRefusesTheTargetedLedgerToFullPlanPath(bool stripFlags)
     {
         var context = TargetedContext();
 
-        Assert.Throws<EvaluationContractException>(() => PublishThroughFullPlan(context));
+        PublishThroughFullPlan(context, stripFlags);
     }
 
     [Fact]
@@ -118,28 +120,32 @@ public sealed class AdversarialRoundFourTests : IDisposable
         Assert.False(Evaluate(CurrentSchema, node));
     }
 
-    private void PublishThroughFullPlan(TargetedTestContext context)
+    private void PublishThroughFullPlan(TargetedTestContext context, bool stripFlags)
     {
         var completed = context.TargetedPlan.CreatePendingLedger()
-            .Select(item => item with
-            {
-                Disposition = UnitDisposition.Killed,
-                Evidence = [new("MUTANT_KILLED", "Fresh suite killed the mutation.")]
-            }).ToArray();
+            .Select(item => stripFlags ? new EvaluationUnitResult(item.UnitId, item.EvaluationUnitId,
+                UnitDisposition.Killed, [new("MUTANT_KILLED", "Attacker stripped the targeted flags and plan provenance.")]) :
+                context.TargetedPlan.Reduce(item, [new(1, UnitDisposition.Killed,
+                    [new("MUTANT_KILLED", "Actual targeted execution evidence.")])]))
+            .ToArray();
         var fullPlan = MutationSelection.Plan(context.Bound, context.Material);
-        var facts = fullPlan.FinalizeFacts(BaselineStatus.Green, completed, false);
+        var facts = stripFlags ? new EvaluationFacts(BaselineStatus.Green, completed.Length, completed, false, []) :
+            context.TargetedPlan.FinalizeFacts(BaselineStatus.Green, completed, false);
         var decision = EvaluationReducer.Reduce(facts);
         var report = Report(facts, decision, context.Scope, context.SnapshotId);
         var reportBytes = ReportWriter.Serialize(report);
         var fingerprint = EvaluationFingerprint.ComputeForProven(context.Material);
-        var coverage = new CoverageProvenance("1", report.RunId, "suite-a", fingerprint, context.SnapshotId,
-            BaselineStatus.Green, Digest("coverage"), 8, "path-map-v1", "vstest-v1", true);
-        var record = new ProvenEvaluationSidecar("1", SidecarRecordKind.Proven, report.RunId,
+        var coverage = new CoverageProvenance("1", report.RunId, report.Suites[0].SuiteId, fingerprint, context.SnapshotId,
+            BaselineStatus.Green, Digest("coverage"), 8, "baseline-clone-to-snapshot-v1", SuiteAccountingFixture.Runner, true);
+        var record = new ProvenEvaluationSidecar("2", SidecarRecordKind.Proven, report.RunId,
             DateTimeOffset.UnixEpoch, fingerprint, context.SnapshotId,
             Convert.ToHexString(SHA256.HashData(reportBytes)).ToLowerInvariant(), reportBytes.LongLength,
             true, [coverage], report.Counts);
 
-        new SidecarStore(_directory).PublishProven(record, report, context.Material, fullPlan);
+        var failure = Assert.Throws<EvaluationContractException>(() =>
+            new SidecarStore(_directory).PublishProven(record, report, context.Material, fullPlan));
+        Assert.Equal("Proven publication report provenance does not match the finalizing mutation plan.", failure.Message);
+        Assert.IsType<EvaluationContractException>(failure.InnerException);
     }
 
     private static JsonObject TargetedReportNode()
@@ -174,12 +180,12 @@ public sealed class AdversarialRoundFourTests : IDisposable
     }
 
     private static EvaluationReport Report(EvaluationFacts facts, EvaluationDecision decision,
-        ScopePlan scope, string snapshotId) => new("1", "targeted-round-four", DateTimeOffset.UnixEpoch, "check",
+        ScopePlan scope, string snapshotId) => new(ReportWriter.SchemaVersion, "targeted-round-four", DateTimeOffset.UnixEpoch, "check",
         new("inputs", null, ["src/A.cs"]), scope, EvaluationReport.DefaultPolicy, facts.Baseline,
-        [new("suite-a", BaselineStatus.Green, [new("BASELINE_GREEN", "Fresh baseline passed.")])],
+        [SuiteAccountingFixture.Create("targeted-round-four", snapshotId, Digest("coverage"), 8)],
         facts.Units, decision.Counts, facts.IncompleteConditions, decision.Reasons,
         decision.Evidence.Concat([new EvaluationEvidence("INPUT_SNAPSHOT", "Frozen input snapshot.",
-            [$"captureId={snapshotId}"])]).ToArray(), decision.Outcome, decision.ExitCode);
+            [$"captureId={snapshotId}"]), ReportWriter.ConfigurationSuiteEvidence([SuiteAccountingFixture.Create("targeted-round-four", snapshotId, Digest("coverage"), 8).SuiteId])]).ToArray(), decision.Outcome, decision.ExitCode);
 
     private static IdentifiedMutation Identity(string source, string token)
     {
@@ -194,7 +200,7 @@ public sealed class AdversarialRoundFourTests : IDisposable
             EvaluationFingerprint.FromBytes("source", "src/A.cs", "source"u8),
             EvaluationFingerprint.FromBytes("dependency", "packages.lock.json", "dependency"u8)
         ], snapshotId, ReportWriter.SerializeCanonicalScope(scope), "configuration-v1", "tool-v1", "operator-v1",
-        "sdk-v1", "runtime-v1", "vstest-v1", EvaluationReport.DefaultPolicy, ProvenanceComplete: true);
+        "sdk-v1", "runtime-v1", SuiteAccountingFixture.Runner, EvaluationReport.DefaultPolicy, ProvenanceComplete: true);
 
     private static string Digest(string value) => Convert.ToHexString(
         SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
@@ -230,7 +236,7 @@ public sealed class AdversarialRoundFourTests : IDisposable
 
     private static JsonObject LoadSchemaNode()
     {
-        var path = Path.GetFullPath("../../../../../docs/contracts/evaluation-report-v1.schema.json",
+        var path = Path.GetFullPath("../../../../../docs/contracts/evaluation-report-v2.schema.json",
             AppContext.BaseDirectory);
         return JsonNode.Parse(File.ReadAllText(path))!.AsObject();
     }

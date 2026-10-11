@@ -1,6 +1,6 @@
 # mutate4csharp
 
-`mutate4csharp` is a clean-room mutation-testing CLI for C# and .NET 10. Its established CLI discovers mutation sites in a selected source file with Roslyn, establishes a green test baseline, uses OpenCover line coverage, and runs every selected mutant in a private copy of the owning repository or solution. Its preview agent interface adds deterministic Git-aware multi-file change scope, frozen repository inputs, canonical semantic mutation enumeration, isolated suite orchestration, and versioned reports; strict baseline and mutant execution are not yet connected.
+`mutate4csharp` is a clean-room mutation-testing CLI for C# and .NET 10. Its established CLI discovers mutation sites in a selected source file with Roslyn, establishes a green test baseline, uses OpenCover line coverage, and runs every selected mutant in a private copy of the owning repository or solution. Its strict agent interface connects deterministic Git-aware multi-file scope, frozen repository inputs, semantic mutation enumeration, fresh baselines, isolated mutant execution, and versioned final reports. Installed-candidate certification is tracked separately from in-repository execution tests.
 
 The repository pins .NET SDK `10.0.103` in `global.json` and CI to keep local and hosted builds on the same feature band.
 
@@ -54,9 +54,10 @@ captured working-tree bytes, including staged, unstaged, and eligible untracked 
 duplicating paths. Explicit repeated inputs also work outside Git for scope planning, but strict semantic enumeration
 requires a Git-backed project snapshot. Suite orchestration prepares frozen dependencies, runs fresh
 baseline/coverage evidence, and executes selected mutants in isolated clones with bounded scheduling.
-Public strict `check` cannot produce `PASS` until final verification is connected. A supported capture publishes
-the bound nonzero or known-zero enumeration and observed unit evidence, then returns exit `4` with `INCOMPLETE`
-and the `FINALIZATION_PENDING` incomplete condition. Unsupported semantic contexts publish precise enumeration
+Public strict `check` reconciles the complete trusted unit ledger after original-tree revalidation and owned-resource
+cleanup. Complete nonzero all-killed work returns `PASS`; survivors or conclusively uncovered mutations return
+`FAIL`; known zero effective work follows the explicit `NOT_APPLICABLE` policy. Partial, unstable, cancelled, or
+errored work remains `INCOMPLETE`. Unsupported semantic contexts publish precise enumeration
 refusals with an unknown count. Usage rejection,
 snapshot refusal, and exception paths differ and may not reach enumeration or report publication. The strict interface writes an
 atomic JSON report and uses fail-closed outcomes. Its report schema,
@@ -130,3 +131,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the supported setup, build/test workf
 The behavior and workflow were inspired by Robert C. Martin's [`unclebob/mutate4java`](https://github.com/unclebob/mutate4java), pinned for behavioral study at commit [`7b05fdd71e8fe36327aff837806dfbff86af0572`](https://github.com/unclebob/mutate4java/tree/7b05fdd71e8fe36327aff837806dfbff86af0572). See [ATTRIBUTION.md](ATTRIBUTION.md).
 
 No upstream Java source or tests are vendored, copied, translated, or executed here. The upstream snapshot had no declared license, so its code is **not** relicensed. The MIT license in this repository covers only the independently authored `mutate4csharp` code and documentation.
+
+Strict coverage uses the pinned Coverlet/VSTest in-process collector profile. A zero aggregate line
+count may establish an uncovered ordinary straight-line method span only after matching the portable PDB and
+captured source. Generated/async methods, hidden sequence points, unsupported report producers,
+and ambiguous mappings remain unknown and execute. Coverage from child applications or separately
+loaded assembly copies is outside this collector profile; their execution does not establish measured
+in-process coverage. See [the supported matrix](docs/supported-matrix.md).
+
+Methods with calls, branches, exception handlers, generated state or hidden points do not receive aggregate-zero uncovered proof; their mutants execute. This avoids the instruction-skipping cases in [Coverlet 6.0.4 instrumentation](https://github.com/coverlet-coverage/coverlet/blob/v6.0.4/src/coverlet.core/Instrumentation/Instrumenter.cs).

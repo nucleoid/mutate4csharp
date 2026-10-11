@@ -327,13 +327,13 @@ public sealed class StrictMutationExecutorTests : IDisposable
 
         var suites = Assert.IsAssignableFrom<IReadOnlyList<SuiteEvidence>>(method.Invoke(null,
             [new[] { suite }, new Dictionary<string, SuiteBaselineExecution>(StringComparer.Ordinal)
-                { [suite.Identity] = execution }]))!;
+                { [suite.Identity] = execution }, "diagnostic-run", "snapshot-key"]))!;
 
         var evidence = Assert.Single(Assert.Single(suites).Evidence);
         Assert.True(evidence.Diagnostics!.Count <= EvaluationEvidence.MaxDiagnostics);
         Assert.Contains(evidence.Diagnostics, item => item == "accountedMembers=<none>");
         Assert.Contains(evidence.Diagnostics, item => item == "expectedMembers=One.Tests.dll");
-        Assert.Contains(evidence.Diagnostics, item => item.StartsWith("baseline-read-error-",
+        Assert.Contains(evidence.Diagnostics, item => item.StartsWith("diagnostic=baseline-read-error-",
             StringComparison.Ordinal));
         Assert.Contains(evidence.Diagnostics, item => item.StartsWith("diagnostics-truncated=",
             StringComparison.Ordinal));
@@ -344,7 +344,7 @@ public sealed class StrictMutationExecutorTests : IDisposable
         Assert.Equal(1, StrictExecutionPipeline.MaxStrictWorkers);
 
     [Fact(Timeout = 420_000)]
-    public async Task CoordinatorRunsFreshBaselineCoverageAndMutantBeforeFinalizationGate()
+    public async Task CoordinatorFinalizesRealAllKilledRunAsPass()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         WriteFixture();
@@ -368,18 +368,41 @@ public sealed class StrictMutationExecutorTests : IDisposable
                 new(false, "HEAD", [], reportPath, "strict-execution", NoState: true),
                 cancellationToken);
 
-            Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+            Assert.True(result.Report.Outcome == EvaluationOutcome.Pass,
+                string.Join("; ", result.Report.Reasons.Select(item => item.Code + ": " + item.Message)
+                    .Concat(result.Report.Evidence.Select(item => item.Kind + ": " + item.Summary))
+                    .Concat(result.Report.Suites.SelectMany(suite => suite.Evidence)
+                        .SelectMany(item => item.Diagnostics ?? []).Select(item => item
+                            .Replace(_repository.Root, "<fixture>", StringComparison.OrdinalIgnoreCase)
+                            .Replace(Path.GetTempPath(), "<temp>/", StringComparison.OrdinalIgnoreCase)))));
+            Assert.Equal(0, result.Report.ExitCode);
             Assert.Equal(BaselineStatus.Green, result.Report.Baseline);
             Assert.NotNull(result.Report.Counts.Enumerated);
             Assert.True(result.Report.Counts.Executed > 0);
             Assert.True(result.Report.Counts.Killed > 0);
             Assert.Contains(result.Report.Units, item => item.Disposition == UnitDisposition.Killed);
-            Assert.Contains(result.Report.IncompleteConditions,
-                item => item.Code == "FINALIZATION_PENDING");
+            Assert.Empty(result.Report.IncompleteConditions);
             Assert.DoesNotContain(result.Report.IncompleteConditions,
                 item => item.Code == "EXECUTION_NOT_IMPLEMENTED");
             Assert.Single(result.Report.Suites);
             Assert.Equal(BaselineStatus.Green, result.Report.Suites[0].Baseline);
+            var repeated = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], reportPath, "strict-execution-repeat", NoState: true),
+                cancellationToken);
+            Assert.Equal(EvaluationOutcome.Pass, repeated.Report.Outcome);
+            Assert.Equal(result.Report.Counts, repeated.Report.Counts);
+            Assert.Equal(result.Report.Units.Select(item => item.EvaluationUnitId),
+                repeated.Report.Units.Select(item => item.EvaluationUnitId));
+            foreach (var key in new[] { "evaluationFingerprint=", "planFingerprint=", "selectionFingerprint=" })
+            {
+                string? Fingerprint(EvaluationReport report) => report.Evidence
+                    .Where(item => item.Kind == "MUTATION_PLAN").SelectMany(item => item.Diagnostics ?? [])
+                    .SingleOrDefault(value => value.StartsWith(key, StringComparison.Ordinal));
+                Assert.NotNull(Fingerprint(result.Report));
+                Assert.Equal(Fingerprint(result.Report), Fingerprint(repeated.Report));
+            }
+            Assert.Equal(result.Report.Suites[0].Accounting!.CoverageIdentity,
+                repeated.Report.Suites[0].Accounting!.CoverageIdentity);
             var snapshotEvidence = Assert.Single(result.Report.Evidence,
                 item => item.Kind == "INPUT_SNAPSHOT");
             Assert.Contains(snapshotEvidence.Diagnostics ?? [], value =>
@@ -389,12 +412,199 @@ public sealed class StrictMutationExecutorTests : IDisposable
             Assert.Equal(original, File.ReadAllBytes(Path.Combine(_repository.Root, "src/App/Flag.cs")));
             Assert.False(Directory.Exists(Path.Combine(_repository.Root, "obj")));
             Assert.False(Directory.Exists(Path.Combine(_repository.Root, "bin")));
+            Assert.False(Directory.Exists(Path.Combine(_repository.Root, ".mutate4csharp")));
         }
         finally
         {
             Environment.CurrentDirectory = previous;
             try { File.Delete(reportPath); } catch { }
             try { File.Delete(ReportWriter.LockPath(reportPath)); } catch { }
+        }
+    }
+
+    [Theory(Timeout = 420_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CoordinatorPublishesDiscoveryThenProvenForEligibleRealPass(bool failProvenPublication)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        WriteFixture();
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag { public static bool Value() => false; }
+            """);
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "baseline");
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag { public static bool Value() => true; }
+            """);
+        var reportPath = Path.Combine(Path.GetTempPath(), $"strict-proven-{Guid.NewGuid():N}.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = _repository.Root;
+        try
+        {
+            var result = await new EvaluationCoordinator(beforePublication: phase =>
+            {
+                if (failProvenPublication && phase == EvaluationPublicationPhase.Proven)
+                    throw new IOException("Injected real coordinator proof publication failure.");
+            }).RunAsync(
+                new(false, "HEAD", [], reportPath, "strict-proven"), cancellationToken);
+
+            Assert.Equal(failProvenPublication ? EvaluationOutcome.Incomplete : EvaluationOutcome.Pass,
+                result.Report.Outcome);
+            Assert.True(result.Report.Counts.Executed > 0);
+            Assert.True(result.Report.Counts.Killed > 0);
+            var fingerprint = Assert.Single(result.Report.Evidence,
+                    item => item.Kind == "MUTATION_PLAN").Diagnostics!
+                .Single(value => value.StartsWith("evaluationFingerprint=", StringComparison.Ordinal))[22..];
+            var store = new SidecarStore(_repository.Root);
+            var proven = store.ReadProvenForInspection(fingerprint);
+            Assert.Equal(!failProvenPublication, proven.IsValid);
+            if (!failProvenPublication) Assert.Equal(result.Report.RunId, proven.Record!.RunId);
+            Assert.Equal(!failProvenPublication, File.Exists(store.ProvenPath(fingerprint)));
+            Assert.Single(Directory.EnumerateFiles(
+                Path.Combine(_repository.Root, ".mutate4csharp", "discovery"), "*.json"));
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            try { File.Delete(reportPath); } catch { }
+            try { File.Delete(ReportWriter.LockPath(reportPath)); } catch { }
+        }
+    }
+
+    [Fact(Timeout = 420_000)]
+    public async Task CoordinatorFinalizesRealSurvivorRunAsFail()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        WriteFixture();
+        _repository.WriteText("tests/App.Tests/FlagTests.cs", """
+            using App;
+            using Xunit;
+            public sealed class FlagTests
+            {
+                [Fact] public void WeakTest() { _ = Flag.Value(); Assert.True(true); }
+            }
+            """);
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag { public static bool Value() => false; }
+            """);
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "baseline");
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag { public static bool Value() => true; }
+            """);
+        var reportPath = Path.Combine(Path.GetTempPath(), $"strict-survivor-{Guid.NewGuid():N}.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = _repository.Root;
+        try
+        {
+            var result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], reportPath, "strict-survivor", NoState: true),
+                cancellationToken);
+
+            Assert.Equal(EvaluationOutcome.Fail, result.Report.Outcome);
+            Assert.Equal(3, result.Report.ExitCode);
+            Assert.Equal(BaselineStatus.Green, result.Report.Baseline);
+            Assert.NotNull(result.Report.Counts.Enumerated);
+            Assert.True(result.Report.Counts.Executed > 0);
+            Assert.True(result.Report.Counts.Survived > 0);
+            Assert.Contains(result.Report.Units, item => item.Disposition == UnitDisposition.Survived);
+            Assert.Empty(result.Report.IncompleteConditions);
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            try { File.Delete(reportPath); } catch { }
+            try { File.Delete(ReportWriter.LockPath(reportPath)); } catch { }
+        }
+    }
+
+    [Theory(Timeout = 420_000)]
+    [InlineData("uncovered")]
+    [InlineData("compile-invalid")]
+    [InlineData("zero-site")]
+    public async Task CoordinatorAccountsForRealUncoveredCompileInvalidAndZeroSiteWork(string scenario)
+    {
+        WriteFixture();
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "baseline");
+        var source = scenario switch
+        {
+            "uncovered" => """
+                namespace App;
+                public static class Flag
+                {
+                    public static bool Covered(bool initial) => initial;
+                    public static bool Value() => true;
+                }
+                """,
+            "compile-invalid" => """
+                namespace App;
+                public static class Flag
+                {
+                    public static bool Value(bool initial)
+                    {
+                        bool value;
+                        return initial && (value = initial) ? value : initial;
+                    }
+                }
+                """,
+            _ => """
+                namespace App;
+                public static class Flag { public static bool Value(bool initial) => initial; }
+                """
+        };
+        _repository.WriteText("src/App/Flag.cs", source);
+        _repository.WriteText("tests/App.Tests/FlagTests.cs", scenario == "uncovered" ? """
+            using App;
+            using Xunit;
+            public sealed class FlagTests { [Fact] public void CoversOnlyOtherMethod() => Assert.True(Flag.Covered(true)); }
+            """ : """
+            using App;
+            using Xunit;
+            public sealed class FlagTests
+            {
+                [Fact] public void TrueInput() => Assert.True(Flag.Value(true));
+                [Fact] public void FalseInput() => Assert.False(Flag.Value(false));
+            }
+            """);
+        var report = Path.Combine(Path.GetTempPath(), $"strict-{scenario}-{Guid.NewGuid():N}.json");
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = _repository.Root;
+        try
+        {
+            var result = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], report, scenario, NoState: true), TestContext.Current.CancellationToken);
+            Assert.Equal(BaselineStatus.Green, result.Report.Baseline);
+            Assert.Empty(result.Report.IncompleteConditions);
+            if (scenario == "uncovered")
+            {
+                Assert.Equal(EvaluationOutcome.Fail, result.Report.Outcome);
+                Assert.Equal(3, result.Report.ExitCode);
+                Assert.True(result.Report.Counts.FreshUncovered == 1,
+                    string.Join("; ", result.Report.Suites.SelectMany(item => item.Evidence)
+                        .SelectMany(item => item.Diagnostics ?? [])));
+                Assert.Equal(0, result.Report.Counts.Executed);
+            }
+            else
+            {
+                Assert.Equal(EvaluationOutcome.NotApplicable, result.Report.Outcome);
+                Assert.Equal(5, result.Report.ExitCode);
+                Assert.Equal(0, result.Report.Counts.Killed);
+                Assert.Equal(scenario == "compile-invalid" ? 1 : 0, result.Report.Counts.CompileInvalid);
+                Assert.Equal(scenario == "compile-invalid" ? 1 : 0, result.Report.Counts.Enumerated);
+            }
+            Assert.False(Directory.Exists(Path.Combine(_repository.Root, ".mutate4csharp")));
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            File.Delete(report);
+            File.Delete(ReportWriter.LockPath(report));
         }
     }
 
@@ -426,8 +636,7 @@ public sealed class StrictMutationExecutorTests : IDisposable
                 Assert.Equal(UnitDisposition.Omitted, unit.Disposition);
                 Assert.Contains(unit.Evidence, item => item.Kind == "BASELINE_NOT_GREEN");
             });
-            Assert.Contains(result.Report.IncompleteConditions,
-                item => item.Code == "FINALIZATION_PENDING");
+            Assert.Empty(result.Report.IncompleteConditions);
         }
         finally
         {
@@ -438,6 +647,149 @@ public sealed class StrictMutationExecutorTests : IDisposable
     }
 
     public void Dispose() => _repository.Dispose();
+
+    [Theory(Timeout = 900_000)]
+    [InlineData("budget")]
+    [InlineData("empty")]
+    [InlineData("unstable")]
+    [InlineData("error")]
+    [InlineData("timeout")]
+    [InlineData("deadline")]
+    [InlineData("cancel-after-execution")]
+    [InlineData("drift-after-execution")]
+    [InlineData("malformed-coverage")]
+    [InlineData("cleanup-after-execution")]
+    public async Task RealCoordinatorBoundaryCannotPublishSuccess(string scenario)
+    {
+        WriteFixture();
+        var counter = Path.Combine(Path.GetTempPath(), $"m4c-stability-{Guid.NewGuid():N}.txt");
+        File.WriteAllText(counter, "0");
+        var counterLiteral = JsonSerializer.Serialize(counter);
+        var configuration = System.Text.Json.Nodes.JsonNode.Parse(_repository.Read("mutate4csharp.json"))!;
+        configuration["policy"]!["overallDeadlineSeconds"] = scenario == "deadline" ? 1 : 600;
+        if (scenario == "budget") configuration["policy"]!["mutationCap"] = 1;
+        if (scenario == "unstable") configuration["policy"]!["stabilityRepetitions"] = 3;
+        if (scenario == "timeout") configuration["policy"]!["mutantTimeoutSeconds"] = 10;
+        _repository.WriteText("mutate4csharp.json", configuration.ToJsonString());
+        _repository.WriteText("tests/App.Tests/FlagTests.cs", scenario switch
+        {
+            "empty" => "using App; using Xunit; public sealed class FlagTests { [Fact(Skip = \"Intentional zero executed baseline\")] public void NoExecutedTests() => Assert.True(Flag.Value()); }",
+            "unstable" => $$"""
+                using App; using Xunit; using System.IO;
+                public sealed class FlagTests { [Fact] public void AlternatesOnlyForMutant() {
+                    var count = int.Parse(File.ReadAllText({{counterLiteral}})) + 1;
+                    File.WriteAllText({{counterLiteral}}, count.ToString());
+                    Assert.True(Flag.Value() || count % 2 == 1);
+                } }
+                """,
+            "error" => """
+                using App; using Xunit;
+                public sealed class FlagTests { [Fact] public void CrashesOnlyMutantHost() {
+                    if (!Flag.Value()) System.Environment.Exit(23);
+                    Assert.True(Flag.Value());
+                } }
+                """,
+            "timeout" => """
+                using App; using Xunit;
+                public sealed class FlagTests { [Fact] public void TimesOutOnlyMutant() {
+                    if (!Flag.Value()) System.Threading.Thread.Sleep(20_000);
+                    Assert.True(Flag.Value());
+                } }
+                """,
+            _ => "using App; using Xunit; public sealed class FlagTests { [Fact] public void ValueIsTrue() => Assert.True(Flag.Value()); }"
+        });
+        _repository.WriteText("src/App/Flag.cs", "namespace App; public static class Flag { public static bool Value() => false; }");
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "boundary baseline");
+        _repository.WriteText("src/App/Flag.cs", scenario == "budget"
+            ? "namespace App; public static class Flag { public static bool Value() => true && true; }"
+            : "namespace App; public static class Flag { public static bool Value() => true; }");
+        var report = Path.Combine(Path.GetTempPath(), $"m4c-boundary-{Guid.NewGuid():N}.json");
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var validations = 0;
+        var coverageInspections = 0;
+        var coverageReports = 0;
+        var snapshotParent = OwnedDirectory.PrivateParent("snapshots");
+        var oldSnapshots = Directory.Exists(snapshotParent) ? Directory.EnumerateDirectories(snapshotParent)
+            .ToHashSet(StringComparer.Ordinal) : [];
+        string? damagedRoot = null;
+        var capture = SnapshotCaptureOptions.Default with
+        {
+            Hook = (stage, path) =>
+            {
+                if (stage != SnapshotCaptureStage.BeforeOriginalFileHashed || path != "src/App/Flag.cs" || ++validations != 2) return;
+                if (scenario == "cancel-after-execution") cancellation.Cancel();
+                if (scenario == "drift-after-execution") _repository.WriteText(path,
+                    "namespace App; public static class Flag { public static bool Value() => false; }");
+                if (scenario == "cleanup-after-execution")
+                {
+                    damagedRoot = Directory.EnumerateDirectories(snapshotParent).Single(value => !oldSnapshots.Contains(value));
+                    File.WriteAllText(Path.Combine(damagedRoot, ".mutate4csharp-owner"), "wrong-owner");
+                }
+            }
+        };
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = _repository.Root;
+        try
+        {
+            var result = await new EvaluationCoordinator(capture, beforeCoverageParsing: (_, reports) =>
+            {
+                coverageInspections++;
+                coverageReports += reports.Count;
+                if (scenario == "malformed-coverage")
+                    foreach (var collected in reports) File.WriteAllText(collected, "malformed XML");
+            }).RunAsync(
+                new(false, "HEAD", [], report, "boundary-" + scenario), cancellation.Token);
+            Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+            Assert.True(result.Report.ExitCode == (scenario == "empty" ? 2 : 4),
+                string.Join("; ", result.Report.Reasons.Select(item => item.Code + ": " + item.Message)
+                    .Concat(result.Report.Suites.SelectMany(item => item.Evidence).SelectMany(item => item.Diagnostics ?? [])))
+                    .Replace(_repository.Root, "<fixture>", StringComparison.OrdinalIgnoreCase)
+                    .Replace(Path.GetTempPath(), "<temp>/", StringComparison.OrdinalIgnoreCase));
+            Assert.False(Directory.Exists(Path.Combine(_repository.Root, ".mutate4csharp", "proven")) &&
+                Directory.EnumerateFiles(Path.Combine(_repository.Root, ".mutate4csharp", "proven"), "*.json").Any());
+            if (scenario == "budget") Assert.True(result.Report.Counts.Omitted > 0);
+            if (scenario == "empty") Assert.Equal(BaselineStatus.Empty, result.Report.Baseline);
+            if (scenario == "unstable") Assert.Contains(result.Report.Units, item => item.Disposition == UnitDisposition.Unstable);
+            if (scenario == "error") Assert.True(result.Report.Counts.Errors > 0);
+            if (scenario == "timeout") Assert.True(result.Report.Counts.Omitted + result.Report.Counts.Errors > 0);
+            if (scenario == "cancel-after-execution")
+            {
+                Assert.True(result.Report.Counts.Killed > 0);
+                Assert.Contains(result.Report.IncompleteConditions, item => item.Code == "SNAPSHOT_CANCELLED");
+            }
+            if (scenario == "drift-after-execution")
+            {
+                Assert.True(validations >= 2);
+                Assert.Contains(result.Report.IncompleteConditions, item => item.Code == "SNAPSHOT_DIVERGED");
+            }
+            if (scenario == "malformed-coverage")
+            {
+                Assert.Equal(1, coverageInspections);
+                Assert.True(coverageReports > 0);
+                Assert.Equal(BaselineStatus.Green, result.Report.Baseline);
+                Assert.Contains(result.Report.IncompleteConditions, item => item.Code == "COVERAGE_PROVENANCE_INCOMPLETE");
+            }
+            if (scenario == "cleanup-after-execution")
+            {
+                Assert.NotNull(damagedRoot);
+                Assert.Contains(result.Report.IncompleteConditions, item => item.Code == "SNAPSHOT_CLEANUP_FAILED");
+            }
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            File.Delete(counter);
+            File.Delete(report);
+            File.Delete(ReportWriter.LockPath(report));
+            if (damagedRoot is not null && Directory.Exists(damagedRoot))
+            {
+                Assert.StartsWith(Path.GetFullPath(snapshotParent) + Path.DirectorySeparatorChar,
+                    Path.GetFullPath(damagedRoot), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+                Directory.Delete(damagedRoot, recursive: true);
+            }
+        }
+    }
 
     private void WriteFixture()
     {

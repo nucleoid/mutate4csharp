@@ -2,14 +2,16 @@ namespace Mutate4CSharp;
 
 internal sealed record StrictExecutionOutcome(
     EvaluationFingerprintMaterial FingerprintMaterial,
+    MutationSelectionPlan FinalizingPlan,
     string SemanticContextIdentity,
     string SdkVersion,
     int EnumerationCount,
     IReadOnlyList<EvaluationUnitResult> Units,
     BaselineStatus Baseline,
     IReadOnlyList<SuiteEvidence> Suites,
+    IReadOnlyList<CoverageProvenance> Coverage,
     IReadOnlyList<EvaluationReason> IncompleteConditions,
-    EvaluationReason Reason,
+    EvaluationReason? Reason,
     IReadOnlyList<EvaluationEvidence> Evidence);
 
 internal sealed record ContiguousAttemptBatch(
@@ -21,9 +23,10 @@ internal static class StrictExecutionPipeline
     private static readonly TimeProvider Clock = TimeProvider.System;
     internal const int MaxStrictWorkers = 1;
 
-    public static async Task<StrictExecutionOutcome> RunAsync(InputSnapshot snapshot, string snapshotId,
+    public static async Task<StrictExecutionOutcome> RunAsync(InputSnapshot snapshot, string snapshotId, string runId,
         ScopePlan scopePlan, CheckConfiguration configuration, IReadOnlyList<string> exactMutationIds,
-        string? expectedPlanFingerprint, CancellationToken cancellationToken)
+        string? expectedPlanFingerprint, CancellationToken cancellationToken,
+        Action<SnapshotClone, IReadOnlyList<string>>? beforeCoverageParsing = null)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(scopePlan);
@@ -72,6 +75,7 @@ internal static class StrictExecutionPipeline
         SuiteBaselineResult? baselines = null;
         StrictExecutionOutcome? outcome = null;
         Exception? failure = null;
+        Func<Exception, StrictExecutionOutcome>? recoverInterruptedExecution = null;
         try
         {
         var enumeration = StrictMutationEnumerator.Enumerate(snapshot, configuration, scopePlan,
@@ -83,9 +87,15 @@ internal static class StrictExecutionPipeline
                 enumeration.Reasons);
         var semanticContext = enumeration.SemanticContextIdentity ??
             throw new EvaluationContractException("Complete semantic enumeration requires one context identity.");
+        baselines = await new SuiteCoordinator(new VstestSuiteExecutor(snapshot, environment,
+                beforeCoverageParsing: beforeCoverageParsing),
+            Clock).RunBaselinesAsync(snapshotId, configuration.ExecutionSuites,
+            TimeSpan.FromSeconds(policy.BaselineTimeoutSeconds), deadline, cancellationToken);
+        var aliases = MapBaselineExecutions(configuration.ExecutionSuites, baselines.Executions);
+        var suiteEvidence = ToSuiteEvidence(configuration.ExecutionSuites, aliases, runId, snapshotId);
         var material = EvaluationCoordinator.BuildEvaluationFingerprintMaterial(snapshot, snapshotId,
             scopePlan, policy, semanticContext, environment.SdkVersion, environment,
-            configuration.ExecutionSuites);
+            configuration.ExecutionSuites, aliases, enumeration.Candidates);
         BoundMutationPlan bound;
         try { bound = MutationSelection.Bind(enumeration.Candidates, material); }
         catch (Exception ex) when (ex is EvaluationContractException or ArgumentException)
@@ -114,11 +124,6 @@ internal static class StrictExecutionPipeline
             .ToDictionary(item => item.EvaluationUnitId, StringComparer.Ordinal);
         var completed = issued.Where(item => item.Disposition != UnitDisposition.Pending).ToList();
 
-        baselines = await new SuiteCoordinator(new VstestSuiteExecutor(snapshot, environment),
-            Clock).RunBaselinesAsync(snapshotId, configuration.ExecutionSuites,
-            TimeSpan.FromSeconds(policy.BaselineTimeoutSeconds), deadline, cancellationToken);
-        var aliases = MapBaselineExecutions(configuration.ExecutionSuites, baselines.Executions);
-        var suiteEvidence = ToSuiteEvidence(configuration.ExecutionSuites, aliases);
         var evidence = new List<EvaluationEvidence>
         {
             new("DEPENDENCY_INPUT", "Prepared one frozen package graph and run-private worker caches.",
@@ -134,6 +139,24 @@ internal static class StrictExecutionPipeline
                  $"configuredWorkers={policy.MaxWorkers};effectiveWorkers={MaxStrictWorkers}"])
         };
         var conditions = plan.IncompleteConditions.Concat(baselines.IncompleteConditions).ToList();
+        if (baselines.Status == BaselineStatus.Green && !material.ProvenanceComplete)
+            conditions.Add(new("COVERAGE_PROVENANCE_INCOMPLETE",
+                "Every configured suite must provide fresh valid coverage and exact baseline member accounting."));
+
+        recoverInterruptedExecution = error =>
+        {
+            var recovered = CompleteInterruptedLedger(plan, issued, completed, error);
+            var code = error is OperationCanceledException ? "EXECUTION_CANCELLED" : "MUTATION_EXECUTION_FAILED";
+            var interrupted = new EvaluationReason(code, "Mutation execution stopped before the complete ledger finished.");
+            var preserved = error is StrictExecutionRefusalException refusal ? refusal.Reasons : [];
+            return new(material, plan, semanticContext, environment.SdkVersion, issued.Count,
+                recovered, baselines.Status, suiteEvidence,
+                ToCoverageProvenance(runId, snapshotId, material, configuration.ExecutionSuites, aliases),
+                conditions.Concat(preserved).Append(interrupted).Distinct().ToArray(), null,
+                evidence.Append(new EvaluationEvidence("MUTATION_EXECUTION_INTERRUPTED",
+                    EvaluationTextBounds.Prefix($"{error.GetType().Name}: {error.Message}",
+                        EvaluationReason.MaxMessageLength))).ToArray());
+        };
 
         if (baselines.Status != BaselineStatus.Green)
         {
@@ -166,9 +189,11 @@ internal static class StrictExecutionPipeline
                     completed.Add(plan.CompleteWithoutExecution(pending[candidate.EvaluationUnitId],
                         UnitDisposition.Uncovered,
                         [new("FRESH_COVERAGE_UNCOVERED",
-                            "Every mapped fresh baseline conclusively reported the mutation line uncovered.",
+                            "Every mapped fresh baseline reported the mutation span uncovered in its collector session.",
                             suites.Select((suite, index) =>
-                                $"suite={suite.Identity};state={coverage[index]}").ToArray())]));
+                                $"suite={suite.Identity};state={coverage[index]}")
+                                .Append("coverageProfile=coverlet-6.0.4-vstest-in-process")
+                                .Append("projection=verified-pdb-aggregate-zero").ToArray())]));
                     continue;
                 }
                 scheduled.Add(new(candidate.MutationId, candidate.EvaluationUnitId,
@@ -200,18 +225,36 @@ internal static class StrictExecutionPipeline
             }
         }
 
-        var finalization = new EvaluationReason("FINALIZATION_PENDING",
-            "Fresh strict execution evidence is available, but issue #4 must complete final verification " +
-            "before strict PASS can be published.");
-        conditions.Add(finalization);
-        outcome = new(material, semanticContext, environment.SdkVersion, issued.Count,
-            plan.OrderResults(completed), baselines.Status, suiteEvidence,
-            conditions.Distinct().ToArray(), finalization, evidence);
+        var coverageProvenance = ToCoverageProvenance(runId, snapshotId, material,
+            configuration.ExecutionSuites, aliases);
+        outcome = new(material, plan, semanticContext, environment.SdkVersion, issued.Count,
+            plan.OrderResults(completed), baselines.Status, suiteEvidence, coverageProvenance,
+            conditions.Distinct().ToArray(), null, evidence);
+        }
+        catch (Exception ex) when (recoverInterruptedExecution is not null &&
+            ex is not (SnapshotCaptureException or OutOfMemoryException or StackOverflowException or AccessViolationException))
+        {
+            try { outcome = recoverInterruptedExecution(ex); }
+            catch (Exception recovery)
+            {
+                failure = AsyncDisposal.CombineFailure(ex, recovery);
+            }
         }
         catch (Exception ex) { failure = ex; }
         await AsyncDisposal.DisposeAllPreservingFailureAsync([baselines, environment], failure);
         return outcome ?? throw new EvaluationContractException(
             "Strict execution completed without an outcome or preserved failure.");
+    }
+
+    internal static IReadOnlyList<EvaluationUnitResult> CompleteInterruptedLedger(MutationSelectionPlan plan,
+        IReadOnlyList<EvaluationUnitResult> issued, IReadOnlyList<EvaluationUnitResult> completed, Exception failure)
+    {
+        var completedIds = completed.Select(item => item.EvaluationUnitId).ToHashSet(StringComparer.Ordinal);
+        var remaining = issued.Where(item => !completedIds.Contains(item.EvaluationUnitId)).Select(item =>
+            plan.CompleteInterrupted(item,
+                [new("EXECUTION_INTERRUPTED", EvaluationTextBounds.Prefix(
+                    $"{failure.GetType().Name}: execution did not finish this unit.", EvaluationReason.MaxMessageLength))]));
+        return plan.OrderResults(completed.Concat(remaining).ToArray());
     }
 
     internal static IReadOnlyList<EvaluationEvidence> BuildPartialEvidence(
@@ -327,7 +370,7 @@ internal static class StrictExecutionPipeline
     }
 
     private static IReadOnlyList<SuiteEvidence> ToSuiteEvidence(IReadOnlyList<SuiteExecution> suites,
-        IReadOnlyDictionary<string, SuiteBaselineExecution> baselines) => suites
+        IReadOnlyDictionary<string, SuiteBaselineExecution> baselines, string runId, string snapshotId) => suites
         .OrderBy(item => item.Identity, StringComparer.Ordinal).Select(suite =>
         {
             if (!baselines.TryGetValue(suite.Identity, out var execution))
@@ -357,9 +400,35 @@ internal static class StrictExecutionPipeline
             }
             return new SuiteEvidence(suite.Identity, baseline,
                 [new("SUITE_BASELINE", $"Fresh baseline classified suite as {baseline}.",
-                    EvaluationEvidence.BoundDiagnostics(run.Diagnostics, details,
-                        "diagnostics-truncated"))]);
+                    EvaluationEvidence.BoundDiagnostics(run.Diagnostics.Select(value => "diagnostic=" + value), details,
+                        "diagnostics-truncated"))])
+            {
+                Accounting = baseline == BaselineStatus.Green && run.CoverageSha256 is not null && run.CoverageMap is not null
+                    ? new(runId, snapshotId, new(suite.Aliases[0], suite.Path, suite.Runner, suite.Framework,
+                        suite.Configuration, suite.ExpectedMembers), run.AccountedMembers,
+                        run.CoverageSha256, run.CoverageLength, run.CoverageMap.CanonicalIdentity(),
+                        "baseline-clone-to-snapshot-v1", true) : null
+            };
         }).ToArray();
+
+    private static IReadOnlyList<CoverageProvenance> ToCoverageProvenance(string runId, string snapshotId,
+        EvaluationFingerprintMaterial material, IReadOnlyList<SuiteExecution> suites,
+        IReadOnlyDictionary<string, SuiteBaselineExecution> baselines)
+    {
+        var fingerprint = EvaluationFingerprint.Compute(material);
+        return suites.OrderBy(item => item.Identity, StringComparer.Ordinal)
+            .Where(suite => baselines.TryGetValue(suite.Identity, out var execution) &&
+                            execution.Result.CoverageSha256 is not null &&
+                            execution.Result.CoverageLength > 0)
+            .Select(suite =>
+            {
+                var run = baselines[suite.Identity].Result;
+                return new CoverageProvenance("1", runId, suite.Identity, fingerprint, snapshotId,
+                    run.Disposition == SuiteRunDisposition.Passed ? BaselineStatus.Green : BaselineStatus.Unknown,
+                    run.CoverageSha256!, run.CoverageLength, "baseline-clone-to-snapshot-v1",
+                    material.RunnerIdentity, CollectedFresh: true);
+            }).ToArray();
+    }
 }
 
 internal sealed class StrictExecutionRefusalException(EvaluationReason reason,

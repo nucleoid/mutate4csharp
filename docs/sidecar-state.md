@@ -1,4 +1,4 @@
-# Sidecar evaluation state (schema v1)
+# Sidecar evaluation state (schema v2)
 
 Strict evaluation never treats comments in production source as proof. The legacy
 `mutate4csharp-manifest` footer remains available only to the deprecated single-file workflow;
@@ -35,21 +35,26 @@ the owned ignore contract before capture, including plan, `--no-state`, and capt
 but does not skip evaluation or its report.
 If default/requested state publication fails, the current report is finalized as `INCOMPLETE` with
 `SIDECAR_WRITE_FAILED`; an older report or sidecar is not current evidence.
+Proof eligibility is checked before any conclusive report publication. A fresh stateful run revokes an older
+proof for the same evaluation fingerprint before publishing its report. Proof is published last. A publication
+fault revokes proof again and replaces the current report and its owned discovery observation with incomplete
+evidence. If report recovery cannot write safely, the tool invalidates only its own current-run report or exposes
+the unresolved I/O failure; process/report disagreement is an orchestration error.
 Report publication necessarily precedes discovery publication. A process or machine crash in that
 window can leave a report without discovery; such a report is not
 reusable proof. Consumers may treat only a separately validated proven record as reusable evidence.
 
 ## Discovery is not proof
 
-[`contracts/discovery-state-v1.schema.json`](contracts/discovery-state-v1.schema.json) records the
+[`contracts/discovery-state-v2.schema.json`](contracts/discovery-state-v2.schema.json) records the
 frozen snapshot ID, exact evaluation fingerprint, scope completeness/exclusions, report digest, and
 observed outcome. Manual scan/update operations and legacy manifests can at most inform discovery;
-they cannot write a proven record. Version 1 strict checks publish discovery after immutable capture
+they cannot write a proven record. Current strict checks publish discovery after immutable capture
 and never consult proven state to skip execution.
 
 ## Proven state
 
-[`contracts/proven-state-v1.schema.json`](contracts/proven-state-v1.schema.json) is a future cache
+[`contracts/proven-state-v2.schema.json`](contracts/proven-state-v2.schema.json) is a future cache
 input boundary, not an enabled cache. Publication is accepted only from an internally validated
 `check` report that is `PASS`, has a green baseline, known and reconciled enumeration, complete
 scope, no omissions/errors/fresh-uncovered required units, no incomplete conditions or reasons,
@@ -80,6 +85,10 @@ share this captured resolution before proven reuse can be enabled.
 Discovery may record a runner or dependency identity as not yet prepared because it is never reusable;
 the proven publication API rejects such placeholder material. Wall-clock time, generated timestamps, temporary
 directories, report destinations, and worker scratch paths are intentionally excluded.
+
+The evaluation fingerprint binds canonical coverage states and source spans using captured relative
+paths. Temporary worker paths, collector-generated module identifiers and raw XML ordering do not
+change that identity. Exact raw coverage-report hashes and lengths remain per-run provenance.
 
 Coverage provenance separately binds the evaluation fingerprint, frozen snapshot, suite/context,
 green fresh baseline, exact coverage-report bytes/length, path-map version, and runner identity.
