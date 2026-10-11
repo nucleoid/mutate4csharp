@@ -58,6 +58,8 @@ public sealed partial class ToolPackagingIntegrationTests : IDisposable
             Assert.Contains("docs/sidecar-state.md", entries);
             Assert.Contains("docs/snapshot-inputs.md", entries);
             Assert.Contains("scripts/agent-gate.sh", entries);
+            Assert.Contains("scripts/source-state.py", entries);
+            Assert.Contains("docs/delivery-forge-contract-v1.md", entries);
             Assert.Contains("docs/contracts/check-config-v1.schema.json", entries);
             Assert.Contains("docs/contracts/discovery-state-v1.schema.json", entries);
             Assert.Contains("docs/contracts/evaluation-report-v1.schema.json", entries);
