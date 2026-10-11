@@ -257,7 +257,7 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
         return policy;
     }
 
-    private static string SuiteIdentity(CheckTestSuite suite)
+    internal static string SuiteIdentity(CheckTestSuite suite)
     {
         var components = new List<(string Name, string Value)>
         {

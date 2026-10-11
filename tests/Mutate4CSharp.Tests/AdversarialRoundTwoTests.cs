@@ -199,7 +199,7 @@ sealed class C : I
     {
         var root = RepositoryRoot();
         using var schema = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(root,
-            "docs/contracts/evaluation-report-v1.schema.json")));
+            "docs/contracts/evaluation-report-v2.schema.json")));
         var definitions = schema.RootElement.GetProperty("$defs");
         Assert.Equal(ExecutionPolicy.MaxStabilityRepetitions,
             definitions.GetProperty("policy").GetProperty("properties").GetProperty("stabilityRepetitions")

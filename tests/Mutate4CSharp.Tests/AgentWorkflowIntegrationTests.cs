@@ -36,9 +36,9 @@ public sealed class AgentWorkflowIntegrationTests
         Assert.Contains("usage", Cli.HelpText, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("snapshot refusal", Cli.HelpText, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("`INCOMPLETE`", workflow, StringComparison.Ordinal);
-        Assert.Contains("`FINALIZATION_PENDING`", workflow, StringComparison.Ordinal);
-        Assert.Contains("until final verification is connected", workflow, StringComparison.Ordinal);
-        Assert.Contains("\"schemaVersion\": \"1\"", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("`FINALIZATION_PENDING`", workflow, StringComparison.Ordinal);
+        Assert.Contains("revalidates the original tree", workflow, StringComparison.Ordinal);
+        Assert.Contains("\"schemaVersion\": \"2\"", workflow, StringComparison.Ordinal);
         Assert.Contains("\"incompleteConditions\"", workflow, StringComparison.Ordinal);
         Assert.Contains("\"executed\": 1", workflow, StringComparison.Ordinal);
         Assert.Contains("\"killed\": 1", workflow, StringComparison.Ordinal);

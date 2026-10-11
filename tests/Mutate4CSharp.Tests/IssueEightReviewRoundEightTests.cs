@@ -352,10 +352,10 @@ public sealed class IssueEightReviewRoundEightTests : IDisposable
         Directory.CreateDirectory(sdk);
         File.Copy(Path.Combine(RepositoryRoot, "global.json"), Path.Combine(sdk, "global.json"), overwrite: true);
         await File.WriteAllTextAsync(package, "package", TestContext.Current.CancellationToken);
-        var body = checkBody ?? "printf '%s\\n' '{\"schemaVersion\":\"1\",\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"FINALIZATION_PENDING\"}],\"counts\":{\"enumerated\":0}}' > \"$5\"\nexit 4";
+        var body = checkBody ?? "printf '%s\\n' '{\"schemaVersion\":\"2\",\"mode\":\"check\",\"baseline\":\"UNKNOWN\",\"units\":[],\"reasons\":[],\"outcome\":\"INCOMPLETE\",\"exitCode\":4,\"incompleteConditions\":[{\"code\":\"BASELINE_INCONCLUSIVE\"}],\"counts\":{\"enumerated\":0,\"selected\":0,\"executed\":0,\"freshUncovered\":0,\"omitted\":0,\"compileInvalid\":0,\"killed\":0,\"survived\":0,\"errors\":0}}' > \"$5\"\nexit 4";
         await WriteExecutableAsync(command, $"#!/usr/bin/env bash\nif [[ ${{1:-}} = --version ]]; then echo '{version}+{toolCommit}'; exit 0; fi\n{body}\n");
         var runtime = (await RunAsync(sdk, DotnetHost(), "--version")).StandardOutput.Trim();
-        await File.WriteAllTextAsync(receipt, $"format\tmutate4csharp-agent-gate-v3\nlocal_tool_version\t{version}\ntool_package\t{package}\ntool_payload\t{payload}\nruntime_version\t{runtime}\ndotnet_host\t{CanonicalDotnetHost()}\n", TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(receipt, $"format\tmutate4csharp-agent-gate-v4\nlocal_tool_version\t{version}\ntool_package\t{package}\ntool_payload\t{payload}\nruntime_version\t{runtime}\ndotnet_host\t{CanonicalDotnetHost()}\n", TestContext.Current.CancellationToken);
         return new(receipt, command, Sha256File(package), PayloadSha256(payload), toolCommit);
     }
 

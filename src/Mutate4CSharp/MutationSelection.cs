@@ -158,8 +158,8 @@ internal sealed class MutationSelectionPlan
                 attempts, _policy);
             var completed = plannedUnit.CompleteFromStabilityReducer(reduced.Disposition, reduced.Evidence,
                 _policy, _completionToken);
-            _issuedCompletionDigests[plannedUnit.EvaluationUnitId] =
-                completed.RequireTrustedCompletionDigest(_completionToken, _policy);
+            var digest = completed.RequireTrustedCompletionDigest(_completionToken, _policy);
+            _issuedCompletionDigests[plannedUnit.EvaluationUnitId] = digest;
             return completed;
         }
     }
@@ -189,6 +189,32 @@ internal sealed class MutationSelectionPlan
                     "Each selected evaluation unit can be completed only once by its mutation selection plan.");
             var completed = plannedUnit.CompleteFromStabilityReducer(disposition, evidence, _policy,
                 _completionToken);
+            var digest = completed.RequireTrustedCompletionDigest(_completionToken, _policy);
+            _issuedCompletionDigests[plannedUnit.EvaluationUnitId] = digest;
+            return completed;
+        }
+    }
+
+    internal EvaluationUnitResult CompleteInterrupted(EvaluationUnitResult plannedUnit,
+        IReadOnlyList<EvaluationEvidence> evidence)
+    {
+        lock (_reductionLock)
+        {
+            if (!_issuedCompletionDigests.TryGetValue(plannedUnit.EvaluationUnitId, out var digest))
+                return CompleteWithoutExecution(plannedUnit, UnitDisposition.Omitted, evidence);
+            if (digest is not null)
+                throw new EvaluationContractException("Interrupted completion cannot replace completed execution evidence.");
+            _ = plannedUnit.RequireIssuedPolicy(_policy);
+            if (!plannedUnit.WasIssuedBy(_provenanceToken) ||
+                plannedUnit.OriginatingPlanFingerprint != PlanFingerprint ||
+                plannedUnit.DiagnosticPartial != IsDiagnosticPartial ||
+                !Selected.Any(candidate => candidate.MutationId == plannedUnit.UnitId &&
+                    candidate.EvaluationUnitId == plannedUnit.EvaluationUnitId))
+                throw new EvaluationContractException("Interrupted unit does not belong to its issuing plan.");
+            // A failed first attempt stays consumed. Recovery may only account for it as
+            // omitted; it cannot retry execution or upgrade the slot to a kill/uncovered.
+            var completed = plannedUnit.CompleteFromStabilityReducer(UnitDisposition.Omitted, evidence,
+                _policy, _completionToken);
             _issuedCompletionDigests[plannedUnit.EvaluationUnitId] =
                 completed.RequireTrustedCompletionDigest(_completionToken, _policy);
             return completed;

@@ -6,7 +6,7 @@ namespace Mutate4CSharp.Tests;
 public sealed class ReportContractTests : IDisposable
 {
     private static readonly JsonSchema ReportSchema = JsonSchema.FromText(File.ReadAllText(
-        Path.GetFullPath("../../../../../docs/contracts/evaluation-report-v1.schema.json", AppContext.BaseDirectory)));
+        Path.GetFullPath("../../../../../docs/contracts/evaluation-report-v2.schema.json", AppContext.BaseDirectory)));
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "mutate4csharp-report-tests", Guid.NewGuid().ToString("N"));
 
     public ReportContractTests() => Directory.CreateDirectory(_directory);
@@ -16,14 +16,14 @@ public sealed class ReportContractTests : IDisposable
     [InlineData((int)EvaluationOutcome.Fail)]
     [InlineData((int)EvaluationOutcome.Incomplete)]
     [InlineData((int)EvaluationOutcome.NotApplicable)]
-    public void SerializesEveryVersionOneOutcomeWithStableEnvelope(int outcomeValue)
+    public void SerializesEveryVersionTwoOutcomeWithStableEnvelope(int outcomeValue)
     {
         var outcome = (EvaluationOutcome)outcomeValue;
         var report = EvaluationReport.CreateSynthetic(outcome, $"test-{outcome}", "TEST_FIXTURE");
         var json = System.Text.Encoding.UTF8.GetString(ReportWriter.Serialize(report));
         using var document = JsonDocument.Parse(json);
 
-        Assert.Equal("1", document.RootElement.GetProperty("schemaVersion").GetString());
+        Assert.Equal("2", document.RootElement.GetProperty("schemaVersion").GetString());
         var expected = outcome == EvaluationOutcome.NotApplicable ? "NOT_APPLICABLE" : outcome.ToString().ToUpperInvariant();
         Assert.Equal(expected, document.RootElement.GetProperty("outcome").GetString());
         Assert.NotEqual(JsonValueKind.Undefined, document.RootElement.GetProperty("evidence").ValueKind);
@@ -65,6 +65,72 @@ public sealed class ReportContractTests : IDisposable
         Assert.Equal("atomic", parsed.RootElement.GetProperty("runId").GetString());
         Assert.True(File.Exists(ReportWriter.LockPath(path)));
         Assert.Empty(Directory.EnumerateFiles(_directory, ".report.json.*.tmp"));
+    }
+
+    [Fact]
+    public void WindowsPublicationRetriesTransientSharingWhileRevalidatingDestination()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var path = Path.Combine(_directory, "sharing.json");
+        var inspections = 0;
+        FileStream? scanner = null;
+        try
+        {
+            AtomicOwnedFile.Write(path, path + ".lock", "{}"u8.ToArray(), _ =>
+            {
+                if (++inspections == 2)
+                    scanner = new FileStream(Assert.Single(Directory.EnumerateFiles(_directory, ".sharing.json.*.tmp")),
+                        FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                if (inspections == 3) scanner?.Dispose();
+                return null;
+            }, replaceExisting: false);
+
+            Assert.True(inspections >= 3);
+            Assert.Equal("{}", File.ReadAllText(path));
+            Assert.Empty(Directory.EnumerateFiles(_directory, ".sharing.json.*.tmp"));
+        }
+        finally { scanner?.Dispose(); }
+    }
+
+    [Fact]
+    public void WindowsInvalidationRetriesSharingAndChecksTheOriginalHash()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var path = Path.Combine(_directory, "delete-sharing.json");
+        File.WriteAllText(path, "original");
+        var inspections = 0;
+        using var scanner = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        AtomicOwnedFile.Delete(path, path + ".lock", candidate =>
+        {
+            if (++inspections == 3) scanner.Dispose();
+            return System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(candidate));
+        });
+        Assert.True(inspections >= 3);
+        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public void FullMemberAccountingSurvivesBoundedDiagnosticTruncation()
+    {
+        var report = EvaluationReport.CreateSynthetic(EvaluationOutcome.Pass, "full-member-accounting", "TEST_FIXTURE");
+        var suite = Assert.Single(report.Suites);
+        var members = Enumerable.Range(0, 256).Select(index => $"LongMemberName{index:D3}.Tests.dll").ToArray();
+        var configuration = suite.Accounting!.Configuration with { ExpectedMembers = members };
+        suite = suite with
+        {
+            SuiteId = CheckConfiguration.SuiteIdentity(configuration),
+            Accounting = suite.Accounting with { Configuration = configuration, AccountedMembers = members }
+        };
+        report = report with
+        {
+            Suites = [suite],
+            Evidence = report.Evidence.Where(item => item.Kind != "CHECK_CONFIGURATION")
+                .Append(ReportWriter.ConfigurationSuiteEvidence([suite.SuiteId])).ToArray()
+        };
+        using var document = JsonDocument.Parse(ReportWriter.Serialize(report));
+        Assert.Equal(256, document.RootElement.GetProperty("suites")[0].GetProperty("accounting")
+            .GetProperty("accountedMembers").GetArrayLength());
+        Assert.True(ReportSchema.Evaluate(document.RootElement).IsValid);
     }
 
     [Fact]
@@ -163,6 +229,68 @@ public sealed class ReportContractTests : IDisposable
             Baseline = BaselineStatus.Red
         }));
         Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(pass with { Mode = "plan" }));
+    }
+
+    [Fact]
+    public void SuccessCapableReportsRequireExactUniqueGreenSuiteEvidence()
+    {
+        var original = EvaluationReport.CreateSynthetic(EvaluationOutcome.Pass, "suite-contract", "TEST_FIXTURE");
+        var suite = Assert.Single(original.Suites);
+
+        var pass = original with
+        {
+            Suites = [suite],
+            Evidence = original.Evidence.Where(item => item.Kind != "CHECK_CONFIGURATION")
+                .Append(ReportWriter.ConfigurationSuiteEvidence([suite.SuiteId])).ToArray()
+        };
+
+        Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(pass with { Suites = [] }));
+        Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(pass with
+        {
+            Suites = [suite, suite]
+        }));
+        Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(pass with
+        {
+            Suites = [suite],
+            Evidence = original.Evidence.Where(item => item.Kind != "CHECK_CONFIGURATION")
+                .Append(ReportWriter.ConfigurationSuiteEvidence(["other-suite"])).ToArray()
+        }));
+        Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(pass with
+        {
+            Suites = [suite with
+            {
+                Evidence = [new EvaluationEvidence("BASELINE_GREEN", "Unbound baseline prose.")]
+            }]
+        }));
+    }
+
+    [Theory]
+    [InlineData("memberCount", "2")]
+    [InlineData("accountedMembers=", "Synthetic.Tests.dll,Synthetic.Tests.dll")]
+    [InlineData("expectedMembers=", "Synthetic.Tests.dll,Synthetic.Tests.dll")]
+    [InlineData("accountedMembers=", ",Synthetic.Tests.dll")]
+    [InlineData("expectedMembers=", "Synthetic.Tests.dll,")]
+    [InlineData("expectedMembers=", "Other.Tests.dll")]
+    [InlineData("coverageLength=", "0")]
+    [InlineData("coverageSha256=", "unbound")]
+    public void PassRejectsIncompleteOrAmbiguousSuiteAccounting(string prefix, string value)
+    {
+        var report = EvaluationReport.CreateSynthetic(EvaluationOutcome.Pass, "suite-accounting", "TEST_FIXTURE");
+        var suite = Assert.Single(report.Suites);
+        var accounting = suite.Accounting!;
+        var invalid = prefix switch
+        {
+            "memberCount" => accounting with { AccountedMembers = ["Synthetic.Tests.dll", "Another.dll"] },
+            "accountedMembers=" => accounting with { AccountedMembers = value.Split(',') },
+            "expectedMembers=" => accounting with { Configuration = accounting.Configuration with { ExpectedMembers = value.Split(',') } },
+            "coverageLength=" => accounting with { CoverageReportLength = long.Parse(value, System.Globalization.CultureInfo.InvariantCulture) },
+            _ => accounting with { CoverageReportSha256 = value }
+        };
+
+        Assert.Throws<EvaluationContractException>(() => ReportWriter.Serialize(report with
+        {
+            Suites = [suite with { Accounting = invalid }]
+        }));
     }
 
     [Fact]

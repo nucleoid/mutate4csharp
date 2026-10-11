@@ -194,6 +194,7 @@ internal sealed class CoverageMap
     private readonly string _root;
     private readonly bool _incomplete;
     private readonly HashSet<string> _spanIncompleteFiles;
+    internal IReadOnlyList<string> ProjectionDiagnostics { get; private set; } = [];
 
     private CoverageMap(Dictionary<string, Dictionary<int, bool>> points,
         Dictionary<string, List<CoveragePoint>> spans, string root, bool incomplete,
@@ -215,8 +216,20 @@ internal sealed class CoverageMap
     public static CoverageMap? Load(IEnumerable<string> reports, SnapshotClone clone)
         => Load(reports, clone.Root, clone.ToCanonicalPath(clone.Root), clone.ToCanonicalPath);
 
+    public static CoverageMap? Load(IEnumerable<string> reports, SnapshotClone clone, InputSnapshot snapshot)
+    {
+        var diagnostics = new List<string>();
+        var map = Load(reports, clone.Root, clone.ToCanonicalPath(clone.Root), clone.ToCanonicalPath,
+            module => OpenCoverPortablePdb.Load(module, clone, snapshot, value =>
+            {
+                if (diagnostics.Count < 12) diagnostics.Add("coverage-span-map=" + value);
+            }));
+        if (map is not null) map.ProjectionDiagnostics = diagnostics;
+        return map;
+    }
+
     private static CoverageMap? Load(IEnumerable<string> reports, string parseRoot, string canonicalRoot,
-        Func<string, string>? canonicalize)
+        Func<string, string>? canonicalize, Func<XElement, OpenCoverPortablePdb?>? pdbResolver = null)
     {
         var paths = reports.Where(File.Exists).Distinct(StringComparer.Ordinal).ToArray();
         if (paths.Length == 0) return null;
@@ -236,7 +249,9 @@ internal sealed class CoverageMap
                 if (modules.Length == 0) { incomplete = true; continue; }
                 foreach (var module in modules)
                 {
+                    var portablePdb = pdbResolver?.Invoke(module);
                     var files = new Dictionary<string, string>(StringComparer.Ordinal);
+                    var cloneFiles = new Dictionary<string, string>(StringComparer.Ordinal);
                     foreach (var fileElement in module.Descendants().Where(x => x.Name.LocalName == "File"))
                     {
                         var uid = fileElement.Attribute("uid")?.Value;
@@ -246,6 +261,7 @@ internal sealed class CoverageMap
                         try
                         {
                             var normalized = Normalize(fullPath, parseRoot);
+                            cloneFiles.Add(uid, normalized);
                             files.Add(uid, canonicalize is null ? normalized : canonicalize(normalized));
                         }
                         catch { incomplete = true; }
@@ -273,7 +289,18 @@ internal sealed class CoverageMap
                                 continue;
                             }
                             if (startColumn == 1 && endLine == line && endColumn == 2)
+                            {
+                                var aggregate = portablePdb?.ResolveCoverletLine(method, cloneFiles[fileId], line);
+                                if (aggregate is not null)
+                                {
+                                    if (!spans.TryGetValue(file, out var projected)) spans[file] = projected = [];
+                                    projected.AddRange(aggregate.Select(item => new CoveragePoint(item.StartLine,
+                                        item.StartColumn, item.EndLine, item.EndColumn, visits == 0 ? false : null)));
+                                    continue;
+                                }
                                 spanIncompleteFiles.Add(file);
+                                continue;
+                            }
                             if (!spans.TryGetValue(file, out var fileSpans)) spans[file] = fileSpans = [];
                             fileSpans.Add(new(line, startColumn, endLine, endColumn, visits > 0));
                         }
@@ -303,6 +330,51 @@ internal sealed class CoverageMap
 
     public bool IsCovered(string path, int line) => GetState(path, line) == CoverageState.Covered;
 
+    internal bool HasMalformedEvidence => _incomplete;
+
+    internal string CanonicalIdentity()
+    {
+        var components = new List<(string Label, string Value)>
+        {
+            ("incomplete", _incomplete ? "1" : "0")
+        };
+        var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        var files = _points.Keys.Concat(_spans.Keys).Concat(_spanIncompleteFiles).Distinct(comparer)
+            .Select(path => (Path: path, Relative: Relative(path)))
+            .OrderBy(item => item.Relative, StringComparer.Ordinal).ToArray();
+        for (var index = 0; index < files.Length; index++)
+        {
+            var file = files[index];
+            var prefix = $"file-{index:D8}-";
+            components.Add((prefix + "path", file.Relative));
+            components.Add((prefix + "spans-incomplete", _spanIncompleteFiles.Contains(file.Path) ? "1" : "0"));
+            var lines = _points.TryGetValue(file.Path, out var recordedLines)
+                ? recordedLines.OrderBy(item => item.Key).ToArray() : [];
+            for (var line = 0; line < lines.Length; line++)
+                components.Add((prefix + $"line-{line:D8}", string.Create(CultureInfo.InvariantCulture,
+                    $"{lines[line].Key}:{(lines[line].Value ? 1 : 0)}")));
+            var spans = _spans.TryGetValue(file.Path, out var recordedSpans)
+                ? recordedSpans.Distinct().OrderBy(item => item.StartLine).ThenBy(item => item.StartColumn)
+                    .ThenBy(item => item.EndLine).ThenBy(item => item.EndColumn).ThenBy(item => item.Covered).ToArray()
+                : [];
+            for (var span = 0; span < spans.Length; span++)
+            {
+                var point = spans[span];
+                components.Add((prefix + $"span-{span:D8}", string.Create(CultureInfo.InvariantCulture,
+                    $"{point.StartLine}:{point.StartColumn}:{point.EndLine}:{point.EndColumn}:{(point.Covered is null ? -1 : point.Covered.Value ? 1 : 0)}")));
+            }
+        }
+        return MutationIdentity.ComputeDigest("canonical-coverage-v1", components.ToArray());
+
+        string Relative(string path)
+        {
+            var relative = Path.GetRelativePath(_root, path).Replace('\\', '/');
+            if (Path.IsPathRooted(relative) || relative.Split('/').Any(part => part is "" or "." or ".."))
+                throw new EvaluationContractException("Coverage identity requires captured relative source paths.");
+            return relative;
+        }
+    }
+
     public CoverageState GetState(string path, int startLine, int startColumn,
         int endLine, int endColumn)
     {
@@ -316,7 +388,8 @@ internal sealed class CoverageMap
         var end = new SourcePosition(endLine, endColumn);
         var overlapping = points.Where(point => point.Start.CompareTo(end) < 0 &&
             start.CompareTo(point.End) < 0).ToArray();
-        if (overlapping.Any(point => point.Covered)) return CoverageState.Covered;
+        if (overlapping.Any(point => point.Covered == true)) return CoverageState.Covered;
+        if (overlapping.Any(point => point.Covered is null)) return CoverageState.Unknown;
         if (_incomplete || _spanIncompleteFiles.Contains(normalized)) return CoverageState.Unknown;
         return overlapping.Any(point => point.Start.CompareTo(start) <= 0 &&
                 point.End.CompareTo(end) >= 0)
@@ -340,7 +413,7 @@ internal sealed class CoverageMap
     }
 
     private sealed record CoveragePoint(int StartLine, int StartColumn, int EndLine, int EndColumn,
-        bool Covered)
+        bool? Covered)
     {
         public SourcePosition Start => new(StartLine, StartColumn);
         public SourcePosition End => new(EndLine, EndColumn);

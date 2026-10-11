@@ -77,6 +77,9 @@ internal static class EvaluationFingerprint
     public static string ComputeForProven(EvaluationFingerprintMaterial material)
     {
         if (!material.ProvenanceComplete || material.Inputs.All(input => input.Kind != "dependency") ||
+            !ContainsExactIdentity(material.RunnerIdentity, "collector", "coverlet-opencover-v1") ||
+            !ContainsBoundIdentity(material.RunnerIdentity, "coverage") ||
+            !ContainsBoundIdentity(material.RunnerIdentity, "plan") ||
             new[] { material.Configuration, material.ToolVersion, material.OperatorVersion, material.SdkIdentity,
                     material.RuntimeIdentity, material.RunnerIdentity }
                 .Any(value => value.Contains("not-prepared", StringComparison.OrdinalIgnoreCase) ||
@@ -86,6 +89,18 @@ internal static class EvaluationFingerprint
             throw new EvaluationContractException(
                 "Proven state requires exact dependency, SDK, runtime, runner, tool, operator, and configuration identities.");
         return Compute(material);
+    }
+
+    private static bool ContainsBoundIdentity(string value, string label)
+    {
+        var fields = value.Split(';').Where(item => item.StartsWith(label + "=", StringComparison.Ordinal)).ToArray();
+        return fields.Length == 1 && IsFingerprint(fields[0][(label.Length + 1)..]);
+    }
+
+    private static bool ContainsExactIdentity(string value, string label, string expected)
+    {
+        var fields = value.Split(';').Where(item => item.StartsWith(label + "=", StringComparison.Ordinal)).ToArray();
+        return fields.Length == 1 && fields[0][(label.Length + 1)..] == expected;
     }
 
     public static string ToolIdentity(Assembly assembly)

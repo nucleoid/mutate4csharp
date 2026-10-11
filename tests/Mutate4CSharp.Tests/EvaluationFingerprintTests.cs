@@ -6,6 +6,63 @@ namespace Mutate4CSharp.Tests;
 public sealed class EvaluationFingerprintTests
 {
     [Fact]
+    public async Task FingerprintBindsCanonicalCoverageInsteadOfVolatileReportBytes()
+    {
+        using var repository = new SnapshotTestRepository();
+        repository.WriteText("src/A.cs", "class A { bool Value() => true; }\n");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "coverage identity fixture");
+        await using var snapshot = await SnapshotCapture.CaptureAsync(repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, TestContext.Current.CancellationToken);
+        var scratch = Directory.CreateTempSubdirectory("coverage-identity-");
+        try
+        {
+            var suite = new SuiteExecution("suite", ["unit"], "tests/Tests.csproj", "vstest", "net10.0",
+                "Release", ["Tests.dll"]);
+            var first = Run("clone-a", "a", 1);
+            var second = Run("different-clone-b", "b", 1);
+            var changed = Run("clone-c", "c", 0);
+            var firstMaterial = MaterialFor(first);
+            var secondMaterial = MaterialFor(second);
+            var changedMaterial = MaterialFor(changed);
+
+            Assert.NotEqual(first.CoverageSha256, second.CoverageSha256);
+            Assert.Equal(EvaluationFingerprint.Compute(firstMaterial), EvaluationFingerprint.Compute(secondMaterial));
+            Assert.NotEqual(EvaluationFingerprint.Compute(firstMaterial), EvaluationFingerprint.Compute(changedMaterial));
+            Assert.Equal(MutationSelection.Bind([], firstMaterial).PlanFingerprint,
+                MutationSelection.Bind([], secondMaterial).PlanFingerprint);
+
+            EvaluationFingerprintMaterial MaterialFor(SuiteRunResult run) =>
+                EvaluationCoordinator.BuildEvaluationFingerprintMaterial(snapshot, snapshot.Identity.CaptureId,
+                    ScopePlan.Empty("inputs", ".", null), EvaluationReport.DefaultPolicy, "semantic", "10.0.103",
+                    suites: [suite], baselines: new Dictionary<string, SuiteBaselineExecution>
+                    {
+                        [suite.Identity] = new(suite.Identity, suite.Aliases, run)
+                    }, candidates: []);
+
+            SuiteRunResult Run(string cloneName, string moduleId, int visits)
+            {
+                var cloneRoot = Path.Combine(scratch.FullName, cloneName);
+                var file = System.Security.SecurityElement.Escape(Path.Combine(cloneRoot, "src/A.cs"));
+                var report = Path.Combine(scratch.FullName, cloneName + ".xml");
+                File.WriteAllText(report, $"""
+                    <CoverageSession><Modules><Module hash="{moduleId}"><Files><File uid="1" fullPath="{file}"/></Files>
+                    <Classes><Class><Methods><Method><FileRef uid="1"/><SequencePoints>
+                    <SequencePoint vc="{visits}" sl="1" sc="1" el="1" ec="40"/>
+                    </SequencePoints></Method></Methods></Class></Classes></Module></Modules></CoverageSession>
+                    """);
+                return new(SuiteRunDisposition.Passed, TimeSpan.Zero, ["Tests.dll"], [], [], [report])
+                {
+                    CoverageMap = CoverageMap.Load(report, cloneRoot),
+                    CoverageSha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(report))).ToLowerInvariant(),
+                    CoverageLength = new FileInfo(report).Length
+                };
+            }
+        }
+        finally { scratch.Delete(recursive: true); }
+    }
+
+    [Fact]
     public void EveryRequiredInputAndExecutionDimensionInvalidatesTheFingerprint()
     {
         var baseline = Material();
@@ -85,6 +142,40 @@ public sealed class EvaluationFingerprintTests
     {
         Assert.False(Material().ProvenanceComplete);
         Assert.Throws<EvaluationContractException>(() => EvaluationFingerprint.ComputeForProven(Material()));
+    }
+
+    [Fact]
+    public void ProvenMaterialRequiresCoverageCollectorAndPlanIdentity()
+    {
+        var incompleteRunner = Material() with { ProvenanceComplete = true };
+        var completeRunner = incompleteRunner with
+        {
+            RunnerIdentity = "runner=vstest;collector=coverlet-opencover-v1;" +
+                "coverage=sha256:" + new string('a', 64) + ";plan=sha256:" + new string('b', 64)
+        };
+
+        Assert.Throws<EvaluationContractException>(() =>
+            EvaluationFingerprint.ComputeForProven(incompleteRunner));
+        Assert.True(EvaluationFingerprint.IsFingerprint(
+            EvaluationFingerprint.ComputeForProven(completeRunner)));
+    }
+
+    [Theory]
+    [InlineData("coverage=", "prefixcoverage=")]
+    [InlineData("plan=", "prefixplan=")]
+    [InlineData("collector=", "prefixcollector=")]
+    [InlineData("coverage=", "coverage=sha256:bad;coverage=")]
+    public void ProvenRunnerIdentityRequiresExactUnambiguousFields(string marker, string replacement)
+    {
+        var runner = "runner=strict-vstest-v1;collector=coverlet-opencover-v1;coverage=sha256:" +
+            new string('a', 64) + ";plan=sha256:" + new string('b', 64);
+        var material = Material() with
+        {
+            ProvenanceComplete = true,
+            RunnerIdentity = runner.Replace(marker, replacement, StringComparison.Ordinal)
+        };
+
+        Assert.Throws<EvaluationContractException>(() => EvaluationFingerprint.ComputeForProven(material));
     }
 
     private static EvaluationFingerprintMaterial Material() => new(

@@ -114,7 +114,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         Assert.Equal(1, result.Report.Counts.Omitted);
         Assert.True(MutationIdentity.IsMutationId(unit.UnitId));
         Assert.True(EvaluationUnitIdentity.IsEvaluationUnitId(unit.EvaluationUnitId));
-        Assert.Contains(result.Report.Reasons, reason => reason.Code == "FINALIZATION_PENDING");
+        Assert.Contains(result.Report.Reasons, reason => reason.Code == "BASELINE_UNKNOWN");
         Assert.DoesNotContain(result.Report.Reasons, reason => reason.Code == "ENUMERATION_NOT_IMPLEMENTED");
         Assert.Contains(result.Report.Evidence, item => item.Kind == "MUTATION_PLAN" &&
             item.Diagnostics?.Any(value => value.StartsWith("planFingerprint=sha256:",
@@ -212,7 +212,7 @@ public sealed class StrictCheckIntegrationTests : IDisposable
 
         Assert.Equal(0, result.Report.Counts.Enumerated);
         Assert.Empty(result.Report.Units);
-        Assert.Contains(result.Report.Reasons, reason => reason.Code == "FINALIZATION_PENDING");
+        Assert.DoesNotContain(result.Report.Reasons, reason => reason.Code == "FINALIZATION_PENDING");
         Assert.DoesNotContain(result.Report.Reasons, reason => reason.Code == "ENUMERATION_INCOMPLETE");
     }
 
@@ -879,6 +879,19 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         Assert.Equal(1, existing);
         Assert.Equal("class Subject { }", File.ReadAllText(input));
         Assert.Equal("{\"purpose\":\"user data\"}", File.ReadAllText(unrelatedJson));
+    }
+
+    [Fact]
+    public async Task UnrelatedReportDestinationIsRejectedBeforeSnapshotCapture()
+    {
+        var path = Path.Combine(_directory, "unrelated-before-capture.json");
+        File.WriteAllText(path, "{\"purpose\":\"user data\"}");
+        var captures = 0;
+        var options = SnapshotCaptureOptions.Default with { Hook = (_, _) => captures++ };
+        await Assert.ThrowsAsync<ArgumentException>(() => new EvaluationCoordinator(options).RunAsync(
+            new(false, "HEAD", [], path, "preflight-rejection"), CancellationToken.None));
+        Assert.Equal(0, captures);
+        Assert.Equal("{\"purpose\":\"user data\"}", File.ReadAllText(path));
     }
 
     [Fact]

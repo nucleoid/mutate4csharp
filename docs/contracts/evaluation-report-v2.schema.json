@@ -1,0 +1,1120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mutate4csharp.dev/contracts/evaluation-report-v2.schema.json",
+  "title": "mutate4csharp strict evaluation report v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "generatedAtUtc",
+    "mode",
+    "selection",
+    "scopePlan",
+    "policy",
+    "baseline",
+    "suites",
+    "units",
+    "counts",
+    "incompleteConditions",
+    "reasons",
+    "evidence",
+    "outcome",
+    "exitCode"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "2"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generatedAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "mode": {
+      "enum": [
+        "check",
+        "plan"
+      ]
+    },
+    "selection": {
+      "$ref": "#/$defs/selection"
+    },
+    "scopePlan": {
+      "$ref": "#/$defs/scopePlan"
+    },
+    "policy": {
+      "$ref": "#/$defs/policy"
+    },
+    "baseline": {
+      "$ref": "#/$defs/baseline"
+    },
+    "suites": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/suite"
+      }
+    },
+    "units": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/unit"
+      }
+    },
+    "counts": {
+      "$ref": "#/$defs/counts"
+    },
+    "incompleteConditions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/reason"
+      }
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/reason"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "outcome": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "INCOMPLETE",
+        "NOT_APPLICABLE"
+      ]
+    },
+    "exitCode": {
+      "enum": [
+        0,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    "diagnosticPartial": {
+      "type": "boolean"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "diagnosticPartial"
+        ],
+        "properties": {
+          "diagnosticPartial": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "incompleteConditions": {
+            "contains": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "const": "TARGETED_DIAGNOSTIC"
+                }
+              }
+            },
+            "minContains": 1
+          },
+          "units": {
+            "minItems": 1,
+            "items": {
+              "required": [
+                "diagnosticPartial"
+              ],
+              "properties": {
+                "diagnosticPartial": {
+                  "const": true
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "units": {
+            "items": {
+              "properties": {
+                "diagnosticPartial": {
+                  "const": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "PASS"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "mode": {
+            "const": "check"
+          },
+          "baseline": {
+            "const": "GREEN"
+          },
+          "exitCode": {
+            "const": 0
+          },
+          "diagnosticPartial": {
+            "const": false
+          },
+          "units": {
+            "items": {
+              "properties": {
+                "diagnosticPartial": {
+                  "const": false
+                }
+              }
+            }
+          },
+          "incompleteConditions": {
+            "maxItems": 0
+          },
+          "counts": {
+            "properties": {
+              "enumerated": {
+                "type": "integer"
+              },
+              "freshUncovered": {
+                "const": 0
+              },
+              "omitted": {
+                "const": 0
+              },
+              "killed": {
+                "minimum": 1
+              },
+              "survived": {
+                "const": 0
+              },
+              "errors": {
+                "const": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "FAIL"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "baseline": {
+            "const": "GREEN"
+          },
+          "exitCode": {
+            "const": 3
+          },
+          "diagnosticPartial": {
+            "const": false
+          },
+          "units": {
+            "items": {
+              "properties": {
+                "diagnosticPartial": {
+                  "const": false
+                }
+              }
+            }
+          },
+          "incompleteConditions": {
+            "maxItems": 0
+          },
+          "counts": {
+            "properties": {
+              "enumerated": {
+                "type": "integer"
+              },
+              "omitted": {
+                "const": 0
+              },
+              "errors": {
+                "const": 0
+              }
+            },
+            "anyOf": [
+              {
+                "properties": {
+                  "survived": {
+                    "minimum": 1
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "freshUncovered": {
+                    "minimum": 1
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "INCOMPLETE"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "allOf": [
+          {
+            "properties": {
+              "exitCode": {
+                "enum": [
+                  2,
+                  4
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "baseline": {
+                  "enum": [
+                    "RED",
+                    "EMPTY"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "exitCode": {
+                  "const": 2
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "exitCode": {
+                  "const": 4
+                }
+              }
+            }
+          },
+          {
+            "anyOf": [
+              {
+                "properties": {
+                  "baseline": {
+                    "enum": [
+                      "RED",
+                      "EMPTY",
+                      "UNKNOWN"
+                    ]
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "counts": {
+                    "properties": {
+                      "enumerated": {
+                        "type": "null"
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "counts": {
+                    "properties": {
+                      "omitted": {
+                        "minimum": 1
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "counts": {
+                    "properties": {
+                      "errors": {
+                        "minimum": 1
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "diagnosticPartial": {
+                    "const": true
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "incompleteConditions": {
+                    "minItems": 1
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "NOT_APPLICABLE"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "allOf": [
+          {
+            "properties": {
+              "baseline": {
+                "const": "GREEN"
+              },
+              "diagnosticPartial": {
+                "const": false
+              },
+              "units": {
+                "items": {
+                  "properties": {
+                    "diagnosticPartial": {
+                      "const": false
+                    }
+                  }
+                }
+              },
+              "incompleteConditions": {
+                "maxItems": 0
+              },
+              "counts": {
+                "properties": {
+                  "enumerated": {
+                    "type": "integer"
+                  },
+                  "freshUncovered": {
+                    "const": 0
+                  },
+                  "omitted": {
+                    "const": 0
+                  },
+                  "killed": {
+                    "const": 0
+                  },
+                  "survived": {
+                    "const": 0
+                  },
+                  "errors": {
+                    "const": 0
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "policy": {
+                  "properties": {
+                    "allowNotApplicable": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "exitCode": {
+                  "const": 0
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "exitCode": {
+                  "const": 5
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "then": {
+        "properties": {
+          "suites": {
+            "minItems": 1,
+            "items": {
+              "properties": {
+                "baseline": {
+                  "const": "GREEN"
+                }
+              },
+              "required": [
+                "accounting"
+              ]
+            }
+          },
+          "baseline": {
+            "const": "GREEN"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "PASS",
+              "FAIL",
+              "NOT_APPLICABLE"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "baseline": {
+      "enum": [
+        "GREEN",
+        "RED",
+        "EMPTY",
+        "UNKNOWN"
+      ]
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "baseRevision",
+        "inputs"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "base",
+            "inputs",
+            "none"
+          ]
+        },
+        "baseRevision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "scopePlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "selectionKind",
+        "root",
+        "baseCommit",
+        "files",
+        "exclusions",
+        "projectUnits",
+        "reasons",
+        "isComplete"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "1"
+        },
+        "selectionKind": {
+          "enum": [
+            "base",
+            "inputs",
+            "none"
+          ]
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baseCommit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "files": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "$ref": "#/$defs/scopeFile"
+          }
+        },
+        "exclusions": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "$ref": "#/$defs/scopeExclusion"
+          }
+        },
+        "projectUnits": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "$ref": "#/$defs/projectScopeUnit"
+          }
+        },
+        "reasons": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "$ref": "#/$defs/reason"
+          }
+        },
+        "isComplete": {
+          "type": "boolean"
+        }
+      }
+    },
+    "scopeFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "basePath",
+        "change",
+        "declarations",
+        "removals",
+        "requiresProjectExpansion",
+        "reasons"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "basePath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "change": {
+          "enum": [
+            "ADDED",
+            "MODIFIED",
+            "DELETED",
+            "RENAMED",
+            "EXPLICIT"
+          ]
+        },
+        "declarations": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "$ref": "#/$defs/declarationScope"
+          }
+        },
+        "removals": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "$ref": "#/$defs/declarationScope"
+          }
+        },
+        "requiresProjectExpansion": {
+          "type": "boolean"
+        },
+        "reasons": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "$ref": "#/$defs/reason"
+          }
+        }
+      }
+    },
+    "declarationScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "displayName",
+        "startLine",
+        "endLine",
+        "reason"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        }
+      }
+    },
+    "scopeExclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "reasonCode",
+        "message",
+        "overridden"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reasonCode": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "overridden": {
+          "type": "boolean"
+        }
+      }
+    },
+    "projectScopeUnit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project",
+        "tests",
+        "inputs",
+        "expansion"
+      ],
+      "properties": {
+        "project": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tests": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100000,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "inputs": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "expansion": {
+          "enum": [
+            "CHANGED_DECLARATIONS",
+            "FULL_PROJECT"
+          ]
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxWorkers",
+        "mutationCap",
+        "baselineTimeoutSeconds",
+        "mutantTimeoutSeconds",
+        "overallDeadlineSeconds",
+        "allowNotApplicable",
+        "stabilityRepetitions"
+      ],
+      "properties": {
+        "maxWorkers": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mutationCap": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "baselineTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mutantTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "overallDeadlineSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "allowNotApplicable": {
+          "type": "boolean"
+        },
+        "stabilityRepetitions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      }
+    },
+    "suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "suiteId",
+        "baseline",
+        "evidence"
+      ],
+      "properties": {
+        "suiteId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baseline": {
+          "$ref": "#/$defs/baseline"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
+        "accounting": {
+          "$ref": "#/$defs/suiteAccounting"
+        }
+      }
+    },
+    "unit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "unitId",
+        "evaluationUnitId",
+        "disposition",
+        "evidence"
+      ],
+      "properties": {
+        "unitId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "evaluationUnitId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "disposition": {
+          "enum": [
+            "KILLED",
+            "SURVIVED",
+            "UNCOVERED",
+            "COMPILE_INVALID",
+            "ERROR",
+            "OMITTED",
+            "UNSTABLE"
+          ]
+        },
+        "diagnosticPartial": {
+          "type": "boolean"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 200,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enumerated",
+        "selected",
+        "executed",
+        "freshUncovered",
+        "omitted",
+        "compileInvalid",
+        "killed",
+        "survived",
+        "errors"
+      ],
+      "properties": {
+        "enumerated": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "selected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "executed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "freshUncovered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omitted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "compileInvalid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "killed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "survived": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "errors": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "summary",
+        "diagnostics"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "diagnostics": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      }
+    },
+    "suiteAccounting": {
+      "properties": {
+        "coverageReportLength": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "coverageReportSha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "coverageIdentity": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "snapshotId": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "configuration": {
+          "properties": {
+            "configuration": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "path": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "expectedMembers": {
+              "items": {
+                "minLength": 1,
+                "type": "string",
+                "maxLength": 256
+              },
+              "maxItems": 256,
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "runner": {
+              "const": "vstest"
+            },
+            "framework": {
+              "const": "net10.0"
+            }
+          },
+          "required": [
+            "id",
+            "path",
+            "runner",
+            "framework",
+            "configuration",
+            "expectedMembers"
+          ],
+          "type": "object",
+          "additionalProperties": false
+        },
+        "pathMap": {
+          "const": "baseline-clone-to-snapshot-v1"
+        },
+        "collectedFresh": {
+          "const": true
+        },
+        "runId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "accountedMembers": {
+          "items": {
+            "minLength": 1,
+            "type": "string",
+            "maxLength": 256
+          },
+          "maxItems": 256,
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "runId",
+        "snapshotId",
+        "configuration",
+        "accountedMembers",
+        "coverageReportSha256",
+        "coverageReportLength",
+        "coverageIdentity",
+        "pathMap",
+        "collectedFresh"
+      ],
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+}

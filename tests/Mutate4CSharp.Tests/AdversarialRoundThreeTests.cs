@@ -39,9 +39,9 @@ public sealed class AdversarialRoundThreeTests : IDisposable
 
         var reportBytes = ReportWriter.Serialize(report);
         var fingerprint = EvaluationFingerprint.ComputeForProven(material);
-        var coverage = new CoverageProvenance("1", report.RunId, "suite-a", fingerprint, snapshotId,
-            BaselineStatus.Green, Digest("coverage"), 8, "path-map-v1", "vstest-v1", true);
-        var record = new ProvenEvaluationSidecar("1", SidecarRecordKind.Proven, report.RunId,
+        var coverage = new CoverageProvenance("1", report.RunId, report.Suites[0].SuiteId, fingerprint, snapshotId,
+            BaselineStatus.Green, Digest("coverage"), 8, "baseline-clone-to-snapshot-v1", SuiteAccountingFixture.Runner, true);
+        var record = new ProvenEvaluationSidecar("2", SidecarRecordKind.Proven, report.RunId,
             DateTimeOffset.UnixEpoch, fingerprint, snapshotId,
             Convert.ToHexString(SHA256.HashData(reportBytes)).ToLowerInvariant(), reportBytes.LongLength,
             true, [coverage], report.Counts);
@@ -117,12 +117,12 @@ class C { bool M(int value) => value == 2; }
     }
 
     private static EvaluationReport Report(EvaluationFacts facts, EvaluationDecision decision,
-        ScopePlan scope, string snapshotId) => new("1", "targeted-round-three", DateTimeOffset.UnixEpoch, "check",
+        ScopePlan scope, string snapshotId) => new(ReportWriter.SchemaVersion, "targeted-round-three", DateTimeOffset.UnixEpoch, "check",
         new("inputs", null, ["src/A.cs"]), scope, EvaluationReport.DefaultPolicy, facts.Baseline,
-        [new("suite-a", BaselineStatus.Green, [new("BASELINE_GREEN", "Fresh baseline passed.")])],
+        [SuiteAccountingFixture.Create("targeted-round-three", snapshotId, Digest("coverage"), 8)],
         facts.Units, decision.Counts, facts.IncompleteConditions, decision.Reasons,
         decision.Evidence.Concat([new EvaluationEvidence("INPUT_SNAPSHOT", "Frozen input snapshot.",
-            [$"captureId={snapshotId}"])]).ToArray(), decision.Outcome, decision.ExitCode);
+            [$"captureId={snapshotId}"]), ReportWriter.ConfigurationSuiteEvidence([SuiteAccountingFixture.Create("targeted-round-three", snapshotId, Digest("coverage"), 8).SuiteId])]).ToArray(), decision.Outcome, decision.ExitCode);
 
     private static MutationCandidate Candidate(IdentifiedMutation mutation, string parseContext,
         int sourceStart, int sourceLength)
@@ -148,14 +148,14 @@ class C { bool M(int value) => value == 2; }
             EvaluationFingerprint.FromBytes("source", "src/A.cs", "source"u8),
             EvaluationFingerprint.FromBytes("dependency", "packages.lock.json", "dependency"u8)
         ], snapshotId, ReportWriter.SerializeCanonicalScope(scope), "configuration-v1", "tool-v1", "operator-v1",
-        "sdk-v1", "runtime-v1", "vstest-v1", EvaluationReport.DefaultPolicy, ProvenanceComplete: true);
+        "sdk-v1", "runtime-v1", SuiteAccountingFixture.Runner, EvaluationReport.DefaultPolicy, ProvenanceComplete: true);
 
     private static string Digest(string value) => Convert.ToHexString(
         SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 
     private static JsonSchema LoadReportSchema()
     {
-        var path = Path.GetFullPath("../../../../../docs/contracts/evaluation-report-v1.schema.json",
+        var path = Path.GetFullPath("../../../../../docs/contracts/evaluation-report-v2.schema.json",
             AppContext.BaseDirectory);
         var schema = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
         schema.Remove("$id");

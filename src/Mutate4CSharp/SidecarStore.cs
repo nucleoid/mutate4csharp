@@ -38,6 +38,38 @@ internal sealed class SidecarStore
         return Publish("discovery", DiscoveryKey(record), record);
     }
 
+    internal string ReplaceDiscovery(DiscoverySidecar record)
+    {
+        ValidateDiscovery(record);
+        return Publish("discovery", DiscoveryKey(record), record, replaceExisting: true);
+    }
+
+    internal void InvalidateProven(string fingerprint)
+    {
+        if (!EvaluationFingerprint.IsFingerprint(fingerprint))
+            throw new EvaluationContractException("Invalid proven fingerprint for revocation.");
+        if (!ExistingOrdinaryDirectory(_stateRoot)) return;
+        var directory = Path.Combine(_stateRoot, "proven");
+        if (!Directory.Exists(directory))
+        {
+            if (File.Exists(directory)) throw new IOException("Owned proven directory collides with a file.");
+            return;
+        }
+        EnsureOrdinaryDirectory(directory);
+        EnsureOrdinaryDirectory(Path.Combine(_stateRoot, "locks"));
+        var key = FingerprintKey(fingerprint);
+        AtomicOwnedFile.Delete(StatePath("proven", key), LockPath("proven", key), path =>
+        {
+            if (InspectExistingOwnedRecord(path) is null) return null;
+            var bytes = ReadBoundedRegular(path);
+            ValidateRawProvenSchema(bytes);
+            var previous = JsonSerializer.Deserialize<ProvenEvaluationSidecar>(bytes, JsonOptions)
+                ?? throw new EvaluationContractException("Existing proven state is empty.");
+            ValidateProvenEnvelope(previous, fingerprint);
+            return SHA256.HashData(bytes);
+        });
+    }
+
     public void PrepareForPublication()
     {
         EnsureOrdinaryDirectory(_stateRoot);
@@ -53,10 +85,16 @@ internal sealed class SidecarStore
     public string PublishProven(ProvenEvaluationSidecar record, EvaluationReport report,
         EvaluationFingerprintMaterial fingerprintMaterial, MutationSelectionPlan finalizingPlan)
     {
-        ArgumentNullException.ThrowIfNull(finalizingPlan);
-        finalizingPlan.RequireProvenPublicationEligibility(report, fingerprintMaterial);
-        ValidateProven(record, report, fingerprintMaterial);
-        return Publish("proven", FingerprintKey(record.EvaluationFingerprint), record);
+        ValidateProvenPublication(record, report, fingerprintMaterial, finalizingPlan);
+        return Publish("proven", FingerprintKey(record.EvaluationFingerprint), record, replaceExisting: true);
+    }
+
+    internal static void ValidateProvenPublication(ProvenEvaluationSidecar record, EvaluationReport report,
+        EvaluationFingerprintMaterial material, MutationSelectionPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        plan.RequireProvenPublicationEligibility(report, material);
+        ValidateProven(record, report, material);
     }
 
     public SidecarReadResult<ProvenEvaluationSidecar> ReadProvenForInspection(string fingerprint)
@@ -66,6 +104,8 @@ internal sealed class SidecarStore
         var path = StatePath("proven", FingerprintKey(fingerprint));
         try
         {
+            if (!ExistingOrdinaryDirectory(_stateRoot) || !ExistingOrdinaryDirectory(Path.GetDirectoryName(path)!))
+                return new(null, "No current proven state exists.");
             var bytes = ReadBoundedRegular(path);
             ValidateRawProvenSchema(bytes);
             var record = JsonSerializer.Deserialize<ProvenEvaluationSidecar>(bytes, JsonOptions)
@@ -83,14 +123,40 @@ internal sealed class SidecarStore
     internal string ProvenPath(string fingerprint) => StatePath("proven", FingerprintKey(fingerprint));
     internal string LockPath(string category, string key) => Path.Combine(_stateRoot, "locks", $"{category}-{key}.lock");
 
-    private string Publish<T>(string category, string key, T record)
+    private string Publish<T>(string category, string key, T record, bool replaceExisting = false)
     {
         PrepareOwnedDirectory(category);
         var path = StatePath(category, key);
         var bytes = JsonSerializer.SerializeToUtf8Bytes(record, JsonOptions);
         if (bytes.Length > MaxRecordBytes) throw new EvaluationContractException("Sidecar record exceeds size bounds.");
-        AtomicOwnedFile.Write(path, LockPath(category, key), bytes, InspectExistingOwnedRecord,
-            replaceExisting: false);
+        AtomicOwnedFile.Write(path, LockPath(category, key), bytes, existing =>
+        {
+            var hash = InspectExistingOwnedRecord(existing);
+            if (hash is not null && category == "proven")
+            {
+                if (record is not ProvenEvaluationSidecar proposed)
+                    throw new EvaluationContractException("Proven publication requires a proven record.");
+                var existingBytes = ReadBoundedRegular(existing);
+                ValidateRawProvenSchema(existingBytes);
+                var previous = JsonSerializer.Deserialize<ProvenEvaluationSidecar>(existingBytes, JsonOptions)
+                    ?? throw new EvaluationContractException("Existing proven state is empty.");
+                ValidateProvenEnvelope(previous, proposed.EvaluationFingerprint);
+                if (!CryptographicOperations.FixedTimeEquals(hash, SHA256.HashData(existingBytes)))
+                    throw new IOException("Existing proven state changed during validation.");
+            }
+            else if (hash is not null && replaceExisting && record is DiscoverySidecar proposedDiscovery)
+            {
+                var previousBytes = ReadBoundedRegular(existing);
+                var previous = JsonSerializer.Deserialize<DiscoverySidecar>(previousBytes, JsonOptions)
+                    ?? throw new EvaluationContractException("Existing discovery state is empty.");
+                ValidateDiscovery(previous);
+                if (previous.RunId != proposedDiscovery.RunId ||
+                    previous.EvaluationFingerprint != proposedDiscovery.EvaluationFingerprint ||
+                    !CryptographicOperations.FixedTimeEquals(hash, SHA256.HashData(previousBytes)))
+                    throw new IOException("Discovery replacement requires the same owned run and fingerprint.");
+            }
+            return hash;
+        }, replaceExisting);
         return path;
     }
 
@@ -107,7 +173,7 @@ internal sealed class SidecarStore
             using var document = JsonDocument.Parse(bytes);
             if (document.RootElement.ValueKind != JsonValueKind.Object ||
                 !document.RootElement.TryGetProperty("schemaVersion", out var schema) ||
-                schema.ValueKind != JsonValueKind.String || schema.GetString() != "1" ||
+                schema.ValueKind != JsonValueKind.String || schema.GetString() != "2" ||
                 !document.RootElement.TryGetProperty("recordKind", out var kind) ||
                 kind.ValueKind != JsonValueKind.String ||
                 kind.GetString() is not ("DISCOVERY" or "PROVEN"))
@@ -176,6 +242,16 @@ internal sealed class SidecarStore
             throw new IOException("Existing .mutate4csharp/.gitignore conflicts with the required owned-state contract.");
     }
 
+    private static bool ExistingOrdinaryDirectory(string path)
+    {
+        if (new DirectoryInfo(path).LinkTarget is not null || File.Exists(path))
+            throw new IOException("Owned state directory must be ordinary.");
+        if (!Directory.Exists(path)) return false;
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new IOException("Owned state directory cannot be a reparse point.");
+        return true;
+    }
+
     private static void EnsureOrdinaryDirectory(string path)
     {
         if (File.Exists(path)) throw new IOException("Owned sidecar path collides with a file.");
@@ -229,6 +305,11 @@ internal sealed class SidecarStore
             throw new EvaluationContractException("Proven coverage must bind every report suite exactly once.");
         foreach (var coverage in record.Coverage)
         {
+            var accounting = report.Suites.Single(suite => suite.SuiteId == coverage.SuiteId).Accounting!;
+            if (accounting.CoverageReportSha256 != coverage.CoverageReportSha256 ||
+                accounting.CoverageReportLength != coverage.CoverageReportLength ||
+                accounting.PathMap != coverage.PathMapVersion)
+                throw new EvaluationContractException("Proven coverage differs from the bound baseline accounting.");
             if (coverage.RunnerIdentity != fingerprintMaterial.RunnerIdentity)
                 throw new EvaluationContractException("Coverage runner identity does not match the evaluation fingerprint.");
             coverage.Validate(expectedFingerprint, reportSnapshotId, report.RunId, coverage.SuiteId);
@@ -249,6 +330,10 @@ internal sealed class SidecarStore
             record.Counts.FreshUncovered != 0 || record.Counts.Omitted != 0 || record.Counts.Errors != 0 ||
             record.Counts.Survived != 0 || record.Counts.CompileInvalid > record.Counts.Executed)
             throw new EvaluationContractException("Proven state does not match the requested fingerprint.");
+        if (record.Counts.Killed < 1 || record.Counts.CompileInvalid < 0 ||
+            record.Counts.Executed != record.Counts.Killed + record.Counts.CompileInvalid ||
+            record.Counts.Enumerated > 100_000)
+            throw new EvaluationContractException("Proven state lacks bounded nonzero killed accounting.");
         foreach (var coverage in record.Coverage)
             coverage.Validate(expectedFingerprint, record.SnapshotId, record.RunId, coverage.SuiteId);
     }
@@ -289,7 +374,7 @@ internal sealed class SidecarStore
         SidecarRecordKind expectedKind, string? runId, string? fingerprint, string? snapshotId,
         string? reportSha256, long reportLength)
     {
-        if (schemaVersion != "1" || actualKind != expectedKind || string.IsNullOrWhiteSpace(runId) || runId.Length > 256 ||
+        if (schemaVersion != "2" || actualKind != expectedKind || string.IsNullOrWhiteSpace(runId) || runId.Length > 256 ||
             !EvaluationFingerprint.IsFingerprint(fingerprint) || !EvaluationFingerprint.IsSha256(snapshotId) ||
             !EvaluationFingerprint.IsSha256(reportSha256) || reportLength < 1)
             throw new EvaluationContractException("Sidecar record is incomplete or uses an unsupported schema.");

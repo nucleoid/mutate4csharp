@@ -15,6 +15,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.103
@@ -63,7 +65,7 @@ jobs:
           scripts/agent-gate.sh gate "$CONSUMER" "$RECEIPT" "$PACKAGE_SHA256" "$PAYLOAD_SHA256" "$TOOL_SOURCE_COMMIT" "$TASK_START" "$EXPECTED_TARGET_HEAD" "${WORKSPACE}.direct.json" no-state
           GATE_EXIT=$?
           set -e
-          test "$GATE_EXIT" -eq 4
+          test "$GATE_EXIT" -eq 3
           FORGED_RECEIPT="${WORKSPACE}.forged.tsv"
           cp "$RECEIPT" "$FORGED_RECEIPT"
           printf 'tool_command\t/bin/true\n' >> "$FORGED_RECEIPT"

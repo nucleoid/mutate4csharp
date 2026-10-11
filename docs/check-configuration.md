@@ -93,6 +93,5 @@ deterministic implicit-using contexts are supported against the exact reference 
 inside the frozen consumer snapshot; the SDK, pack version, and pack content identity are bound into the evaluation
 fingerprint. Every project and source read is checked against the snapshot manifest length and SHA-256 before
 semantic analysis, so later capture-directory mutation cannot be bound as the original snapshot. Strict child execution clears
-the semantic MSBuild property environment named by this contract. Supported checks end
-at `FINALIZATION_PENDING` after fresh baseline, coverage and isolated mutant execution; final publication remains
-disabled at this boundary.
+the semantic MSBuild property environment named by this contract. Supported checks reconcile the configured suite
+set, fresh coverage provenance, trusted unit ledger, original tree, and cleanup before publishing a conclusive result.
