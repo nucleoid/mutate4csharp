@@ -183,10 +183,16 @@ public sealed partial class ToolPackagingIntegrationTests
                         .Concat(report.RootElement.GetProperty("incompleteConditions").EnumerateArray())
                         .Select(reason => reason.GetProperty("code").GetString()).ToArray();
                     var expectedReason = scenario switch { "red" => "BASELINE_RED", "empty" => "BASELINE_EMPTY", "plan" => "PLAN_ONLY",
-                        "partial" => "BUDGET_OMITTED", "unsupported" => "ENUMERATION_ENCODING_UNSUPPORTED", "timeout" => "BASELINE_TIMEOUT",
+                        "partial" => "UNIT_OMITTED", "unsupported" => "ENUMERATION_ENCODING_UNSUPPORTED", "timeout" => "BASELINE_TIMEOUT",
                         "cancel" => "EXECUTION_CANCELLED", "drift" => "SNAPSHOT_DIVERGED", _ => null };
                     if (expectedReason is not null) Assert.Contains(expectedReason, reasonCodes);
-                    if (scenario == "partial") Assert.True(counts.GetProperty("omitted").GetInt32() > 0);
+                    if (scenario == "partial")
+                    {
+                        Assert.True(counts.GetProperty("omitted").GetInt32() > 0);
+                        Assert.True(counts.GetProperty("executed").GetInt32() > 0);
+                        Assert.Contains(units, unit => unit.GetProperty("disposition").GetString() == "OMITTED" &&
+                            unit.GetProperty("evidence").EnumerateArray().Any(item => item.GetProperty("kind").GetString() == "BUDGET_OMITTED"));
+                    }
                     if (scenario == "drift")
                     {
                         Assert.NotEqual(bytes, File.ReadAllBytes(source));
@@ -325,7 +331,8 @@ public sealed partial class ToolPackagingIntegrationTests
             { suiteId = suite.GetProperty("suiteId").GetString(), baseline = suite.GetProperty("baseline").GetString(),
               accounting = suite.TryGetProperty("accounting", out var accounting) ? (JsonElement?)accounting : null }).ToArray(),
             units = report.GetProperty("units").EnumerateArray().Select(unit => new
-            { unitId = unit.GetProperty("unitId").GetString(), evaluationUnitId = unit.GetProperty("evaluationUnitId").GetString(), disposition = unit.GetProperty("disposition").GetString() }).ToArray(),
+            { unitId = unit.GetProperty("unitId").GetString(), evaluationUnitId = unit.GetProperty("evaluationUnitId").GetString(), disposition = unit.GetProperty("disposition").GetString(),
+              evidenceKinds = unit.GetProperty("evidence").EnumerateArray().Select(item => item.GetProperty("kind").GetString()).ToArray() }).ToArray(),
             reasonCodes = report.GetProperty("reasons").EnumerateArray().Select(reason => reason.GetProperty("code").GetString()).ToArray(),
             incompleteCodes = report.GetProperty("incompleteConditions").EnumerateArray().Select(reason => reason.GetProperty("code").GetString()).ToArray(),
             limitations = new[] { "Repository-owned fixture; no approved production baseline", "Linux installed workflow; Windows Bash gate uncertified", "Pinned VSTest/xUnit/Coverlet profile" }
