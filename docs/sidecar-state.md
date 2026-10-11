@@ -29,6 +29,14 @@ so while another process holds the old inode could split coordination. Existing 
 active writers, malformed destinations, partial records, unknown schemas, and records over 1 MiB
 fail closed. Cleanup removes only a writer's temporary file and never unrelated files.
 
+Revocation preserves malformed or unrecognized records rather than deleting data whose ownership
+cannot be established. Such records are never usable proof and cause an orchestration error in
+state mode; use `--no-state` with an external report or resolve the collision explicitly before
+another stateful run. Failed revocation writes the current incomplete report and then raises an error.
+Revocation may create the ordinary `locks/` directory when a recognized `proven/` directory exists;
+the persistent lock is required to coordinate deletion even if publication's ignore-contract check failed.
+It never follows linked state directories or replaces a conflicting state-root file.
+
 The default report root is the invoking process's current directory; every default report path ensures
 the owned ignore contract before capture, including plan, `--no-state`, and capture-failure paths.
 `--report` may safely place a report elsewhere. `--no-state` disables discovery/provenance publication

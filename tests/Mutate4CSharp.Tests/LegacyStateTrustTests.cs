@@ -122,16 +122,14 @@ public sealed class LegacyStateTrustTests : IDisposable
         Environment.CurrentDirectory = repository.Root;
         try
         {
-            var result = await new EvaluationCoordinator().RunAsync(
-                new(false, "HEAD", [], report, "state-failure"), CancellationToken.None);
-
-            Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
-            Assert.Contains(result.Report.IncompleteConditions, reason => reason.Code == "SIDECAR_WRITE_FAILED");
-            Assert.Contains(result.Report.Evidence, evidence => evidence.Kind == "SIDECAR_PUBLICATION_FAILURE");
+            await Assert.ThrowsAsync<IOException>(() => new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], report, "state-failure"), CancellationToken.None));
             using var published = JsonDocument.Parse(File.ReadAllBytes(report));
             Assert.Equal("INCOMPLETE", published.RootElement.GetProperty("outcome").GetString());
             Assert.Contains(published.RootElement.GetProperty("incompleteConditions").EnumerateArray(),
                 reason => reason.GetProperty("code").GetString() == "SIDECAR_WRITE_FAILED");
+            Assert.Contains(published.RootElement.GetProperty("evidence").EnumerateArray(),
+                item => item.GetProperty("kind").GetString() == "PROVEN_REVOCATION_FAILED");
         }
         finally { Environment.CurrentDirectory = previous; }
 

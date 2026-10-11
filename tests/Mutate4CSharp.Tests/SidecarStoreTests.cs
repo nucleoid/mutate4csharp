@@ -612,6 +612,25 @@ public sealed class SidecarStoreTests : IDisposable
         Assert.Equal(original, File.ReadAllBytes(proof));
     }
 
+    [Theory]
+    [InlineData("{")]
+    [InlineData("{\"schemaVersion\":\"2\",\"recordKind\":\"UNKNOWN\"}")]
+    public void UnrecognizedProvenCollisionIsPreservedAndCannotAuthorizeCurrentSuccess(string contents)
+    {
+        var (store, report, record, material, plan) = ValidProven();
+        store.PrepareForPublication();
+        var proof = store.ProvenPath(record.EvaluationFingerprint);
+        Directory.CreateDirectory(Path.GetDirectoryName(proof)!);
+        File.WriteAllText(proof, contents);
+        var path = Path.Combine(_directory, "unrecognized-proof.json");
+        Assert.Throws<IOException>(() => EvaluationPublication.Publish(path, [], report,
+            plan.FinalizeFacts(report.Baseline, report.Units, false), store, record.SnapshotId, material, plan, record.Coverage));
+        Assert.Equal(contents, File.ReadAllText(proof));
+        Assert.False(store.ReadProvenForInspection(record.EvaluationFingerprint).IsValid);
+        using var current = JsonDocument.Parse(File.ReadAllBytes(path));
+        Assert.Equal("INCOMPLETE", current.RootElement.GetProperty("outcome").GetString());
+    }
+
     private static MutationCandidate Candidate(string site = "site/1")
     {
         var identityMaterial = new MutationIdentityMaterial("src/A.cs", "Type.M", site,
