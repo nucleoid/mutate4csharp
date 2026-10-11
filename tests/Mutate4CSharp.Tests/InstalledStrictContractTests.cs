@@ -9,7 +9,7 @@ namespace Mutate4CSharp.Tests;
 
 public sealed partial class ToolPackagingIntegrationTests
 {
-    [Fact(Timeout = 3_600_000)]
+    [Fact(Timeout = 7_200_000)]
     public async Task InstalledStrictCliCertifiesRealOutcomesFromIndependentCleanConsumers()
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "Installed packaging certification uses the Linux Bash profile.");

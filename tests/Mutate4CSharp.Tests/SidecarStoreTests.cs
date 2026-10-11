@@ -190,7 +190,7 @@ public sealed class SidecarStoreTests : IDisposable
             material, plan, record.Coverage, phase =>
             {
                 if ((int)phase == failedPhase) throw new IOException("Injected publication failure.");
-            });
+            }, TestContext.Current.CancellationToken);
 
         Assert.Equal(EvaluationOutcome.Incomplete, result.Outcome);
         Assert.False(store.ReadProvenForInspection(record.EvaluationFingerprint).IsValid);
@@ -552,7 +552,7 @@ public sealed class SidecarStoreTests : IDisposable
         store.PublishProven(record, report, material, plan);
         var facts = plan.FinalizeFacts(report.Baseline, report.Units, false);
         var result = EvaluationPublication.Publish(path, [], report, facts, noState ? null : store,
-            record.SnapshotId, material with { ProvenanceComplete = false }, plan, record.Coverage);
+            record.SnapshotId, material with { ProvenanceComplete = false }, plan, record.Coverage, cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(EvaluationOutcome.Incomplete, result.Outcome);
         Assert.Contains(result.IncompleteConditions, item => item.Code == "PROOF_ELIGIBILITY_FAILED");
         Assert.DoesNotContain(result.IncompleteConditions, item => item.Code == "SIDECAR_WRITE_FAILED");
@@ -574,7 +574,7 @@ public sealed class SidecarStoreTests : IDisposable
         var report = EvaluationReport.CreateSynthetic(EvaluationOutcome.Fail, "malformed-fail", "STRUCTURAL_FIXTURE");
         var facts = new EvaluationFacts(report.Baseline, report.Counts.Enumerated, report.Units, false, []);
         var result = EvaluationPublication.Publish(Path.Combine(_directory, "malformed-fail.json"), [],
-            report with { Suites = [] }, facts, null, null, null, null, []);
+            report with { Suites = [] }, facts, null, null, null, null, [], cancellationToken: TestContext.Current.CancellationToken);
         Assert.Contains(result.IncompleteConditions, item => item.Code == "REPORT_PUBLICATION_FAILED");
         Assert.DoesNotContain(result.IncompleteConditions, item => item.Code == "PROOF_ELIGIBILITY_FAILED");
     }
@@ -586,7 +586,7 @@ public sealed class SidecarStoreTests : IDisposable
         var proof = store.PublishProven(record, report, material, plan);
         File.WriteAllText(Path.Combine(_directory, ".mutate4csharp", ".gitignore"), "foreign-contract\n");
         var result = EvaluationPublication.Publish(Path.Combine(_directory, "preparation-failed.json"), [], report,
-            plan.FinalizeFacts(report.Baseline, report.Units, false), store, record.SnapshotId, material, plan, record.Coverage);
+            plan.FinalizeFacts(report.Baseline, report.Units, false), store, record.SnapshotId, material, plan, record.Coverage, cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(EvaluationOutcome.Incomplete, result.Outcome);
         Assert.Contains(result.IncompleteConditions, item => item.Code == "SIDECAR_WRITE_FAILED");
         Assert.False(File.Exists(proof));
@@ -604,7 +604,7 @@ public sealed class SidecarStoreTests : IDisposable
             FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
         var path = Path.Combine(_directory, "revocation-failed.json");
         Assert.Throws<IOException>(() => EvaluationPublication.Publish(path, [], report,
-            plan.FinalizeFacts(report.Baseline, report.Units, false), store, record.SnapshotId, material, plan, record.Coverage));
+            plan.FinalizeFacts(report.Baseline, report.Units, false), store, record.SnapshotId, material, plan, record.Coverage, cancellationToken: TestContext.Current.CancellationToken));
         using var current = JsonDocument.Parse(File.ReadAllBytes(path));
         Assert.Equal("INCOMPLETE", current.RootElement.GetProperty("outcome").GetString());
         Assert.Contains(current.RootElement.GetProperty("evidence").EnumerateArray(),
@@ -624,7 +624,7 @@ public sealed class SidecarStoreTests : IDisposable
         File.WriteAllText(proof, contents);
         var path = Path.Combine(_directory, "unrecognized-proof.json");
         Assert.Throws<IOException>(() => EvaluationPublication.Publish(path, [], report,
-            plan.FinalizeFacts(report.Baseline, report.Units, false), store, record.SnapshotId, material, plan, record.Coverage));
+            plan.FinalizeFacts(report.Baseline, report.Units, false), store, record.SnapshotId, material, plan, record.Coverage, cancellationToken: TestContext.Current.CancellationToken));
         Assert.Equal(contents, File.ReadAllText(proof));
         Assert.False(store.ReadProvenForInspection(record.EvaluationFingerprint).IsValid);
         using var current = JsonDocument.Parse(File.ReadAllBytes(path));

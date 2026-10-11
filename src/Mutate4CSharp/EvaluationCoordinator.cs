@@ -15,14 +15,17 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
     private readonly SnapshotCaptureOptions _captureOptions;
     private readonly Action<EvaluationPublicationPhase>? _beforePublication;
     private readonly Action<SnapshotClone, IReadOnlyList<string>>? _beforeCoverageParsing;
+    private readonly Action? _beforeExecution;
 
     public EvaluationCoordinator(SnapshotCaptureOptions? captureOptions = null,
         Action<EvaluationPublicationPhase>? beforePublication = null,
-        Action<SnapshotClone, IReadOnlyList<string>>? beforeCoverageParsing = null)
+        Action<SnapshotClone, IReadOnlyList<string>>? beforeCoverageParsing = null,
+        Action? beforeExecution = null)
     {
         _captureOptions = captureOptions ?? SnapshotCaptureOptions.Default;
         _beforePublication = beforePublication;
         _beforeCoverageParsing = beforeCoverageParsing;
+        _beforeExecution = beforeExecution;
     }
 
     public async Task<EvaluationRunResult> RunAsync(StrictCheckOptions options,
@@ -136,6 +139,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             else
             {
                 executionStarted = true;
+                _beforeExecution?.Invoke();
                 var execution = await StrictExecutionPipeline.RunAsync(snapshot, snapshotId!, runId, scopePlan,
                     checkConfiguration, exactMutationIds, options.PlanFingerprint, cancellationToken, _beforeCoverageParsing);
                 fingerprintMaterial = execution.FingerprintMaterial;
@@ -312,7 +316,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 {
                     try
                     {
-                        sdkVersion ??= await ResolveSdkVersionAsync(snapshot, cancellationToken);
+                        using var identityAudit = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                        sdkVersion ??= await ResolveSdkVersionAsync(snapshot, identityAudit.Token);
                         fingerprintMaterial ??= BuildEvaluationFingerprintMaterial(
                             snapshot, snapshotId, scopePlan, checkConfiguration?.Policy ?? EvaluationReport.DefaultPolicy,
                             semanticContextIdentity ?? "semantic-context-unavailable", sdkVersion);
@@ -402,7 +407,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             report = EvaluationPublication.Publish(reportPath, options.Inputs, report, facts,
                 fingerprintMaterialFailure is null ? sidecarStore : null, snapshotId, fingerprintMaterial,
                 finalizingPlan, coverageProvenance, _beforePublication, cancellationToken);
-            if (fingerprintMaterialFailure is OperationCanceledException cancellation)
+            if (fingerprintMaterialFailure is OperationCanceledException cancellation && !cancellationToken.IsCancellationRequested)
                 throw cancellation;
             return new(report, reportPath, snapshotId);
         }

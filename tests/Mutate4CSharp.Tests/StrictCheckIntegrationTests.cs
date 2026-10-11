@@ -924,6 +924,36 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         finally { Environment.CurrentDirectory = previous; }
     }
 
+    [Fact]
+    public async Task CancellationBeforeExecutionRetainsCurrentDefaultStateIncompleteDiscovery()
+    {
+        using var repository = StrictEnumerationRepository("public bool Value() => true;");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "cancel-before-binding fixture");
+        var reportPath = Path.Combine(_directory, "cancel-before-binding.json");
+        using var cancellation = new CancellationTokenSource();
+        var coordinator = new EvaluationCoordinator(beforeExecution: cancellation.Cancel);
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
+        try
+        {
+            var result = await coordinator.RunAsync(new(false, "HEAD", [], reportPath, "cancel-before-binding"), cancellation.Token);
+            Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+            Assert.Equal(4, result.Report.ExitCode);
+            Assert.NotNull(result.SnapshotId);
+            Assert.Null(result.Report.Counts.Enumerated);
+            Assert.Empty(result.Report.Units);
+            Assert.Contains(result.Report.IncompleteConditions, reason => reason.Code == "EXECUTION_CANCELLED");
+            Assert.DoesNotContain(result.Report.IncompleteConditions, reason => reason.Code == "FINGERPRINT_UNAVAILABLE");
+            var discovery = Assert.Single(Directory.EnumerateFiles(Path.Combine(repository.Root, ".mutate4csharp", "discovery"), "*.json"));
+            using var record = JsonDocument.Parse(File.ReadAllBytes(discovery));
+            Assert.Equal(result.Report.RunId, record.RootElement.GetProperty("runId").GetString());
+            Assert.Equal(Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(reportPath))),
+                record.RootElement.GetProperty("reportSha256").GetString());
+        }
+        finally { Environment.CurrentDirectory = previous; }
+    }
+
     private static SnapshotTestRepository StrictEnumerationRepository(string member)
     {
         var repository = new SnapshotTestRepository();

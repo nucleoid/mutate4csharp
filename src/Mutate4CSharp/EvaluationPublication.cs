@@ -46,9 +46,9 @@ internal static class EvaluationPublication
             }
             phase = EvaluationPublicationPhase.Report;
             beforePublication?.Invoke(phase);
-            if (report.Outcome == EvaluationOutcome.Pass) cancellationToken.ThrowIfCancellationRequested();
+            if (report.ExitCode == 0) cancellationToken.ThrowIfCancellationRequested();
             ReportWriter.Write(path, report, inputs);
-            if (report.Outcome == EvaluationOutcome.Pass) cancellationToken.ThrowIfCancellationRequested();
+            if (report.ExitCode == 0) cancellationToken.ThrowIfCancellationRequested();
             if (store is null) return report;
             phase = EvaluationPublicationPhase.Discovery;
             beforePublication?.Invoke(phase);
