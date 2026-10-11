@@ -882,6 +882,19 @@ public sealed class StrictCheckIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task UnrelatedReportDestinationIsRejectedBeforeSnapshotCapture()
+    {
+        var path = Path.Combine(_directory, "unrelated-before-capture.json");
+        File.WriteAllText(path, "{\"purpose\":\"user data\"}");
+        var captures = 0;
+        var options = SnapshotCaptureOptions.Default with { Hook = (_, _) => captures++ };
+        await Assert.ThrowsAsync<ArgumentException>(() => new EvaluationCoordinator(options).RunAsync(
+            new(false, "HEAD", [], path, "preflight-rejection"), CancellationToken.None));
+        Assert.Equal(0, captures);
+        Assert.Equal("{\"purpose\":\"user data\"}", File.ReadAllText(path));
+    }
+
+    [Fact]
     public async Task InvalidReportPathIsAUsageErrorInsteadOfAnUnhandledCrash()
     {
         var code = await Program.Main(["check", "--base", "HEAD", "--report", "bad\0path.json"]);

@@ -29,7 +29,7 @@ public sealed class LegacyStateTrustTests : IDisposable
             "*.json", SearchOption.TopDirectoryOnly);
         var discovery = Assert.Single(discoveries);
         using var document = JsonDocument.Parse(File.ReadAllBytes(discovery));
-        Assert.Equal("1", document.RootElement.GetProperty("schemaVersion").GetString());
+        Assert.Equal("2", document.RootElement.GetProperty("schemaVersion").GetString());
         Assert.Equal("DISCOVERY", document.RootElement.GetProperty("recordKind").GetString());
         Assert.Equal("INCOMPLETE", document.RootElement.GetProperty("evaluationOutcome").GetString());
         Assert.False(Directory.Exists(Path.Combine(repository.Root, ".mutate4csharp", "proven")));

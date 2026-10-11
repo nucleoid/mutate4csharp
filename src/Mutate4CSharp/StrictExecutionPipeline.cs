@@ -187,9 +187,11 @@ internal static class StrictExecutionPipeline
                     completed.Add(plan.CompleteWithoutExecution(pending[candidate.EvaluationUnitId],
                         UnitDisposition.Uncovered,
                         [new("FRESH_COVERAGE_UNCOVERED",
-                            "Every mapped fresh baseline conclusively reported the mutation line uncovered.",
+                            "Every mapped fresh baseline reported the mutation span uncovered in its collector session.",
                             suites.Select((suite, index) =>
-                                $"suite={suite.Identity};state={coverage[index]}").ToArray())]));
+                                $"suite={suite.Identity};state={coverage[index]}")
+                                .Append("coverageProfile=coverlet-6.0.4-vstest-in-process")
+                                .Append("projection=verified-pdb-aggregate-zero").ToArray())]));
                     continue;
                 }
                 scheduled.Add(new(candidate.MutationId, candidate.EvaluationUnitId,
@@ -230,7 +232,11 @@ internal static class StrictExecutionPipeline
         catch (Exception ex) when (recoverInterruptedExecution is not null &&
             ex is not (SnapshotCaptureException or OutOfMemoryException or StackOverflowException or AccessViolationException))
         {
-            outcome = recoverInterruptedExecution(ex);
+            try { outcome = recoverInterruptedExecution(ex); }
+            catch (Exception recovery)
+            {
+                failure = AsyncDisposal.CombineFailure(ex, recovery);
+            }
         }
         catch (Exception ex) { failure = ex; }
         await AsyncDisposal.DisposeAllPreservingFailureAsync([baselines, environment], failure);
@@ -243,7 +249,7 @@ internal static class StrictExecutionPipeline
     {
         var completedIds = completed.Select(item => item.EvaluationUnitId).ToHashSet(StringComparer.Ordinal);
         var remaining = issued.Where(item => !completedIds.Contains(item.EvaluationUnitId)).Select(item =>
-            plan.CompleteWithoutExecution(item, UnitDisposition.Omitted,
+            plan.CompleteInterrupted(item,
                 [new("EXECUTION_INTERRUPTED", EvaluationTextBounds.Prefix(
                     $"{failure.GetType().Name}: execution did not finish this unit.", EvaluationReason.MaxMessageLength))]));
         return plan.OrderResults(completed.Concat(remaining).ToArray());

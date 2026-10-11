@@ -101,3 +101,9 @@ The tool makes mutation IDs, evaluation-unit IDs, planning, budget selection, le
 and exact-input applicability checks deterministic. It does not make arbitrary test behavior, process scheduling,
 machine load, or wall-clock duration deterministic. Ordinary project and test execution remains trusted code; this
 contract does not add a hostile-code sandbox.
+
+Exact-ID reruns bind to the current fresh canonical coverage identity as well as captured bytes.
+They collect the configured baselines before validating the supplied fingerprint. A suite with unstable
+coverage can therefore invalidate a rerun fingerprint even when source is unchanged; the tool refuses
+that stale request rather than applying an old plan. Raw XML GUIDs, timestamps, and temporary paths
+are excluded from this identity. A rerun remains diagnostic and never reusable proof.

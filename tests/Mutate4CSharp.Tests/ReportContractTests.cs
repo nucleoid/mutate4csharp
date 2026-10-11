@@ -93,6 +93,47 @@ public sealed class ReportContractTests : IDisposable
     }
 
     [Fact]
+    public void WindowsInvalidationRetriesSharingAndChecksTheOriginalHash()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var path = Path.Combine(_directory, "delete-sharing.json");
+        File.WriteAllText(path, "original");
+        var inspections = 0;
+        using var scanner = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        AtomicOwnedFile.Delete(path, path + ".lock", candidate =>
+        {
+            if (++inspections == 3) scanner.Dispose();
+            return System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(candidate));
+        });
+        Assert.True(inspections >= 3);
+        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public void FullMemberAccountingSurvivesBoundedDiagnosticTruncation()
+    {
+        var report = EvaluationReport.CreateSynthetic(EvaluationOutcome.Pass, "full-member-accounting", "TEST_FIXTURE");
+        var suite = Assert.Single(report.Suites);
+        var members = Enumerable.Range(0, 256).Select(index => $"LongMemberName{index:D3}.Tests.dll").ToArray();
+        var configuration = suite.Accounting!.Configuration with { ExpectedMembers = members };
+        suite = suite with
+        {
+            SuiteId = CheckConfiguration.SuiteIdentity(configuration),
+            Accounting = suite.Accounting with { Configuration = configuration, AccountedMembers = members }
+        };
+        report = report with
+        {
+            Suites = [suite],
+            Evidence = report.Evidence.Where(item => item.Kind != "CHECK_CONFIGURATION")
+                .Append(ReportWriter.ConfigurationSuiteEvidence([suite.SuiteId])).ToArray()
+        };
+        using var document = JsonDocument.Parse(ReportWriter.Serialize(report));
+        Assert.Equal(256, document.RootElement.GetProperty("suites")[0].GetProperty("accounting")
+            .GetProperty("accountedMembers").GetArrayLength());
+        Assert.True(ReportSchema.Evaluate(document.RootElement).IsValid);
+    }
+
+    [Fact]
     public void LeftoverUnlockedLockFileDoesNotBlockAWrite()
     {
         var path = Path.Combine(_directory, "recover.json");

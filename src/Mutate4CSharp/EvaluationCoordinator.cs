@@ -36,6 +36,9 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             ? Path.Combine(Environment.CurrentDirectory, ".mutate4csharp", "reports",
                 $"{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffZ}-{runId}.json")
             : ReportWriter.ResolveSafeDestination(options.ReportPath!, options.Inputs);
+        // Reject usage errors before capture or any restore/build/test work. Publication
+        // revalidates the destination under its lock before replacing an owned report.
+        ReportWriter.ValidateDestination(reportPath, options.Inputs);
         if (usesDefaultReportPath)
             new SidecarStore(Environment.CurrentDirectory).PrepareDefaultReportRoot();
         var scopePlan = ScopePlan.Empty(selection.Kind, ".", null,

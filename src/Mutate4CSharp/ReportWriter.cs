@@ -11,7 +11,7 @@ internal static class ReportWriter
     internal const string SchemaVersion = "2";
     private static readonly Regex CodePattern = new("^[A-Z][A-Z0-9_]*$",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
-    private static readonly Regex ConfigurationIdentifier = new("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+    private static readonly Regex ConfigurationIdentifier = new("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\z",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

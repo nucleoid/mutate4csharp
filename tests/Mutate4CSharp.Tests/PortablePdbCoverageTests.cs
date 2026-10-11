@@ -17,8 +17,13 @@ public sealed class PortablePdbCoverageTests
     [InlineData("wrong-offset")]
     [InlineData("coverlet-line")]
     [InlineData("coverlet-visited-line")]
+    [InlineData("bare-module")]
+    [InlineData("bare-ambiguous")]
+    [InlineData("bare-missing-pdb")]
+    [InlineData("bare-linked-bin")]
     public async Task PlaceholderCoverageNeedsVerifiedAssemblyPdbSourceAndSequenceOffset(string alteration)
     {
+        Assert.SkipWhen(OperatingSystem.IsWindows() && alteration == "bare-linked-bin", "Link creation is exercised on Linux without changing Windows privileges.");
         using var repository = new SnapshotTestRepository();
         repository.WriteText("src/A.cs", "public static class A { public static bool Value() => true; }\n");
         repository.Git("add", ".");
@@ -68,13 +73,32 @@ public sealed class PortablePdbCoverageTests
             File.WriteAllBytes(pdb, bytes);
         }
         if (alteration == "wrong-offset") offset += 10000;
+        var modulePath = assembly;
+        if (alteration.StartsWith("bare-", StringComparison.Ordinal))
+        {
+            var output = Path.Combine(clone.Root, alteration == "bare-linked-bin" ? "stored" : "bin", "Debug");
+            Directory.CreateDirectory(output);
+            var movedAssembly = Path.Combine(output, Path.GetFileName(assembly));
+            File.Move(assembly, movedAssembly);
+            File.Move(pdb, Path.ChangeExtension(movedAssembly, ".pdb"));
+            modulePath = Path.GetFileName(assembly);
+            if (alteration == "bare-ambiguous")
+            {
+                var other = Path.Combine(clone.Root, "bin", "Release");
+                Directory.CreateDirectory(other);
+                File.WriteAllBytes(Path.Combine(other, modulePath), File.ReadAllBytes(movedAssembly).Concat(new byte[] { 1 }).ToArray());
+                File.Copy(Path.ChangeExtension(movedAssembly, ".pdb"), Path.Combine(other, "PdbFixture.pdb"));
+            }
+            if (alteration == "bare-missing-pdb") File.Delete(Path.ChangeExtension(movedAssembly, ".pdb"));
+            if (alteration == "bare-linked-bin") Directory.CreateSymbolicLink(Path.Combine(clone.Root, "bin"), Path.Combine(clone.Root, "stored"));
+        }
         var report = Path.Combine(clone.Root, "coverage.xml");
-        var tokenXml = alteration.StartsWith("coverlet-", StringComparison.Ordinal)
-            ? "<MetadataToken/><Name>System.Boolean A::Value()</Name>" : $"<MetadataToken>{token}</MetadataToken>";
+        var tokenXml = alteration == "wrong-offset" ? $"<MetadataToken>{token}</MetadataToken>" :
+            "<MetadataToken/><Name>System.Boolean A::Value()</Name>";
         var visits = alteration == "coverlet-visited-line" ? 1 : 0;
-        var offsetXml = alteration.StartsWith("coverlet-", StringComparison.Ordinal) ? "" : $"offset=\"{offset}\"";
+        var offsetXml = alteration == "wrong-offset" ? $"offset=\"{offset}\"" : "";
         File.WriteAllText(report, $"""
-            <CoverageSession><Modules><Module><ModulePath>{System.Security.SecurityElement.Escape(assembly)}</ModulePath>
+            <CoverageSession><Modules><Module><ModulePath>{System.Security.SecurityElement.Escape(modulePath)}</ModulePath>
             <Files><File uid="1" fullPath="{System.Security.SecurityElement.Escape(file)}"/></Files>
             <Classes><Class><Methods><Method>{tokenXml}<FileRef uid="1"/><SequencePoints>
             <SequencePoint vc="{visits}" {offsetXml} sl="{line}" sc="1" el="{line}" ec="2"/>
@@ -82,7 +106,7 @@ public sealed class PortablePdbCoverageTests
             """);
         var map = CoverageMap.Load([report], clone, snapshot)!;
 
-        Assert.Equal(alteration is "valid" or "coverlet-line" ? CoverageState.Uncovered : CoverageState.Unknown,
+        Assert.Equal(alteration is "valid" or "coverlet-line" or "bare-module" ? CoverageState.Uncovered : CoverageState.Unknown,
             map.GetState("src/A.cs", line, column, endLine, endColumn));
     }
 }

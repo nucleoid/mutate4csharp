@@ -44,10 +44,12 @@
     <None Include="../../scripts/agent-gate.sh" Pack="true" PackagePath="scripts/" />
     <None Include="../../docs/contracts/check-config-v1.schema.json" Pack="true" PackagePath="docs/contracts/" />
     <None Include="../../docs/contracts/discovery-state-v1.schema.json" Pack="true" PackagePath="docs/contracts/" />
+    <None Include="../../docs/contracts/discovery-state-v2.schema.json" Pack="true" PackagePath="docs/contracts/" />
     <None Include="../../docs/contracts/evaluation-report-v1.schema.json" Pack="true" PackagePath="docs/contracts/" />
     <None Include="../../docs/contracts/evaluation-report-v2.schema.json" Pack="true" PackagePath="docs/contracts/" />
     <None Include="../../docs/contracts/report-v2-migration.md" Pack="true" PackagePath="docs/contracts/" />
     <None Include="../../docs/contracts/proven-state-v1.schema.json" Pack="true" PackagePath="docs/contracts/" />
+    <None Include="../../docs/contracts/proven-state-v2.schema.json" Pack="true" PackagePath="docs/contracts/" />
     <None Include="../../examples/agent-gate/NuGet.Config" Pack="true" PackagePath="examples/agent-gate/" />
     <None Include="../../examples/agent-gate/.gitignore" Pack="true" PackagePath="examples/agent-gate/" />
     <None Include="../../examples/agent-gate/mutate4csharp.json" Pack="true" PackagePath="examples/agent-gate/" />

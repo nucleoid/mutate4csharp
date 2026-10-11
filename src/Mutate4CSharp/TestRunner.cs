@@ -290,8 +290,7 @@ internal sealed class CoverageMap
                             }
                             if (startColumn == 1 && endLine == line && endColumn == 2)
                             {
-                                var precise = portablePdb?.Resolve(method, point, cloneFiles[fileId], line);
-                                var aggregate = precise is null ? portablePdb?.ResolveCoverletLine(method, cloneFiles[fileId], line) : null;
+                                var aggregate = portablePdb?.ResolveCoverletLine(method, cloneFiles[fileId], line);
                                 if (aggregate is not null)
                                 {
                                     if (!spans.TryGetValue(file, out var projected)) spans[file] = projected = [];
@@ -299,14 +298,8 @@ internal sealed class CoverageMap
                                         item.StartColumn, item.EndLine, item.EndColumn, visits == 0 ? false : null)));
                                     continue;
                                 }
-                                if (precise is null) spanIncompleteFiles.Add(file);
-                                else
-                                {
-                                    line = precise.StartLine;
-                                    startColumn = precise.StartColumn;
-                                    endLine = precise.EndLine;
-                                    endColumn = precise.EndColumn;
-                                }
+                                spanIncompleteFiles.Add(file);
+                                continue;
                             }
                             if (!spans.TryGetValue(file, out var fileSpans)) spans[file] = fileSpans = [];
                             fileSpans.Add(new(line, startColumn, endLine, endColumn, visits > 0));

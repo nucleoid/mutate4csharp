@@ -1,4 +1,4 @@
-# Sidecar evaluation state (schema v1)
+# Sidecar evaluation state (schema v2)
 
 Strict evaluation never treats comments in production source as proof. The legacy
 `mutate4csharp-manifest` footer remains available only to the deprecated single-file workflow;
@@ -46,15 +46,15 @@ reusable proof. Consumers may treat only a separately validated proven record as
 
 ## Discovery is not proof
 
-[`contracts/discovery-state-v1.schema.json`](contracts/discovery-state-v1.schema.json) records the
+[`contracts/discovery-state-v2.schema.json`](contracts/discovery-state-v2.schema.json) records the
 frozen snapshot ID, exact evaluation fingerprint, scope completeness/exclusions, report digest, and
 observed outcome. Manual scan/update operations and legacy manifests can at most inform discovery;
-they cannot write a proven record. Version 1 strict checks publish discovery after immutable capture
+they cannot write a proven record. Current strict checks publish discovery after immutable capture
 and never consult proven state to skip execution.
 
 ## Proven state
 
-[`contracts/proven-state-v1.schema.json`](contracts/proven-state-v1.schema.json) is a future cache
+[`contracts/proven-state-v2.schema.json`](contracts/proven-state-v2.schema.json) is a future cache
 input boundary, not an enabled cache. Publication is accepted only from an internally validated
 `check` report that is `PASS`, has a green baseline, known and reconciled enumeration, complete
 scope, no omissions/errors/fresh-uncovered required units, no incomplete conditions or reasons,

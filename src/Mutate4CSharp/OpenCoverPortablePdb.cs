@@ -112,6 +112,9 @@ internal sealed class OpenCoverPortablePdb
                     var signature = method.DecodeSignature(new CecilSignatureNames(), (object?)null);
                     methodName = signature.ReturnType + " " + CecilSignatureNames.TypeName(metadata, method.GetDeclaringType()) +
                         "::" + metadata.GetString(method.Name) + "(" + string.Join(',', signature.ParameterTypes) + ")";
+                    if (methodName.Contains('<') || debug.GetSequencePoints().Any(point => point.IsHidden) ||
+                        method.GetCustomAttributes().Any(attribute => GeneratedAttribute(metadata, attribute)))
+                        methodName = null;
                 }
                 catch (NotSupportedException) { }
                 foreach (var point in debug.GetSequencePoints())
@@ -147,17 +150,12 @@ internal sealed class OpenCoverPortablePdb
         }
     }
 
-    internal ProvenSequenceSpan? Resolve(XElement method, XElement point, string file, int line)
-    {
-        var tokens = method.Elements().Where(item => item.Name.LocalName == "MetadataToken").ToArray();
-        if (tokens.Length != 1 || !int.TryParse(tokens[0].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var token) ||
-            !int.TryParse(point.Attribute("offset")?.Value, NumberStyles.None, CultureInfo.InvariantCulture, out var offset)) return null;
-        var path = Path.GetFullPath(file, _root);
-        return _spans.TryGetValue((token, offset, IdentityPath(path)), out var span) && span.StartLine == line ? span : null;
-    }
-
     internal IReadOnlyList<ProvenSequenceSpan>? ResolveCoverletLine(XElement method, string file, int line)
     {
+        var tokens = method.Elements().Where(item => item.Name.LocalName == "MetadataToken").ToArray();
+        if (tokens.Length != 1 || tokens[0].Value.Length != 0 ||
+            method.Descendants().Where(item => item.Name.LocalName == "SequencePoint").Any(point => point.Attribute("offset") is not null))
+            return null;
         var names = method.Elements().Where(item => item.Name.LocalName == "Name").ToArray();
         if (names.Length != 1 || !_methods.TryGetValue((names[0].Value, IdentityPath(Path.GetFullPath(file, _root))), out var spans))
             return null;
@@ -171,6 +169,25 @@ internal sealed class OpenCoverPortablePdb
     }
 
     private static string IdentityPath(string path) => OperatingSystem.IsWindows() ? path.ToUpperInvariant() : path;
+
+    private static bool GeneratedAttribute(MetadataReader metadata, CustomAttributeHandle handle)
+    {
+        var constructor = metadata.GetCustomAttribute(handle).Constructor;
+        var type = constructor.Kind switch
+        {
+            HandleKind.MemberReference => metadata.GetMemberReference((MemberReferenceHandle)constructor).Parent,
+            HandleKind.MethodDefinition => metadata.GetMethodDefinition((MethodDefinitionHandle)constructor).GetDeclaringType(),
+            _ => default(EntityHandle)
+        };
+        var name = type.Kind switch
+        {
+            HandleKind.TypeReference => metadata.GetString(metadata.GetTypeReference((TypeReferenceHandle)type).Name),
+            HandleKind.TypeDefinition => metadata.GetString(metadata.GetTypeDefinition((TypeDefinitionHandle)type).Name),
+            _ => ""
+        };
+        return name is "CompilerGeneratedAttribute" or "AsyncStateMachineAttribute" or
+            "IteratorStateMachineAttribute" or "AsyncIteratorStateMachineAttribute";
+    }
 
     private static void EnsureWithin(string root, string path)
     {

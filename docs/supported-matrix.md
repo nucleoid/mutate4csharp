@@ -31,3 +31,10 @@ compiled method signature. Zero visits must account for all relevant PDB sequenc
 unverified mappings remain unknown and execute conservatively; positive aggregate line visits do not prove
 that an individual span executed. The tool never treats an unverified line-only report as uncovered proof.
 Build/test/restore timing varies with host, cache, and project size; no universal runtime promise is made.
+
+The uncovered projection is limited to the pinned Coverlet 6.0.4 / VSTest in-process collector
+and ordinary methods without generated/async state-machine attributes or hidden sequence points.
+Unsupported placeholder token/offset producers and those methods remain unknown and execute.
+Zero visits describe coverage measured in that collector session, not execution in child applications,
+child testhosts, or separate uninstrumented assembly copies. Those scenarios do not establish measured
+coverage under this profile. Uncovered evidence records the collector profile and PDB aggregate projection.

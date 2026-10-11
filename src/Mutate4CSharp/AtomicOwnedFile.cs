@@ -95,6 +95,18 @@ internal static class AtomicOwnedFile
         var after = inspectExisting(destination);
         if (after is null || !CryptographicOperations.FixedTimeEquals(before, after))
             throw new IOException("Owned destination changed before invalidation.");
-        File.Delete(destination);
+        var retryStarted = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            try { File.Delete(destination); return; }
+            catch (IOException error) when (OperatingSystem.IsWindows() &&
+                (error.HResult & 0xffff) is 32 or 33 && retryStarted.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                Thread.Sleep(25);
+                var current = inspectExisting(destination);
+                if (current is null || !CryptographicOperations.FixedTimeEquals(before, current))
+                    throw new IOException("Owned destination changed while invalidation was retried.");
+            }
+        }
     }
 }

@@ -170,7 +170,7 @@ internal sealed class SidecarStore
             using var document = JsonDocument.Parse(bytes);
             if (document.RootElement.ValueKind != JsonValueKind.Object ||
                 !document.RootElement.TryGetProperty("schemaVersion", out var schema) ||
-                schema.ValueKind != JsonValueKind.String || schema.GetString() != "1" ||
+                schema.ValueKind != JsonValueKind.String || schema.GetString() != "2" ||
                 !document.RootElement.TryGetProperty("recordKind", out var kind) ||
                 kind.ValueKind != JsonValueKind.String ||
                 kind.GetString() is not ("DISCOVERY" or "PROVEN"))
@@ -357,7 +357,7 @@ internal sealed class SidecarStore
         SidecarRecordKind expectedKind, string? runId, string? fingerprint, string? snapshotId,
         string? reportSha256, long reportLength)
     {
-        if (schemaVersion != "1" || actualKind != expectedKind || string.IsNullOrWhiteSpace(runId) || runId.Length > 256 ||
+        if (schemaVersion != "2" || actualKind != expectedKind || string.IsNullOrWhiteSpace(runId) || runId.Length > 256 ||
             !EvaluationFingerprint.IsFingerprint(fingerprint) || !EvaluationFingerprint.IsSha256(snapshotId) ||
             !EvaluationFingerprint.IsSha256(reportSha256) || reportLength < 1)
             throw new EvaluationContractException("Sidecar record is incomplete or uses an unsupported schema.");

@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 
 namespace Mutate4CSharp;
 
-internal enum EvaluationPublicationPhase { Report, Discovery, Proven }
+internal enum EvaluationPublicationPhase { Report, Discovery, Proven, Eligibility }
 
 internal static class EvaluationPublication
 {
@@ -14,27 +14,28 @@ internal static class EvaluationPublication
         ReportWriter.ValidateDestination(path, inputs);
         string? fingerprint = null;
         ProvenEvaluationSidecar? proven = null;
-        var phase = EvaluationPublicationPhase.Report;
+        var phase = EvaluationPublicationPhase.Eligibility;
         try
         {
             // No positive artifact is written until proof eligibility is checked.
             var bytes = ReportWriter.Serialize(report);
+            if (report.Outcome == EvaluationOutcome.Pass)
+            {
+                if (snapshotId is null || material is null || plan is null)
+                    throw new EvaluationContractException("PASS requires captured provenance and its issuing selection plan.");
+                fingerprint = EvaluationFingerprint.ComputeForProven(material);
+                proven = new("2", SidecarRecordKind.Proven, report.RunId, report.GeneratedAtUtc,
+                    fingerprint, snapshotId, Hash(bytes), bytes.LongLength, true, coverage, report.Counts);
+                SidecarStore.ValidateProvenPublication(proven, report, material, plan);
+            }
             if (store is not null)
             {
                 if (snapshotId is null || material is null)
                     throw new EvaluationContractException("State publication requires captured provenance.");
                 phase = EvaluationPublicationPhase.Discovery;
-                fingerprint = EvaluationFingerprint.Compute(material);
+                fingerprint ??= EvaluationFingerprint.Compute(material);
                 store.PrepareForPublication();
                 store.InvalidateProven(fingerprint);
-                if (report.Outcome == EvaluationOutcome.Pass)
-                {
-                    if (plan is null) throw new EvaluationContractException("PASS requires its issuing selection plan.");
-                    proven = new("1", SidecarRecordKind.Proven, report.RunId, report.GeneratedAtUtc,
-                        EvaluationFingerprint.ComputeForProven(material), snapshotId,
-                        Hash(bytes), bytes.LongLength, true, coverage, report.Counts);
-                    SidecarStore.ValidateProvenPublication(proven, report, material, plan);
-                }
             }
             phase = EvaluationPublicationPhase.Report;
             beforePublication?.Invoke(phase);
@@ -53,8 +54,11 @@ internal static class EvaluationPublication
         }
         catch (Exception failure) when (failure is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
         {
-            var code = phase == EvaluationPublicationPhase.Report ? "REPORT_PUBLICATION_FAILED" : "SIDECAR_WRITE_FAILED";
-            var condition = new EvaluationReason(code, phase == EvaluationPublicationPhase.Report
+            var code = phase == EvaluationPublicationPhase.Eligibility ? "PROOF_ELIGIBILITY_FAILED" :
+                phase == EvaluationPublicationPhase.Report ? "REPORT_PUBLICATION_FAILED" : "SIDECAR_WRITE_FAILED";
+            var condition = new EvaluationReason(code, phase == EvaluationPublicationPhase.Eligibility
+                ? "Evaluation did not satisfy complete proof eligibility."
+                : phase == EvaluationPublicationPhase.Report
                 ? "The current report could not be published safely."
                 : "Evaluation state could not be published safely.");
             var conditions = report.IncompleteConditions.Append(condition).Distinct().ToArray();
@@ -67,11 +71,13 @@ internal static class EvaluationPublication
                     EvaluationTextBounds.Prefix($"{phase}: {failure.GetType().Name}: {failure.Message}",
                         EvaluationReason.MaxMessageLength))).ToArray()
             };
+            Exception? revocationFailure = null;
             if (store is not null && fingerprint is not null)
             {
                 try { store.InvalidateProven(fingerprint); }
                 catch (Exception revocation) when (revocation is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
                 {
+                    revocationFailure = revocation;
                     report = report with { Evidence = report.Evidence.Append(new EvaluationEvidence(
                         "PROVEN_REVOCATION_FAILED", EvaluationTextBounds.Prefix(revocation.Message,
                             EvaluationReason.MaxMessageLength))).ToArray() };
@@ -101,13 +107,16 @@ internal static class EvaluationPublication
                     ReportWriter.Write(path, report, inputs);
                 }
             }
+            if (revocationFailure is not null)
+                throw new IOException("Publication failed and prior proof could not be revoked; no state from this invocation is usable.",
+                    new AggregateException(failure, revocationFailure));
             return report;
         }
 
         DiscoverySidecar Discovery(EvaluationReport current)
         {
             var bytes = ReportWriter.Serialize(current);
-            return new("1", SidecarRecordKind.Discovery, current.RunId, current.GeneratedAtUtc,
+            return new("2", SidecarRecordKind.Discovery, current.RunId, current.GeneratedAtUtc,
                 fingerprint!, snapshotId!, current.Outcome, current.ScopePlan.IsComplete,
                 current.ScopePlan.Exclusions.Select(item => $"{item.Path}:{item.ReasonCode}").ToArray(),
                 Hash(bytes), bytes.LongLength);

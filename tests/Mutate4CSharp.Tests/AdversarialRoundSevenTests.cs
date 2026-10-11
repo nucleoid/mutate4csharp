@@ -112,7 +112,7 @@ public sealed class AdversarialRoundSevenTests : IDisposable
         var fingerprint = EvaluationFingerprint.ComputeForProven(material);
         var coverage = new CoverageProvenance("1", report.RunId, suite.SuiteId, fingerprint, material.SnapshotId,
             BaselineStatus.Green, Digest("coverage"), 8, "baseline-clone-to-snapshot-v1", material.RunnerIdentity, true);
-        var record = new ProvenEvaluationSidecar("1", SidecarRecordKind.Proven, report.RunId,
+        var record = new ProvenEvaluationSidecar("2", SidecarRecordKind.Proven, report.RunId,
             DateTimeOffset.UnixEpoch, fingerprint, material.SnapshotId,
             Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), bytes.LongLength,
             true, [coverage], report.Counts);

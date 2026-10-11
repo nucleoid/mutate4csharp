@@ -212,15 +212,27 @@ try:
         return digest.hexdigest()
     def sha(value):
         return isinstance(value, str) and len(value) == 64 and all(item in "0123456789abcdef" for item in value)
+    def invariant_upper(value):
+        # .NET uses simple invariant casing, never Python's multi-character expansions.
+        return "".join(char if char == "\u0131" or len(char.upper()) != 1 else char.upper() for char in value)
+    def ordinal_ignore_case(value):
+        # OrdinalIgnoreCase also keeps non-ASCII characters separate from ASCII
+        # (e.g. long-s and S), even when invariant uppercase maps them together.
+        return "".join(char if ord(char) > 127 and ord(invariant_upper(char)) < 128
+                       else invariant_upper(char) for char in value)
+    def net_trim(value):
+        return value.strip("\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000")
     def members(value):
         return isinstance(value, list) and 0 < len(value) <= 256 and all(
-            isinstance(item, str) and 0 < len(item) <= 256 and item == item.strip() and
+            isinstance(item, str) and 0 < len(item.encode("utf-16-le", "surrogatepass")) <= 512 and item == net_trim(item) and
             "/" not in item and "\\" not in item and item not in (".", "..") for item in value
-        ) and len({item.upper() for item in value}) == len(value)
+        ) and len({ordinal_ignore_case(item) for item in value}) == len(value)
     if type(report.get("exitCode")) is not int or report["exitCode"] != process_exit:
         raise ValueError("report exitCode does not match process result")
     expected_outcomes = {0: "PASS", 2: "INCOMPLETE", 3: "FAIL", 4: "INCOMPLETE", 5: "NOT_APPLICABLE"}
     allowed_na = process_exit == 0 and report.get("outcome") == "NOT_APPLICABLE" and report.get("policy", {}).get("allowNotApplicable") is True
+    if report.get("outcome") == "NOT_APPLICABLE" and process_exit != (0 if report.get("policy", {}).get("allowNotApplicable") is True else 5):
+        raise ValueError("N/A exit does not match its policy")
     if not allowed_na and expected_outcomes.get(process_exit) != report.get("outcome"):
         raise ValueError("report outcome does not match its strict process result")
     baseline = report.get("baseline")
@@ -243,6 +255,7 @@ try:
         raise ValueError("report contains SIDECAR_PUBLICATION_FAILURE")
     execution_codes = {
         "TARGETED_DIAGNOSTIC", "MUTATION_EXECUTION_FAILED", "COVERAGE_PROVENANCE_INCOMPLETE",
+        "BASELINE_ACCOUNTING_INCOMPLETE", "PROOF_ELIGIBILITY_FAILED",
         "OVERALL_DEADLINE_EXCEEDED", "EXECUTION_CANCELLED",
         "BASELINE_TIMEOUT", "BASELINE_INCONCLUSIVE", "COVERAGE_MISSING",
         "SUITE_MEMBERS_MISSING", "MUTATION_ATTEMPT_OMITTED",
@@ -366,15 +379,15 @@ try:
             if not isinstance(configuration, dict) or configuration.get("runner") != "vstest" or configuration.get("framework") != "net10.0":
                 raise ValueError("suite execution configuration is unsupported")
             expected_members, actual_members = configuration.get("expectedMembers"), accounting.get("accountedMembers")
-            if not members(expected_members) or not members(actual_members) or sorted(item.upper() for item in expected_members) != sorted(item.upper() for item in actual_members):
+            if not members(expected_members) or not members(actual_members) or sorted(ordinal_ignore_case(item) for item in expected_members) != sorted(ordinal_ignore_case(item) for item in actual_members):
                 raise ValueError("suite member accounting is incomplete")
             execution_path = configuration.get("path")
             if not isinstance(execution_path, str) or not execution_path or execution_path.startswith(("/", "\\")) or ":" in execution_path or any(part in ("", ".", "..") for part in execution_path.replace("\\", "/").split("/")):
                 raise ValueError("suite execution path is not canonical")
-            if not isinstance(configuration.get("configuration"), str):
+            if not isinstance(configuration.get("configuration"), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", configuration["configuration"]):
                 raise ValueError("suite build configuration is missing")
             expected_identity = "suite:v1:" + identity("suite-execution", [
-                ("path", execution_path.replace("\\", "/").upper()), ("runner", "vstest"), ("framework", "net10.0"),
+                ("path", invariant_upper(execution_path.replace("\\", "/"))), ("runner", "vstest"), ("framework", "net10.0"),
                 ("configuration", configuration["configuration"]), ("member-count", str(len(expected_members)))] +
                 [(f"member.{index}", value) for index, value in enumerate(expected_members)])
             if suite["suiteId"] != expected_identity or accounting.get("runId") != report.get("runId") or accounting.get("snapshotId") != snapshots[0] or not sha(accounting.get("coverageReportSha256")) or not sha(accounting.get("coverageIdentity")) or type(accounting.get("coverageReportLength")) is not int or accounting["coverageReportLength"] <= 0 or accounting.get("pathMap") != "baseline-clone-to-snapshot-v1":
@@ -391,7 +404,7 @@ try:
                 continue
             with open(candidate, "rb") as stream:
                 discovery = read_json(stream)
-            if (isinstance(discovery, dict) and discovery.get("recordKind") == "DISCOVERY" and
+            if (isinstance(discovery, dict) and discovery.get("schemaVersion") == "2" and discovery.get("recordKind") == "DISCOVERY" and
                     discovery.get("reportSha256") == expected_hash and
                     discovery.get("reportLength") == len(report_bytes)):
                 matched = True
@@ -414,7 +427,7 @@ try:
                     continue
                 with open(candidate, "rb") as stream:
                     proven = read_json(stream)
-                if (isinstance(proven, dict) and proven.get("recordKind") == "PROVEN" and
+                if (isinstance(proven, dict) and proven.get("schemaVersion") == "2" and proven.get("recordKind") == "PROVEN" and
                         proven.get("evaluationFingerprint") == fingerprints[0] and
                         proven.get("runId") == report.get("runId") and
                         proven.get("reportSha256") == expected_hash and
