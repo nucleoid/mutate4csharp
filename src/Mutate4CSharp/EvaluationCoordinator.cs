@@ -14,12 +14,15 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
 {
     private readonly SnapshotCaptureOptions _captureOptions;
     private readonly Action<EvaluationPublicationPhase>? _beforePublication;
+    private readonly Action<SnapshotClone, IReadOnlyList<string>>? _beforeCoverageParsing;
 
     public EvaluationCoordinator(SnapshotCaptureOptions? captureOptions = null,
-        Action<EvaluationPublicationPhase>? beforePublication = null)
+        Action<EvaluationPublicationPhase>? beforePublication = null,
+        Action<SnapshotClone, IReadOnlyList<string>>? beforeCoverageParsing = null)
     {
         _captureOptions = captureOptions ?? SnapshotCaptureOptions.Default;
         _beforePublication = beforePublication;
+        _beforeCoverageParsing = beforeCoverageParsing;
     }
 
     public async Task<EvaluationRunResult> RunAsync(StrictCheckOptions options,
@@ -132,7 +135,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             else
             {
                 var execution = await StrictExecutionPipeline.RunAsync(snapshot, snapshotId!, runId, scopePlan,
-                    checkConfiguration, exactMutationIds, options.PlanFingerprint, cancellationToken);
+                    checkConfiguration, exactMutationIds, options.PlanFingerprint, cancellationToken, _beforeCoverageParsing);
                 fingerprintMaterial = execution.FingerprintMaterial;
                 finalizingPlan = execution.FinalizingPlan;
                 semanticContextIdentity = execution.SemanticContextIdentity;

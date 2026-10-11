@@ -647,6 +647,141 @@ public sealed class StrictMutationExecutorTests : IDisposable
 
     public void Dispose() => _repository.Dispose();
 
+    [Theory(Timeout = 900_000)]
+    [InlineData("budget")]
+    [InlineData("empty")]
+    [InlineData("unstable")]
+    [InlineData("error")]
+    [InlineData("timeout")]
+    [InlineData("deadline")]
+    [InlineData("cancel-after-execution")]
+    [InlineData("drift-after-execution")]
+    [InlineData("malformed-coverage")]
+    [InlineData("cleanup-after-execution")]
+    public async Task RealCoordinatorBoundaryCannotPublishSuccess(string scenario)
+    {
+        WriteFixture();
+        var counter = Path.Combine(Path.GetTempPath(), $"m4c-stability-{Guid.NewGuid():N}.txt");
+        File.WriteAllText(counter, "0");
+        var counterLiteral = JsonSerializer.Serialize(counter);
+        var configuration = System.Text.Json.Nodes.JsonNode.Parse(_repository.Read("mutate4csharp.json"))!;
+        configuration["policy"]!["overallDeadlineSeconds"] = scenario == "deadline" ? 1 : 600;
+        if (scenario == "budget") configuration["policy"]!["mutationCap"] = 1;
+        if (scenario == "unstable") configuration["policy"]!["stabilityRepetitions"] = 3;
+        if (scenario == "timeout") configuration["policy"]!["mutantTimeoutSeconds"] = 10;
+        _repository.WriteText("mutate4csharp.json", configuration.ToJsonString());
+        _repository.WriteText("tests/App.Tests/FlagTests.cs", scenario switch
+        {
+            "empty" => "public sealed class FlagTests { public void NoDiscoverableTests() {} }",
+            "unstable" => $$"""
+                using App; using Xunit; using System.IO;
+                public sealed class FlagTests { [Fact] public void AlternatesOnlyForMutant() {
+                    var count = int.Parse(File.ReadAllText({{counterLiteral}})) + 1;
+                    File.WriteAllText({{counterLiteral}}, count.ToString());
+                    Assert.True(Flag.Value() || count % 2 == 1);
+                } }
+                """,
+            "error" => """
+                using App; using Xunit;
+                public sealed class FlagTests { [Fact] public void CrashesOnlyMutantHost() {
+                    if (!Flag.Value()) System.Environment.Exit(23);
+                    Assert.True(Flag.Value());
+                } }
+                """,
+            "timeout" => """
+                using App; using Xunit;
+                public sealed class FlagTests { [Fact] public void TimesOutOnlyMutant() {
+                    if (!Flag.Value()) System.Threading.Thread.Sleep(20_000);
+                    Assert.True(Flag.Value());
+                } }
+                """,
+            _ => "using App; using Xunit; public sealed class FlagTests { [Fact] public void ValueIsTrue() => Assert.True(Flag.Value()); }"
+        });
+        _repository.WriteText("src/App/Flag.cs", "namespace App; public static class Flag { public static bool Value() => false; }");
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "boundary baseline");
+        _repository.WriteText("src/App/Flag.cs", scenario == "budget"
+            ? "namespace App; public static class Flag { public static bool Value() => true && true; }"
+            : "namespace App; public static class Flag { public static bool Value() => true; }");
+        var report = Path.Combine(Path.GetTempPath(), $"m4c-boundary-{Guid.NewGuid():N}.json");
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var validations = 0;
+        var coverageInspections = 0;
+        var snapshotParent = OwnedDirectory.PrivateParent("snapshots");
+        var oldSnapshots = Directory.Exists(snapshotParent) ? Directory.EnumerateDirectories(snapshotParent)
+            .ToHashSet(StringComparer.Ordinal) : [];
+        string? damagedRoot = null;
+        var capture = SnapshotCaptureOptions.Default with
+        {
+            Hook = (stage, path) =>
+            {
+                if (stage != SnapshotCaptureStage.BeforeOriginalFileHashed || path != "src/App/Flag.cs" || ++validations != 2) return;
+                if (scenario == "cancel-after-execution") cancellation.Cancel();
+                if (scenario == "drift-after-execution") _repository.WriteText(path,
+                    "namespace App; public static class Flag { public static bool Value() => false; }");
+                if (scenario == "cleanup-after-execution")
+                {
+                    damagedRoot = Directory.EnumerateDirectories(snapshotParent).Single(value => !oldSnapshots.Contains(value));
+                    File.WriteAllText(Path.Combine(damagedRoot, ".mutate4csharp-owner"), "wrong-owner");
+                }
+            }
+        };
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = _repository.Root;
+        try
+        {
+            var result = await new EvaluationCoordinator(capture, beforeCoverageParsing: (_, reports) =>
+            {
+                coverageInspections++;
+                if (scenario == "malformed-coverage") File.WriteAllText(Assert.Single(reports), "malformed XML");
+            }).RunAsync(
+                new(false, "HEAD", [], report, "boundary-" + scenario), cancellation.Token);
+            Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+            Assert.Equal(scenario == "empty" ? 2 : 4, result.Report.ExitCode);
+            Assert.False(Directory.Exists(Path.Combine(_repository.Root, ".mutate4csharp", "proven")) &&
+                Directory.EnumerateFiles(Path.Combine(_repository.Root, ".mutate4csharp", "proven"), "*.json").Any());
+            if (scenario == "budget") Assert.True(result.Report.Counts.Omitted > 0);
+            if (scenario == "empty") Assert.Equal(BaselineStatus.Empty, result.Report.Baseline);
+            if (scenario == "unstable") Assert.Contains(result.Report.Units, item => item.Disposition == UnitDisposition.Unstable);
+            if (scenario == "error") Assert.True(result.Report.Counts.Errors > 0);
+            if (scenario == "timeout") Assert.True(result.Report.Counts.Omitted + result.Report.Counts.Errors > 0);
+            if (scenario == "cancel-after-execution")
+            {
+                Assert.True(result.Report.Counts.Killed > 0);
+                Assert.Contains(result.Report.IncompleteConditions, item => item.Code == "SNAPSHOT_CANCELLED");
+            }
+            if (scenario == "drift-after-execution")
+            {
+                Assert.True(validations >= 2);
+                Assert.Contains(result.Report.IncompleteConditions, item => item.Code == "SNAPSHOT_DIVERGED");
+            }
+            if (scenario == "malformed-coverage")
+            {
+                Assert.Equal(1, coverageInspections);
+                Assert.Equal(BaselineStatus.Green, result.Report.Baseline);
+                Assert.Contains(result.Report.IncompleteConditions, item => item.Code == "COVERAGE_PROVENANCE_INCOMPLETE");
+            }
+            if (scenario == "cleanup-after-execution")
+            {
+                Assert.NotNull(damagedRoot);
+                Assert.Contains(result.Report.IncompleteConditions, item => item.Code == "SNAPSHOT_CLEANUP_FAILED");
+            }
+        }
+        finally
+        {
+            Environment.CurrentDirectory = previous;
+            File.Delete(counter);
+            File.Delete(report);
+            File.Delete(ReportWriter.LockPath(report));
+            if (damagedRoot is not null && Directory.Exists(damagedRoot))
+            {
+                Assert.StartsWith(Path.GetFullPath(snapshotParent) + Path.DirectorySeparatorChar,
+                    Path.GetFullPath(damagedRoot), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+                Directory.Delete(damagedRoot, recursive: true);
+            }
+        }
+    }
+
     private void WriteFixture()
     {
         _repository.WriteText("src/App/App.csproj", """

@@ -25,7 +25,8 @@ internal static class StrictExecutionPipeline
 
     public static async Task<StrictExecutionOutcome> RunAsync(InputSnapshot snapshot, string snapshotId, string runId,
         ScopePlan scopePlan, CheckConfiguration configuration, IReadOnlyList<string> exactMutationIds,
-        string? expectedPlanFingerprint, CancellationToken cancellationToken)
+        string? expectedPlanFingerprint, CancellationToken cancellationToken,
+        Action<SnapshotClone, IReadOnlyList<string>>? beforeCoverageParsing = null)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(scopePlan);
@@ -86,7 +87,8 @@ internal static class StrictExecutionPipeline
                 enumeration.Reasons);
         var semanticContext = enumeration.SemanticContextIdentity ??
             throw new EvaluationContractException("Complete semantic enumeration requires one context identity.");
-        baselines = await new SuiteCoordinator(new VstestSuiteExecutor(snapshot, environment),
+        baselines = await new SuiteCoordinator(new VstestSuiteExecutor(snapshot, environment,
+                beforeCoverageParsing: beforeCoverageParsing),
             Clock).RunBaselinesAsync(snapshotId, configuration.ExecutionSuites,
             TimeSpan.FromSeconds(policy.BaselineTimeoutSeconds), deadline, cancellationToken);
         var aliases = MapBaselineExecutions(configuration.ExecutionSuites, baselines.Executions);

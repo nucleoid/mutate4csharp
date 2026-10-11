@@ -13,7 +13,8 @@ internal sealed class TrxAccountingException : Exception
 }
 
 internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutionEnvironment environment,
-    TimeProvider? timeProvider = null) : ISuiteExecutor
+    TimeProvider? timeProvider = null,
+    Action<SnapshotClone, IReadOnlyList<string>>? beforeCoverageParsing = null) : ISuiteExecutor
 {
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
@@ -75,6 +76,7 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                         "Baseline execution changed its private frozen package-cache copy.");
                 var disposition = ClassifyBaseline(run);
                 var rawCoverage = TestRunner.FindCoverage(results);
+                if (disposition == SuiteRunDisposition.Passed) beforeCoverageParsing?.Invoke(worker, rawCoverage);
                 var coverageMap = disposition == SuiteRunDisposition.Passed
                     ? CoverageMap.Load(rawCoverage, worker, snapshot) : null;
                 coverage = disposition == SuiteRunDisposition.Passed

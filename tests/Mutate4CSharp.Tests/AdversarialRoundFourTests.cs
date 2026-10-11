@@ -121,11 +121,9 @@ public sealed class AdversarialRoundFourTests : IDisposable
     private void PublishThroughFullPlan(TargetedTestContext context)
     {
         var completed = context.TargetedPlan.CreatePendingLedger()
-            .Select(item => item with
-            {
-                Disposition = UnitDisposition.Killed,
-                Evidence = [new("MUTANT_KILLED", "Fresh suite killed the mutation.")]
-            }).ToArray();
+            .Select(item => new EvaluationUnitResult(item.UnitId, item.EvaluationUnitId,
+                UnitDisposition.Killed, [new("MUTANT_KILLED", "Attacker stripped the targeted flags and plan provenance.")]))
+            .ToArray();
         var fullPlan = MutationSelection.Plan(context.Bound, context.Material);
         var facts = new EvaluationFacts(BaselineStatus.Green, completed.Length, completed, false, []);
         var decision = EvaluationReducer.Reduce(facts);

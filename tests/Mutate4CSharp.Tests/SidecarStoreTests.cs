@@ -553,7 +553,7 @@ public sealed class SidecarStoreTests : IDisposable
         var (store, report, record, material, plan) = ValidProven();
         var proof = store.PublishProven(record, report, material, plan);
         var original = File.ReadAllBytes(proof);
-        var key = record.EvaluationFingerprint["sha256:".Length..];
+        var key = Path.GetFileNameWithoutExtension(proof);
         using var held = new FileStream(Path.Combine(_directory, ".mutate4csharp", "locks", "proven-" + key + ".lock"),
             FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
         var path = Path.Combine(_directory, "revocation-failed.json");
