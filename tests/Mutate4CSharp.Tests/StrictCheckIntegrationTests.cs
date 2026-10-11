@@ -954,6 +954,37 @@ public sealed class StrictCheckIntegrationTests : IDisposable
         finally { Environment.CurrentDirectory = previous; }
     }
 
+    [Fact]
+    public async Task ExhaustedPostCancellationIntegrityAuditIsValidationFailureNeverSuccess()
+    {
+        using var repository = StrictEnumerationRepository("public bool Value() => true;");
+        repository.Git("add", ".");
+        repository.Git("commit", "-m", "audit-budget fixture");
+        using var cancellation = new CancellationTokenSource();
+        var validations = 0;
+        var capture = SnapshotCaptureOptions.Default with { Hook = (stage, path) =>
+        {
+            if (stage == SnapshotCaptureStage.BeforeOriginalFileHashed && path == "src/App/Flag.cs" && ++validations == 2)
+                Thread.Sleep(200);
+        } };
+        var previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = repository.Root;
+        try
+        {
+            var result = await new EvaluationCoordinator(capture, beforeExecution: cancellation.Cancel,
+                finalizationGracePeriod: TimeSpan.FromMilliseconds(20)).RunAsync(
+                    new(false, "HEAD", [], Path.Combine(_directory, "audit-expired.json"), "audit-expired"), cancellation.Token);
+            Assert.Equal(EvaluationOutcome.Incomplete, result.Report.Outcome);
+            Assert.Equal(4, result.Report.ExitCode);
+            Assert.Contains(result.Report.IncompleteConditions, reason => reason.Code == "SNAPSHOT_VALIDATION_FAILED");
+            Assert.DoesNotContain(result.Report.IncompleteConditions, reason => reason.Code == "SNAPSHOT_CANCELLED");
+            Assert.Null(result.SnapshotId);
+            Assert.Empty(result.Report.Units);
+            Assert.False(Directory.Exists(Path.Combine(repository.Root, ".mutate4csharp", "proven")));
+        }
+        finally { Environment.CurrentDirectory = previous; }
+    }
+
     private static SnapshotTestRepository StrictEnumerationRepository(string member)
     {
         var repository = new SnapshotTestRepository();

@@ -69,9 +69,11 @@ unsupported encoding, baseline timeout, cancellation during baseline execution a
 Ordinary outcome fixtures invoke the gate extracted from the exact package in both state modes; drift
 must normalize to orchestration ERROR. Plan-only operation and baseline cancellation invoke the installed
 tool directly. The cancellation test signals only that owned process and checks its baseline child exits.
-After cancellation, original-input revalidation and SDK identity finalization share one 30-second grace
-budget. Ordinary runs have no added audit deadline; cancellation during audit starts that grace budget.
-An exhausted integrity audit reports validation failure. Cancellation is checked during success publication,
+After execution teardown, original-input revalidation and SDK identity finalization share one 30-second
+post-cancellation grace budget. Ordinary runs have no added audit deadline; cancellation during finalization
+starts that grace budget. Execution teardown has its own process-control limits. An exhausted integrity
+audit is validation failure and orchestration ERROR, not accepted cancellation evidence. Missing identity
+or discovery likewise remains ERROR. Cancellation is checked during success publication,
 which revokes proof and rewrites the report when interrupted. A bound ledger is retained, while cancellation
 before binding cannot claim known unit counts. Fixture observations record before, observed-after and
 restored source/index/status/head/tree digests; drift restoration happens only after refusal is verified.

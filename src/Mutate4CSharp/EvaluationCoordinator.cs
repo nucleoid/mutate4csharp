@@ -16,24 +16,26 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
     private readonly Action<EvaluationPublicationPhase>? _beforePublication;
     private readonly Action<SnapshotClone, IReadOnlyList<string>>? _beforeCoverageParsing;
     private readonly Action? _beforeExecution;
+    private readonly TimeSpan _finalizationGracePeriod;
 
     public EvaluationCoordinator(SnapshotCaptureOptions? captureOptions = null,
         Action<EvaluationPublicationPhase>? beforePublication = null,
         Action<SnapshotClone, IReadOnlyList<string>>? beforeCoverageParsing = null,
-        Action? beforeExecution = null)
+        Action? beforeExecution = null, TimeSpan? finalizationGracePeriod = null)
     {
         _captureOptions = captureOptions ?? SnapshotCaptureOptions.Default;
         _beforePublication = beforePublication;
         _beforeCoverageParsing = beforeCoverageParsing;
         _beforeExecution = beforeExecution;
+        _finalizationGracePeriod = finalizationGracePeriod ?? TimeSpan.FromSeconds(30);
+        if (_finalizationGracePeriod <= TimeSpan.Zero || _finalizationGracePeriod > TimeSpan.FromSeconds(30))
+            throw new ArgumentOutOfRangeException(nameof(finalizationGracePeriod));
     }
 
     public async Task<EvaluationRunResult> RunAsync(StrictCheckOptions options,
         CancellationToken cancellationToken)
     {
         var runId = options.RunId;
-        using var finalizationGrace = new CancellationTokenSource();
-        using var finalizationRegistration = cancellationToken.Register(() => finalizationGrace.CancelAfter(TimeSpan.FromSeconds(30)));
         var exactMutationIds = options.MutationIds ?? [];
         var exactIdRequest = exactMutationIds.Count > 0;
         var selection = options.BaseRevision is not null
@@ -251,6 +253,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             scopePlan.Reasons.Select(item => BoundDiagnostic($"{item.Code}: {item.Message}"))
                 .Take(20).ToArray()));
 
+        using var finalizationGrace = new CancellationTokenSource();
+        using var finalizationRegistration = cancellationToken.Register(() => finalizationGrace.CancelAfter(_finalizationGracePeriod));
         try
         {
             if (snapshot is not null)

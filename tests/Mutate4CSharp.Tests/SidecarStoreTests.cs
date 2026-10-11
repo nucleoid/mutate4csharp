@@ -643,6 +643,8 @@ public sealed class SidecarStoreTests : IDisposable
         store.PublishProven(record, report, material, plan);
         Assert.True(store.ReadProvenForInspection(record.EvaluationFingerprint).IsValid);
         var path = Path.Combine(_directory, "cancelled-publication.json");
+        string? writtenOutcome = null;
+        bool? writtenProofValid = null;
         var result = EvaluationPublication.Publish(path, [], report,
             plan.FinalizeFacts(report.Baseline, report.Units, false), store, record.SnapshotId, material, plan, record.Coverage,
             phase =>
@@ -651,13 +653,15 @@ public sealed class SidecarStoreTests : IDisposable
                 if (phase is EvaluationPublicationPhase.AfterReport or EvaluationPublicationPhase.AfterProven)
                 {
                     using var written = JsonDocument.Parse(File.ReadAllBytes(path));
-                    Assert.Equal("PASS", written.RootElement.GetProperty("outcome").GetString());
+                    writtenOutcome = written.RootElement.GetProperty("outcome").GetString();
                 }
                 if (phase == EvaluationPublicationPhase.AfterProven)
-                    Assert.True(store.ReadProvenForInspection(record.EvaluationFingerprint).IsValid);
+                    writtenProofValid = store.ReadProvenForInspection(record.EvaluationFingerprint).IsValid;
                 cancellation.Cancel();
             }, cancellation.Token);
         Assert.Equal(EvaluationOutcome.Incomplete, result.Outcome);
+        if (cancelAt is "AfterReport" or "AfterProven") Assert.Equal("PASS", writtenOutcome);
+        if (cancelAt == "AfterProven") Assert.True(writtenProofValid);
         Assert.Contains(result.IncompleteConditions, condition => condition.Code == "EXECUTION_CANCELLED");
         Assert.False(store.ReadProvenForInspection(record.EvaluationFingerprint).IsValid);
         using var current = JsonDocument.Parse(File.ReadAllBytes(path));
