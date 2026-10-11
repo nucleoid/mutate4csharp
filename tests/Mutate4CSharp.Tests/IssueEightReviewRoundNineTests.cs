@@ -286,7 +286,27 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
         Assert.True(result.ExitCode == report.ExitCode, result.Diagnostic);
     }
 
-    private async Task<ToolFixture> CreateToolFixtureAsync(string json, int processExit)
+    [Theory]
+    [InlineData("printf changed > README.md", "no-state", "source bytes, index, status or tree changed during gate")]
+    [InlineData("git update-index --assume-unchanged README.md", "no-state", "source bytes, index, status or tree changed during gate")]
+    [InlineData("touch new-source", "no-state", "source bytes, index, status or tree changed during gate")]
+    [InlineData("printf '\\n# changed\\n' >> \"$0\"", "no-state", "payload changed during gate")]
+    [InlineData("mkdir -p .mutate4csharp/other", "default-state", "undocumented sidecar effect")]
+    public async Task GateRejectsConsumerChangesDuringActualOrchestration(string action, string mode, string diagnostic)
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "The shipped workflow is a Bash integration.");
+        var target = Path.Combine(_root, "source-drift-target");
+        await CreateRepositoryAsync(target);
+        var head = (await RunAsync(target, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
+        var fixture = await CreateToolFixtureAsync("{}", 4, action);
+        var result = await RunAsync(target, "bash", Path.Combine(RepositoryRoot, "scripts", "agent-gate.sh"),
+            "gate", target, fixture.Receipt, fixture.PackageSha, fixture.PayloadSha, fixture.ToolCommit,
+            head, head, Path.Combine(_root, "drift.json"), mode);
+        Assert.Equal(OrchestrationRefusal, result.ExitCode);
+        Assert.Contains(diagnostic, result.Diagnostic, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<ToolFixture> CreateToolFixtureAsync(string json, int processExit, string action = "")
     {
         // Complete the unchanged structural fields around each deliberate fault.
         // Explicit v2 JSON is kept byte-for-byte for duplicate-key and malformed tests.
@@ -329,7 +349,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
         Directory.CreateDirectory(sdk);
         File.Copy(Path.Combine(RepositoryRoot, "global.json"), Path.Combine(sdk, "global.json"), overwrite: true);
         await File.WriteAllTextAsync(package, "package", TestContext.Current.CancellationToken);
-        await WriteExecutableAsync(command, $"#!/usr/bin/env bash\nif [[ ${{1:-}} = --version ]]; then echo '{version}+{toolCommit}'; exit 0; fi\nprintf '%s\\n' '{json}' > \"$5\"\nexit {processExit}\n");
+        await WriteExecutableAsync(command, $"#!/usr/bin/env bash\nif [[ ${{1:-}} = --version ]]; then echo '{version}+{toolCommit}'; exit 0; fi\n{action}\nprintf '%s\\n' '{json}' > \"$5\"\nexit {processExit}\n");
         var runtime = (await RunAsync(sdk, DotnetHost(), "--version")).StandardOutput.Trim();
         await File.WriteAllTextAsync(receipt, $"format\tmutate4csharp-agent-gate-v4\nlocal_tool_version\t{version}\ntool_package\t{package}\ntool_payload\t{payload}\nruntime_version\t{runtime}\ndotnet_host\t{CanonicalDotnetHost()}\n", TestContext.Current.CancellationToken);
         return new(receipt, Sha256File(package), PayloadSha256(payload), toolCommit);

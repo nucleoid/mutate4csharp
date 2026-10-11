@@ -10,6 +10,15 @@ root, state_mode = sys.argv[1:]
 if state_mode not in ("no-state", "default-state"):
     raise ValueError("unknown state mode")
 digest = hashlib.sha256()
+git_environment = {**{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+                   "GIT_OPTIONAL_LOCKS": "0", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"}
+git_prefix = ["/usr/bin/git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
+              "-c", "core.hooksPath=/dev/null", "-C", root]
+# Read configuration before status/diff: clean filters can execute commands while hashing work-tree inputs.
+filters = subprocess.run([*git_prefix, "config", "--get-regexp", r"^filter\."],
+                         env=git_environment, capture_output=True, timeout=30)
+if filters.returncode not in (0, 1) or filters.returncode == 0:
+    raise ValueError("source-state profile refuses configured Git filters")
 
 if state_mode == "default-state":
     state_root = os.path.join(root, ".mutate4csharp")
@@ -25,6 +34,9 @@ if state_mode == "default-state":
                 if stat.S_ISLNK(info.st_mode) or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
                     raise ValueError("sidecar inventory refuses links and special files")
                 if relative == ".gitignore" and stat.S_ISREG(info.st_mode):
+                    with open(path, "rb") as stream:
+                        if stream.read(3) != b"*\n":
+                            raise ValueError("sidecar ignore file differs from the certified contract")
                     continue
                 if parts[0] not in ("discovery", "proven", "locks", "reports") or len(parts) > 2:
                     raise ValueError("undocumented sidecar effect")
@@ -42,10 +54,9 @@ for command in (["rev-parse", "HEAD"], ["rev-parse", "HEAD^{tree}"],
                 ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
                 ["ls-files", "--stage", "-z"], ["ls-files", "-v", "-z"],
                 ["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv"],
-                ["diff", "--binary", "--no-ext-diff", "--no-textconv"]):
-    add("git:" + " ".join(command), subprocess.check_output(["/usr/bin/git", "-C", root, *command],
-        env={**{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
-             "GIT_OPTIONAL_LOCKS": "0", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"}, timeout=30))
+                ["config", "--local", "--list", "--null"]):
+    add("git:" + " ".join(command), subprocess.check_output([*git_prefix, *command],
+        env=git_environment, timeout=30))
 
 paths = []
 for directory, names, files in os.walk(root, followlinks=False):

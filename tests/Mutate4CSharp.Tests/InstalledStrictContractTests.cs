@@ -1,6 +1,8 @@
 using System.IO.Compression;
 using System.Text.Json;
 using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json.Nodes;
 
 namespace Mutate4CSharp.Tests;
 
@@ -9,6 +11,7 @@ public sealed partial class ToolPackagingIntegrationTests
     [Fact(Timeout = 3_600_000)]
     public async Task InstalledStrictCliCertifiesRealOutcomesFromIndependentCleanConsumers()
     {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Installed packaging certification uses the Linux Bash profile.");
         var feed = Environment.GetEnvironmentVariable("MUTATE4CSHARP_PACKED_FEED") ?? Path.Combine(_root, "contract-feed");
         Directory.CreateDirectory(feed);
         if (Environment.GetEnvironmentVariable("MUTATE4CSHARP_PACKED_FEED") is null)
@@ -25,9 +28,13 @@ public sealed partial class ToolPackagingIntegrationTests
         Assert.True(install.ExitCode == 0, install.Diagnostic);
         var command = Path.Combine(toolPath, OperatingSystem.IsWindows() ? "mutate4csharp.exe" : "mutate4csharp");
         Assert.Equal($"{PackageVersion}+{SourceCommit}", (await RunAsync(_root, command, "--version")).StandardOutput.Trim());
-        var payload = HashDirectory(toolPath);
+        var installedPackages = Directory.EnumerateFiles(toolPath, "*.nupkg", SearchOption.AllDirectories).ToArray();
+        Assert.NotEmpty(installedPackages);
+        foreach (var installedPackage in installedPackages)
+            Assert.Equal(SHA256.HashData(File.ReadAllBytes(packagePath)), SHA256.HashData(File.ReadAllBytes(installedPackage)));
+        var payload = GateCompatiblePayloadHash(toolPath);
 
-        foreach (var scenario in new[] { "strong", "weak", "uncovered", "red", "empty", "zero", "partial", "unsupported", "timeout" })
+        foreach (var scenario in new[] { "strong", "weak", "uncovered", "red", "empty", "zero", "zero-allowed", "plan", "partial", "unsupported", "timeout" })
         {
             var consumer = Path.Combine(_root, "contract-" + scenario);
             Directory.CreateDirectory(consumer);
@@ -48,30 +55,32 @@ public sealed partial class ToolPackagingIntegrationTests
                 "uncovered" => "using Example; using Xunit; public class FlagTests { [Fact] public void OtherMethod() => Assert.True(Flag.Other(true)); }",
                 "red" => "using Example; using Xunit; public class FlagTests { [Fact] public void Red() => Assert.False(Flag.Value()); }",
                 "empty" => "using Example; using Xunit; public class FlagTests { [Fact(Skip=\"Intentional empty executed baseline\")] public void Skipped() => Assert.True(Flag.Value()); }",
-                "zero" => "using Example; using Xunit; public class FlagTests { [Fact] public void Identity() => Assert.True(Flag.Value(true)); }",
+                "zero" or "zero-allowed" => "using Example; using Xunit; public class FlagTests { [Fact] public void Identity() => Assert.True(Flag.Value(true)); }",
                 "timeout" => "using Example; using Xunit; public class FlagTests { [Fact] public void Slow() { System.Threading.Thread.Sleep(20_000); Assert.True(Flag.Value()); } }",
                 _ => "using Example; using Xunit; public class FlagTests { [Fact] public void Behavior() => Assert.True(Flag.Value()); }"
             });
-            if (scenario == "timeout")
+            if (scenario is "timeout" or "partial" or "zero-allowed")
             {
                 var policyPath = Path.Combine(consumer, "mutate4csharp.json");
-                File.WriteAllText(policyPath, File.ReadAllText(policyPath).Replace("\"baselineTimeoutSeconds\": 600", "\"baselineTimeoutSeconds\": 1"));
+                var configuration = JsonNode.Parse(File.ReadAllText(policyPath))!;
+                if (scenario == "timeout") configuration["policy"]!["baselineTimeoutSeconds"] = 1;
+                if (scenario == "partial") configuration["policy"]!["mutationCap"] = 1;
+                if (scenario == "zero-allowed") configuration["policy"]!["allowNotApplicable"] = true;
+                File.WriteAllText(policyPath, configuration.ToJsonString());
             }
-            if (scenario == "unsupported")
-            {
-                var project = Path.Combine(consumer, "src", "Example", "Example.csproj");
-                File.WriteAllText(project, File.ReadAllText(project).Replace("</Project>", "<PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup></Project>"));
-            }
-            File.WriteAllText(source, scenario == "zero"
+            var zero = scenario is "zero" or "zero-allowed";
+            File.WriteAllText(source, zero
                 ? "namespace Example; public static class Flag { public static bool Value(bool input) { return input; } }"
                 : "namespace Example;\npublic static class Flag\n{\n public static bool Other(bool input) => input;\n public static bool Value() => false;\n}\n");
             foreach (var arguments in new[] { new[] { "init", "--quiet" }, new[] { "config", "user.email", "fixture@example.invalid" },
                          new[] { "config", "user.name", "fixture" }, new[] { "add", "." }, new[] { "commit", "--quiet", "-m", "consumer baseline" } })
                 Assert.Equal(0, (await RunAsync(consumer, "git", arguments)).ExitCode);
             var baseline = (await RunAsync(consumer, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
-            File.WriteAllText(source, scenario == "zero"
+            File.WriteAllText(source, zero
                 ? "namespace Example; public static class Flag { public static bool Value(bool input) => input; }"
                 : "namespace Example;\npublic static class Flag\n{\n public static bool Other(bool input) => input;\n public static bool Value() => true;\n}\n");
+            if (scenario == "partial") File.WriteAllText(source, File.ReadAllText(source).Replace("Value() => true;", "Value() => true && true;"));
+            if (scenario == "unsupported") File.WriteAllText(source, File.ReadAllText(source), Encoding.Unicode);
             Assert.Equal(0, (await RunAsync(consumer, "git", "add", ".")).ExitCode);
             Assert.Equal(0, (await RunAsync(consumer, "git", "commit", "--quiet", "-m", "changed implementation")).ExitCode);
             var bytes = File.ReadAllBytes(source);
@@ -90,13 +99,15 @@ public sealed partial class ToolPackagingIntegrationTests
                     var reportPath = Path.Combine(_root, $"contract-{scenario}-{noState}.json");
                     var arguments = new List<string> { "check", "--base", baseline, "--report", reportPath };
                     if (noState) arguments.Add("--no-state");
-                    if (scenario == "partial") arguments.Add("--plan");
+                    if (scenario == "plan") arguments.Add("--plan");
                     var result = await RunAsync(consumer, command, arguments.ToArray());
                     using var report = JsonDocument.Parse(File.ReadAllBytes(reportPath));
-                    var outcome = scenario switch { "strong" => "PASS", "weak" or "uncovered" => "FAIL", "zero" => "NOT_APPLICABLE", _ => "INCOMPLETE" };
-                    var exit = scenario switch { "strong" => 0, "weak" or "uncovered" => 3, "zero" => 5, "red" or "empty" => 2, _ => 4 };
+                    var outcome = scenario switch { "strong" => "PASS", "weak" or "uncovered" => "FAIL", "zero" or "zero-allowed" => "NOT_APPLICABLE", _ => "INCOMPLETE" };
+                    var exit = scenario switch { "strong" or "zero-allowed" => 0, "weak" or "uncovered" => 3, "zero" => 5, "red" or "empty" => 2, _ => 4 };
                     Assert.True(result.ExitCode == exit, scenario + ": " + result.Diagnostic);
                     Assert.Equal(outcome, report.RootElement.GetProperty("outcome").GetString());
+                    Assert.Contains("Run ID: " + report.RootElement.GetProperty("runId").GetString(), result.StandardOutput);
+                    if (scenario != "plan") Assert.Contains("Strict evaluation " + outcome + ";", result.StandardOutput);
                     var counts = report.RootElement.GetProperty("counts");
                     Assert.Equal("2", report.RootElement.GetProperty("schemaVersion").GetString());
                     Assert.False(string.IsNullOrWhiteSpace(report.RootElement.GetProperty("runId").GetString()));
@@ -104,9 +115,9 @@ public sealed partial class ToolPackagingIntegrationTests
                     Assert.Equal(counts.GetProperty("selected").GetInt32(), units.Length);
                     Assert.Equal(units.Length, units.Select(unit => unit.GetProperty("evaluationUnitId").GetString()).Distinct().Count());
                     Assert.Equal(units.Length, counts.GetProperty("executed").GetInt32() + counts.GetProperty("freshUncovered").GetInt32() + counts.GetProperty("omitted").GetInt32());
-                    if (scenario is not ("partial" or "unsupported"))
-                        Assert.Equal(scenario == "zero" ? 0 : 1, counts.GetProperty("enumerated").GetInt32());
-                    if (scenario is "strong" or "weak" or "uncovered" or "zero")
+                    if (scenario is not ("plan" or "partial" or "unsupported"))
+                        Assert.Equal(zero ? 0 : 1, counts.GetProperty("enumerated").GetInt32());
+                    if (scenario is "strong" or "weak" or "uncovered" or "zero" or "zero-allowed")
                         foreach (var suite in report.RootElement.GetProperty("suites").EnumerateArray())
                         {
                             Assert.Equal("GREEN", suite.GetProperty("baseline").GetString());
@@ -120,24 +131,60 @@ public sealed partial class ToolPackagingIntegrationTests
                     if (scenario == "strong") Assert.True(counts.GetProperty("executed").GetInt32() > 0 && counts.GetProperty("killed").GetInt32() > 0);
                     if (scenario == "weak") Assert.True(counts.GetProperty("survived").GetInt32() > 0);
                     if (scenario == "uncovered") Assert.Equal(1, counts.GetProperty("freshUncovered").GetInt32());
+                    var reasonCodes = report.RootElement.GetProperty("reasons").EnumerateArray()
+                        .Concat(report.RootElement.GetProperty("incompleteConditions").EnumerateArray())
+                        .Select(reason => reason.GetProperty("code").GetString()).ToArray();
+                    var expectedReason = scenario switch { "red" => "BASELINE_RED", "empty" => "BASELINE_EMPTY", "plan" => "PLAN_ONLY",
+                        "partial" => "BUDGET_OMITTED", "unsupported" => "ENUMERATION_ENCODING_UNSUPPORTED", "timeout" => "BASELINE_TIMEOUT", _ => null };
+                    if (expectedReason is not null) Assert.Contains(expectedReason, reasonCodes);
+                    if (scenario == "partial") Assert.True(counts.GetProperty("omitted").GetInt32() > 0);
                     if (first is null) first = JsonDocument.Parse(File.ReadAllBytes(reportPath));
                     else Assert.Equal(first.RootElement.GetProperty("counts").GetRawText(), counts.GetRawText());
                     Assert.Equal(bytes, File.ReadAllBytes(source));
                     Assert.Equal(index, (await RunAsync(consumer, "git", "diff", "--cached", "--binary")).StandardOutput);
                     Assert.Equal(status, (await RunAsync(consumer, "git", "status", "--porcelain=v1", "--untracked-files=all")).StandardOutput);
-                    Assert.Equal(payload, HashDirectory(toolPath));
+                    Assert.Equal(payload, GateCompatiblePayloadHash(toolPath));
                     Assert.Equal(sourceState, ConsumerFiles(consumer));
                     Assert.Equal(indexFlags, (await RunAsync(consumer, "git", "ls-files", "--stage", "-v")).StandardOutput);
                     Assert.Equal(head, (await RunAsync(consumer, "git", "rev-parse", "HEAD")).StandardOutput.Trim());
                     if (noState) Assert.False(Directory.Exists(Path.Combine(consumer, ".mutate4csharp")));
+                    else AssertDocumentedSidecars(consumer);
                     SaveCertification(scenario, noState, baseline, head, tree, sourceState, packagePath,
-                        payload, arguments, result.ExitCode, File.ReadAllBytes(reportPath), report.RootElement);
+                        payload, indexFlags, status, arguments, result.ExitCode, File.ReadAllBytes(reportPath), report.RootElement);
                 }
                 var proof = Path.Combine(consumer, ".mutate4csharp", "proven");
                 Assert.Equal(scenario == "strong", Directory.Exists(proof) && Directory.EnumerateFiles(proof, "*.json").Any());
             }
             finally { first?.Dispose(); }
         }
+    }
+
+    private static void AssertDocumentedSidecars(string consumer)
+    {
+        var state = Path.Combine(consumer, ".mutate4csharp");
+        if (!Directory.Exists(state)) return;
+        Assert.Equal("*\n", File.ReadAllText(Path.Combine(state, ".gitignore")));
+        foreach (var path in Directory.EnumerateFileSystemEntries(state, "*", SearchOption.AllDirectories))
+        {
+            var parts = Path.GetRelativePath(state, path).Replace('\\', '/').Split('/');
+            if (parts[0] == ".gitignore") continue;
+            Assert.Contains(parts[0], new[] { "discovery", "proven", "locks", "reports" });
+            Assert.True(parts.Length <= 2);
+            if (File.Exists(path)) Assert.EndsWith(parts[0] == "locks" ? ".lock" : ".json", path);
+        }
+    }
+
+    private static string GateCompatiblePayloadHash(string root)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
+        {
+            hash.AppendData(Encoding.UTF8.GetBytes("./" + Path.GetRelativePath(root, path).Replace('\\', '/')));
+            hash.AppendData([0]);
+            hash.AppendData(Encoding.ASCII.GetBytes(Convert.ToString((int)File.GetUnixFileMode(path), 8) + "\n"));
+            hash.AppendData(Encoding.ASCII.GetBytes(Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path))) + "\n"));
+        }
+        return Convert.ToHexStringLower(hash.GetHashAndReset());
     }
 
     private static string[] ConsumerFiles(string root) => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
@@ -148,7 +195,7 @@ public sealed partial class ToolPackagingIntegrationTests
         .Order(StringComparer.Ordinal).ToArray();
 
     private static void SaveCertification(string scenario, bool noState, string baseline, string head,
-        string tree, string[] sourceState, string package, string payload, List<string> arguments,
+        string tree, string[] sourceState, string package, string payload, string indexFlags, string status, List<string> arguments,
         int exit, byte[] reportBytes, JsonElement report)
     {
         var directory = Environment.GetEnvironmentVariable("MUTATE4CSHARP_CERTIFICATION_DIRECTORY");
@@ -163,6 +210,9 @@ public sealed partial class ToolPackagingIntegrationTests
             payloadSha256 = payload, baseline, head, tree, noState, exit,
             argv = arguments.Select((value, index) => index > 0 && arguments[index - 1] == "--report" ? "<external-report>" : value).ToArray(),
             sourceFiles = sourceState, sourceStateUnchanged = true, indexStatusHeadUnchanged = true,
+            sourceStateDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n", sourceState)))),
+            indexDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(indexFlags))),
+            statusDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(status))),
             originalReportSha256 = Convert.ToHexStringLower(SHA256.HashData(reportBytes)), originalReportLength = reportBytes.Length,
             runId = report.GetProperty("runId").GetString(), outcome = report.GetProperty("outcome").GetString(),
             counts = report.GetProperty("counts"), policy = report.GetProperty("policy"),

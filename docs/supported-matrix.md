@@ -56,3 +56,10 @@ Names requiring newer Unicode casing are outside this verified interop profile a
 The table and Unicode license ship together. Source: [UnicodeData 15.0.0](https://www.unicode.org/Public/15.0.0/ucd/UnicodeData.txt).
 Aggregate-zero projection is verified with Release compilation; Debug block-bodied methods commonly
 contain return branches and therefore execute conservatively instead of receiving uncovered proof.
+
+The Bash source-state guard inventories all ordinary consumer files, including ignored outputs, up to
+100,000 files and 1 GiB total. Symlinks, special files, configured Git filters and undocumented state paths
+are orchestration refusals. It uses `/usr/bin/git`, disables fsmonitor/untracked-cache/hooks, clears Git
+environment overrides and system/global configuration, and binds local configuration into the digest.
+Default state permits only the documented one-level JSON/lock directories and canonical `*\n` ignore bytes.
+Repositories outside these bounds require a separately reviewed orchestration profile.
