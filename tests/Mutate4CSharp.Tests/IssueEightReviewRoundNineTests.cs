@@ -118,6 +118,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
     [InlineData("TARGET_SELECTION_INVALID")]
     [InlineData("DEPENDENCY_INPUT_UNAVAILABLE")]
     [InlineData("EXECUTION_ENVIRONMENT_UNAVAILABLE")]
+    [InlineData("SNAPSHOT_CANCELLED")]
     public async Task GateAcceptsValidatedSemanticAndScopeRefusalsAsIncompleteNotIntegrityFailure(string code)
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "The shipped workflow is a Bash integration.");

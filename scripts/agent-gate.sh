@@ -266,7 +266,7 @@ try:
     execution_codes = {
         "TARGETED_DIAGNOSTIC", "MUTATION_EXECUTION_FAILED", "COVERAGE_PROVENANCE_INCOMPLETE",
         "BASELINE_ACCOUNTING_INCOMPLETE",
-        "OVERALL_DEADLINE_EXCEEDED", "EXECUTION_CANCELLED",
+        "OVERALL_DEADLINE_EXCEEDED", "EXECUTION_CANCELLED", "SNAPSHOT_CANCELLED",
         "BASELINE_TIMEOUT", "BASELINE_INCONCLUSIVE", "COVERAGE_MISSING",
         "SUITE_MEMBERS_MISSING", "MUTATION_ATTEMPT_OMITTED", "BUDGET_OMITTED",
     }
@@ -338,7 +338,9 @@ try:
         if not execution_valid and not enumeration_refusal and not reducer_incomplete:
             raise ValueError("report lacks an accepted execution or enumeration incomplete condition")
         if execution_valid:
-            if not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated < 0:
+            cancelled_before_binding = enumerated is None and all(
+                item["code"] in {"EXECUTION_CANCELLED", "SNAPSHOT_CANCELLED"} for item in conditions)
+            if not cancelled_before_binding and (not isinstance(enumerated, int) or isinstance(enumerated, bool) or enumerated < 0):
                 raise ValueError("report lacks a bounded nonnegative enumeration count")
         elif enumeration_refusal and enumerated is not None:
             raise ValueError("enumeration refusal must retain unknown enumeration count")

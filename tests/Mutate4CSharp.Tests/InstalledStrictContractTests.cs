@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Diagnostics;
 
 namespace Mutate4CSharp.Tests;
 
@@ -34,7 +35,7 @@ public sealed partial class ToolPackagingIntegrationTests
             Assert.Equal(SHA256.HashData(File.ReadAllBytes(packagePath)), SHA256.HashData(File.ReadAllBytes(installedPackage)));
         var payload = GateCompatiblePayloadHash(toolPath);
 
-        foreach (var scenario in new[] { "strong", "weak", "uncovered", "red", "empty", "zero", "zero-allowed", "plan", "partial", "unsupported", "timeout" })
+        foreach (var scenario in new[] { "strong", "weak", "uncovered", "red", "empty", "zero", "zero-allowed", "plan", "partial", "unsupported", "timeout", "cancel", "drift" })
         {
             var consumer = Path.Combine(_root, "contract-" + scenario);
             Directory.CreateDirectory(consumer);
@@ -49,6 +50,7 @@ public sealed partial class ToolPackagingIntegrationTests
                 }
             var source = Path.Combine(consumer, "src", "Example", "Flag.cs");
             var tests = Path.Combine(consumer, "tests", "Example.Tests", "FlagTests.cs");
+            var cancelMarker = Path.Combine(_root, "cancel-ready");
             File.WriteAllText(tests, scenario switch
             {
                 "weak" => "using Example; using Xunit; public class FlagTests { [Fact] public void Smoke() { _ = Flag.Value(); Assert.True(true); } }",
@@ -57,6 +59,8 @@ public sealed partial class ToolPackagingIntegrationTests
                 "empty" => "using Example; using Xunit; public class FlagTests { [Fact(Skip=\"Intentional empty executed baseline\")] public void Skipped() => Assert.True(Flag.Value()); }",
                 "zero" or "zero-allowed" => "using Example; using Xunit; public class FlagTests { [Fact] public void Identity() => Assert.True(Flag.Value(true)); }",
                 "timeout" => "using Example; using Xunit; public class FlagTests { [Fact] public void Slow() { System.Threading.Thread.Sleep(20_000); Assert.True(Flag.Value()); } }",
+                "cancel" => "using Example; using Xunit; public class FlagTests { [Fact] public void WaitForSignal() { System.IO.File.WriteAllText(" + JsonSerializer.Serialize(cancelMarker) + ", \"ready\"); System.Threading.Thread.Sleep(300_000); Assert.True(Flag.Value()); } }",
+                "drift" => "using Example; using Xunit; public class FlagTests { [Fact] public void ChangeOriginal() { System.IO.File.WriteAllText(" + JsonSerializer.Serialize(source) + ", \"changed original during frozen execution\"); Assert.True(Flag.Value()); } }",
                 _ => "using Example; using Xunit; public class FlagTests { [Fact] public void Behavior() => Assert.True(Flag.Value()); }"
             });
             if (scenario is "timeout" or "partial" or "zero-allowed")
@@ -100,7 +104,9 @@ public sealed partial class ToolPackagingIntegrationTests
                     var arguments = new List<string> { "check", "--base", baseline, "--report", reportPath };
                     if (noState) arguments.Add("--no-state");
                     if (scenario == "plan") arguments.Add("--plan");
-                    var result = await RunAsync(consumer, command, arguments.ToArray());
+                    File.Delete(cancelMarker);
+                    var result = scenario == "cancel" ? await RunAndCancelAsync(consumer, command, cancelMarker, arguments.ToArray())
+                        : await RunAsync(consumer, command, arguments.ToArray());
                     using var report = JsonDocument.Parse(File.ReadAllBytes(reportPath));
                     var outcome = scenario switch { "strong" => "PASS", "weak" or "uncovered" => "FAIL", "zero" or "zero-allowed" => "NOT_APPLICABLE", _ => "INCOMPLETE" };
                     var exit = scenario switch { "strong" or "zero-allowed" => 0, "weak" or "uncovered" => 3, "zero" => 5, "red" or "empty" => 2, _ => 4 };
@@ -115,7 +121,7 @@ public sealed partial class ToolPackagingIntegrationTests
                     Assert.Equal(counts.GetProperty("selected").GetInt32(), units.Length);
                     Assert.Equal(units.Length, units.Select(unit => unit.GetProperty("evaluationUnitId").GetString()).Distinct().Count());
                     Assert.Equal(units.Length, counts.GetProperty("executed").GetInt32() + counts.GetProperty("freshUncovered").GetInt32() + counts.GetProperty("omitted").GetInt32());
-                    if (scenario is not ("plan" or "partial" or "unsupported"))
+                    if (scenario is not ("plan" or "partial" or "unsupported" or "cancel" or "drift"))
                         Assert.Equal(zero ? 0 : 1, counts.GetProperty("enumerated").GetInt32());
                     if (scenario is "strong" or "weak" or "uncovered" or "zero" or "zero-allowed")
                         foreach (var suite in report.RootElement.GetProperty("suites").EnumerateArray())
@@ -135,9 +141,16 @@ public sealed partial class ToolPackagingIntegrationTests
                         .Concat(report.RootElement.GetProperty("incompleteConditions").EnumerateArray())
                         .Select(reason => reason.GetProperty("code").GetString()).ToArray();
                     var expectedReason = scenario switch { "red" => "BASELINE_RED", "empty" => "BASELINE_EMPTY", "plan" => "PLAN_ONLY",
-                        "partial" => "BUDGET_OMITTED", "unsupported" => "ENUMERATION_ENCODING_UNSUPPORTED", "timeout" => "BASELINE_TIMEOUT", _ => null };
+                        "partial" => "BUDGET_OMITTED", "unsupported" => "ENUMERATION_ENCODING_UNSUPPORTED", "timeout" => "BASELINE_TIMEOUT",
+                        "cancel" => "SNAPSHOT_CANCELLED", "drift" => "SNAPSHOT_DIVERGED", _ => null };
                     if (expectedReason is not null) Assert.Contains(expectedReason, reasonCodes);
                     if (scenario == "partial") Assert.True(counts.GetProperty("omitted").GetInt32() > 0);
+                    if (scenario == "drift")
+                    {
+                        Assert.NotEqual(bytes, File.ReadAllBytes(source));
+                        // Restore the deliberately changed fixture only after verifying drift refusal.
+                        File.WriteAllBytes(source, bytes);
+                    }
                     if (first is null) first = JsonDocument.Parse(File.ReadAllBytes(reportPath));
                     else Assert.Equal(first.RootElement.GetProperty("counts").GetRawText(), counts.GetRawText());
                     Assert.Equal(bytes, File.ReadAllBytes(source));
@@ -159,6 +172,29 @@ public sealed partial class ToolPackagingIntegrationTests
         }
     }
 
+    private async Task<ProcessResult> RunAndCancelAsync(string consumer, string command, string marker, string[] arguments)
+    {
+        var info = new ProcessStartInfo(command) { WorkingDirectory = consumer, RedirectStandardOutput = true,
+            RedirectStandardError = true, UseShellExecute = false };
+        foreach (var argument in arguments) info.ArgumentList.Add(argument);
+        using var process = Process.Start(info)!;
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        try
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(8));
+            while (!File.Exists(marker) && !process.HasExited) await Task.Delay(100, deadline.Token);
+            Assert.True(File.Exists(marker), "Installed cancellation fixture never reached real baseline execution.");
+            Assert.Equal(0, (await RunAsync(_root, "/usr/bin/kill", "-TERM", process.Id.ToString())).ExitCode);
+            await process.WaitForExitAsync(deadline.Token);
+            return new(process.ExitCode, await output, await error);
+        }
+        finally
+        {
+            if (!process.HasExited) { process.Kill(entireProcessTree: true); await process.WaitForExitAsync(); }
+        }
+    }
+
     private static void AssertDocumentedSidecars(string consumer)
     {
         var state = Path.Combine(consumer, ".mutate4csharp");
@@ -176,6 +212,7 @@ public sealed partial class ToolPackagingIntegrationTests
 
     private static string GateCompatiblePayloadHash(string root)
     {
+        if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
         {
@@ -209,14 +246,17 @@ public sealed partial class ToolPackagingIntegrationTests
             packageSha256 = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(package))),
             payloadSha256 = payload, baseline, head, tree, noState, exit,
             argv = arguments.Select((value, index) => index > 0 && arguments[index - 1] == "--report" ? "<external-report>" : value).ToArray(),
-            sourceFiles = sourceState, sourceStateUnchanged = true, indexStatusHeadUnchanged = true,
+            sourceFiles = sourceState, sourceStateUnchanged = scenario != "drift", indexStatusHeadUnchanged = scenario != "drift",
+            fixtureRestoredOriginalAfterDriftRefusal = scenario == "drift",
             sourceStateDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n", sourceState)))),
             indexDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(indexFlags))),
             statusDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(status))),
             originalReportSha256 = Convert.ToHexStringLower(SHA256.HashData(reportBytes)), originalReportLength = reportBytes.Length,
             runId = report.GetProperty("runId").GetString(), outcome = report.GetProperty("outcome").GetString(),
             counts = report.GetProperty("counts"), policy = report.GetProperty("policy"),
-            suites = report.GetProperty("suites"),
+            suites = report.GetProperty("suites").EnumerateArray().Select(suite => new
+            { suiteId = suite.GetProperty("suiteId").GetString(), baseline = suite.GetProperty("baseline").GetString(),
+              accounting = suite.TryGetProperty("accounting", out var accounting) ? (JsonElement?)accounting : null }).ToArray(),
             units = report.GetProperty("units").EnumerateArray().Select(unit => new
             { unitId = unit.GetProperty("unitId").GetString(), evaluationUnitId = unit.GetProperty("evaluationUnitId").GetString(), disposition = unit.GetProperty("disposition").GetString() }).ToArray(),
             reasonCodes = report.GetProperty("reasons").EnumerateArray().Select(reason => reason.GetProperty("code").GetString()).ToArray(),
