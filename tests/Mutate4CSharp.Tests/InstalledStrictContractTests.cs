@@ -142,6 +142,13 @@ public sealed partial class ToolPackagingIntegrationTests
                             baseline, head, reportPath, noState ? "no-state" : "default-state");
                     var afterObservation = await ObserveConsumerAsync(consumer);
                     using var report = JsonDocument.Parse(File.ReadAllBytes(reportPath));
+                    if (scenario == "cancel")
+                    {
+                        var validation = await RunAsync(_root, "bash", "-c",
+                            "source \"$1\"; SDK_DIRECTORY=$2; validate_report \"$3\" \"$4\" \"$5\" \"$6\"",
+                            "validate", gate, sdk, reportPath, result.ExitCode.ToString(), noState ? "no-state" : "default-state", consumer);
+                        Assert.True(validation.ExitCode == 0, validation.Diagnostic);
+                    }
                     var outcome = scenario switch { "strong" => "PASS", "weak" or "uncovered" => "FAIL", "zero" or "zero-allowed" => "NOT_APPLICABLE", _ => "INCOMPLETE" };
                     var exit = scenario switch { "strong" or "zero-allowed" => 0, "weak" or "uncovered" => 3, "zero" => 5, "red" or "empty" => 2, "drift" => 73, _ => 4 };
                     Assert.True(result.ExitCode == exit, scenario + ": " + result.Diagnostic);

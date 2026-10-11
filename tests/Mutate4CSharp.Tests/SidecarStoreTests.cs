@@ -634,14 +634,29 @@ public sealed class SidecarStoreTests : IDisposable
     [Theory]
     [InlineData("Report")]
     [InlineData("Proven")]
+    [InlineData("AfterReport")]
+    [InlineData("AfterProven")]
     public void CancellationDuringSuccessPublicationRewritesReportAndRevokesProof(string cancelAt)
     {
         var (store, report, record, material, plan) = ValidProven();
         using var cancellation = new CancellationTokenSource();
+        store.PublishProven(record, report, material, plan);
+        Assert.True(store.ReadProvenForInspection(record.EvaluationFingerprint).IsValid);
         var path = Path.Combine(_directory, "cancelled-publication.json");
         var result = EvaluationPublication.Publish(path, [], report,
             plan.FinalizeFacts(report.Baseline, report.Units, false), store, record.SnapshotId, material, plan, record.Coverage,
-            phase => { if (phase == Enum.Parse<EvaluationPublicationPhase>(cancelAt)) cancellation.Cancel(); }, cancellation.Token);
+            phase =>
+            {
+                if (phase != Enum.Parse<EvaluationPublicationPhase>(cancelAt)) return;
+                if (phase is EvaluationPublicationPhase.AfterReport or EvaluationPublicationPhase.AfterProven)
+                {
+                    using var written = JsonDocument.Parse(File.ReadAllBytes(path));
+                    Assert.Equal("PASS", written.RootElement.GetProperty("outcome").GetString());
+                }
+                if (phase == EvaluationPublicationPhase.AfterProven)
+                    Assert.True(store.ReadProvenForInspection(record.EvaluationFingerprint).IsValid);
+                cancellation.Cancel();
+            }, cancellation.Token);
         Assert.Equal(EvaluationOutcome.Incomplete, result.Outcome);
         Assert.Contains(result.IncompleteConditions, condition => condition.Code == "EXECUTION_CANCELLED");
         Assert.False(store.ReadProvenForInspection(record.EvaluationFingerprint).IsValid);

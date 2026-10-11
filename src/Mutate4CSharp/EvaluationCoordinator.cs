@@ -32,6 +32,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         CancellationToken cancellationToken)
     {
         var runId = options.RunId;
+        using var finalizationGrace = new CancellationTokenSource();
+        using var finalizationRegistration = cancellationToken.Register(() => finalizationGrace.CancelAfter(TimeSpan.FromSeconds(30)));
         var exactMutationIds = options.MutationIds ?? [];
         var exactIdRequest = exactMutationIds.Count > 0;
         var selection = options.BaseRevision is not null
@@ -254,10 +256,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             if (snapshot is not null)
             {
                 // Cancellation stops execution, but must not skip the final integrity audit.
-                using var integrityAudit = cancellationToken.IsCancellationRequested
-                    ? new CancellationTokenSource(TimeSpan.FromSeconds(30))
-                    : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                try { await snapshot.ValidateOriginalAsync(integrityAudit.Token); }
+                try { await snapshot.ValidateOriginalAsync(finalizationGrace.Token); }
                 catch (SnapshotCaptureException ex)
                 {
                     var previousReason = reason;
@@ -277,9 +276,9 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 {
                     var previousReason = reason;
                     var previousReasons = enumerationReasons;
-                    reason = new("SNAPSHOT_CANCELLED", "Immutable capture validation was cancelled.");
-                    evidence.Add(new("SNAPSHOT_CANCELLATION",
-                        "Original-input revalidation was cancelled; captured execution facts cannot authorize success."));
+                    reason = new("SNAPSHOT_VALIDATION_FAILED", "Original-input integrity auditing could not finish safely.");
+                    evidence.Add(new("SNAPSHOT_VALIDATION_FAILURE",
+                        "Original-input revalidation did not finish; captured execution facts cannot authorize success."));
                     if (finalizingPlan is null)
                     {
                         InvalidateSnapshotExecutionEvidence(evidence, ref baseline, ref reportSuites);
@@ -316,8 +315,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
                 {
                     try
                     {
-                        using var identityAudit = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                        sdkVersion ??= await ResolveSdkVersionAsync(snapshot, identityAudit.Token);
+                        sdkVersion ??= await ResolveSdkVersionAsync(snapshot, finalizationGrace.Token);
                         fingerprintMaterial ??= BuildEvaluationFingerprintMaterial(
                             snapshot, snapshotId, scopePlan, checkConfiguration?.Policy ?? EvaluationReport.DefaultPolicy,
                             semanticContextIdentity ?? "semantic-context-unavailable", sdkVersion);
@@ -407,8 +405,6 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             report = EvaluationPublication.Publish(reportPath, options.Inputs, report, facts,
                 fingerprintMaterialFailure is null ? sidecarStore : null, snapshotId, fingerprintMaterial,
                 finalizingPlan, coverageProvenance, _beforePublication, cancellationToken);
-            if (fingerprintMaterialFailure is OperationCanceledException cancellation && !cancellationToken.IsCancellationRequested)
-                throw cancellation;
             return new(report, reportPath, snapshotId);
         }
         finally

@@ -69,8 +69,13 @@ unsupported encoding, baseline timeout, cancellation during baseline execution a
 Ordinary outcome fixtures invoke the gate extracted from the exact package in both state modes; drift
 must normalize to orchestration ERROR. Plan-only operation and baseline cancellation invoke the installed
 tool directly. The cancellation test signals only that owned process and checks its baseline child exits.
-After cancellation, original-input revalidation uses a separate 30-second integrity-audit budget;
-ordinary runs retain caller-controlled validation. Cancellation is checked during success publication,
+After cancellation, original-input revalidation and SDK identity finalization share one 30-second grace
+budget. Ordinary runs have no added audit deadline; cancellation during audit starts that grace budget.
+An exhausted integrity audit reports validation failure. Cancellation is checked during success publication,
 which revokes proof and rewrites the report when interrupted. A bound ledger is retained, while cancellation
 before binding cannot claim known unit counts. Fixture observations record before, observed-after and
 restored source/index/status/head/tree digests; drift restoration happens only after refusal is verified.
+Cancellation is honored up to the final publication check; a signal after that completion point cannot
+retroactively invalidate an already completed invocation. Real installed cancellation reports are also
+parsed by the shipped report validator in both state modes. Sourcing the Bash script exposes diagnostic
+helpers only; functional certification still requires the identity-bound `gate` invocation.

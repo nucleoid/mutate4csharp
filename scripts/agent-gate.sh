@@ -796,6 +796,8 @@ PY
   require_supported_example_enumeration "$report_directory/default-state.json"
 }
 
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then return 0; fi
+
 case "${1:-}" in
   prepare) shift; prepare "$@" ;;
   gate) shift; gate "$@" ;;
