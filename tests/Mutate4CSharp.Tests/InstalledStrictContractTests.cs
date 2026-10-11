@@ -52,14 +52,14 @@ public sealed partial class ToolPackagingIntegrationTests
             });
             File.WriteAllText(source, scenario == "zero"
                 ? "namespace Example; public static class Flag { public static bool Value(bool input) { return input; } }"
-                : "namespace Example; public static class Flag { public static bool Other(bool input) => input; public static bool Value() => false; }");
+                : "namespace Example;\npublic static class Flag\n{\n public static bool Other(bool input) => input;\n public static bool Value() => false;\n}\n");
             foreach (var arguments in new[] { new[] { "init", "--quiet" }, new[] { "config", "user.email", "fixture@example.invalid" },
                          new[] { "config", "user.name", "fixture" }, new[] { "add", "." }, new[] { "commit", "--quiet", "-m", "consumer baseline" } })
                 Assert.Equal(0, (await RunAsync(consumer, "git", arguments)).ExitCode);
             var baseline = (await RunAsync(consumer, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
             File.WriteAllText(source, scenario == "zero"
                 ? "namespace Example; public static class Flag { public static bool Value(bool input) => input; }"
-                : "namespace Example; public static class Flag { public static bool Other(bool input) => input; public static bool Value() => true; }");
+                : "namespace Example;\npublic static class Flag\n{\n public static bool Other(bool input) => input;\n public static bool Value() => true;\n}\n");
             Assert.Equal(0, (await RunAsync(consumer, "git", "add", ".")).ExitCode);
             Assert.Equal(0, (await RunAsync(consumer, "git", "commit", "--quiet", "-m", "changed implementation")).ExitCode);
             var bytes = File.ReadAllBytes(source);

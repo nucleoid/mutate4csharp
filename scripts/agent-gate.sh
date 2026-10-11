@@ -658,6 +658,9 @@ gate() {
     fail "target repository HEAD changed from its approved current commit"
   local arguments=(check --base "$TASK_START" --report "$report")
   [[ "$state_mode" = no-state ]] && arguments+=(--no-state)
+  local state_script source_before source_after
+  state_script=$(realpath -e -- "$(dirname -- "${BASH_SOURCE[0]}")/source-state.py") || fail "source-state contract is missing"
+  source_before=$(python3 -I "$state_script" "$target_repository" "$state_mode") || fail "source-state capture failed"
   local exit_code
   if (cd "$target_repository" && trusted_tool "${arguments[@]}"); then
     exit_code=0
@@ -669,6 +672,8 @@ gate() {
   [[ "$(trusted_tool --version)" = "$observed_version" ]] || fail "tool identity changed during gate"
   [[ "$(git -C "$target_repository" rev-parse HEAD)" = "$EXPECTED_TARGET_HEAD" ]] ||
     fail "target repository HEAD changed during gate"
+  source_after=$(python3 -I "$state_script" "$target_repository" "$state_mode") || fail "source-state revalidation failed"
+  [[ "$source_before" = "$source_after" ]] || fail "source bytes, index, status or tree changed during gate"
   validate_report "$report" "$exit_code" "$state_mode" "$target_repository"
   return "$exit_code"
 }
