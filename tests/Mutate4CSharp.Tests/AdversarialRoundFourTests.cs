@@ -174,7 +174,7 @@ public sealed class AdversarialRoundFourTests : IDisposable
     }
 
     private static EvaluationReport Report(EvaluationFacts facts, EvaluationDecision decision,
-        ScopePlan scope, string snapshotId) => new("1", "targeted-round-four", DateTimeOffset.UnixEpoch, "check",
+        ScopePlan scope, string snapshotId) => new(ReportWriter.SchemaVersion, "targeted-round-four", DateTimeOffset.UnixEpoch, "check",
         new("inputs", null, ["src/A.cs"]), scope, EvaluationReport.DefaultPolicy, facts.Baseline,
         [new("suite-a", BaselineStatus.Green, [new("BASELINE_GREEN", "Fresh baseline passed.")])],
         facts.Units, decision.Counts, facts.IncompleteConditions, decision.Reasons,

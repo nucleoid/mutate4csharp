@@ -386,6 +386,23 @@ public sealed class StrictMutationExecutorTests : IDisposable
                 item => item.Code == "EXECUTION_NOT_IMPLEMENTED");
             Assert.Single(result.Report.Suites);
             Assert.Equal(BaselineStatus.Green, result.Report.Suites[0].Baseline);
+            var repeated = await new EvaluationCoordinator().RunAsync(
+                new(false, "HEAD", [], reportPath, "strict-execution-repeat", NoState: true),
+                cancellationToken);
+            Assert.Equal(EvaluationOutcome.Pass, repeated.Report.Outcome);
+            Assert.Equal(result.Report.Counts, repeated.Report.Counts);
+            Assert.Equal(result.Report.Units.Select(item => item.EvaluationUnitId),
+                repeated.Report.Units.Select(item => item.EvaluationUnitId));
+            foreach (var key in new[] { "evaluationFingerprint=", "planFingerprint=", "selectionFingerprint=" })
+            {
+                string? Fingerprint(EvaluationReport report) => report.Evidence
+                    .Where(item => item.Kind == "MUTATION_PLAN").SelectMany(item => item.Diagnostics ?? [])
+                    .SingleOrDefault(value => value.StartsWith(key, StringComparison.Ordinal));
+                Assert.NotNull(Fingerprint(result.Report));
+                Assert.Equal(Fingerprint(result.Report), Fingerprint(repeated.Report));
+            }
+            Assert.Equal(result.Report.Suites[0].Accounting!.CoverageIdentity,
+                repeated.Report.Suites[0].Accounting!.CoverageIdentity);
             var snapshotEvidence = Assert.Single(result.Report.Evidence,
                 item => item.Kind == "INPUT_SNAPSHOT");
             Assert.Contains(snapshotEvidence.Diagnostics ?? [], value =>

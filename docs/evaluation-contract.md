@@ -1,11 +1,10 @@
-# Strict evaluation contract (report schema v1)
+# Strict evaluation contract (report schema v2)
 
-Schema v1 permits additive enum values and optional properties when they preserve the existing outcome and
-accounting rules. `diagnosticPartial` is optional at report and unit level, with absence meaning `false`; the writer
-omits false values so ordinary new reports remain valid against the pre-diagnostic v1 schema and archived reports
-remain valid against the current schema. Diagnostic reports explicitly emit `true` and require an updated v1 schema.
-Consumers that validate against a frozen older copy may reject additive values or diagnostic reports and should
-update their schema before accepting them. `UNSTABLE` is an additive unit disposition: it is always inconclusive,
+Schema v2 binds complete suite member accounting, fresh coverage identity, and snapshot identity to the current
+run. Schema v1 remains available for historical reports; it cannot satisfy the current functional gate.
+See [report-v2-migration.md](contracts/report-v2-migration.md). `diagnosticPartial` is optional at report and unit
+level, with absence meaning `false`. Diagnostic reports explicitly emit `true` and cannot authorize a conclusive
+gate. `UNSTABLE` is always inconclusive,
 forces `INCOMPLETE`, and is included in `counts.errors` (along with `ERROR`).
 
 The additive `check` command is the machine-gating interface:
@@ -24,7 +23,7 @@ Exactly one selection mode is required: one `--base` or one or more `--input` va
 - `FAIL` / `3`: complete evaluation with a survivor or known-uncovered required site.
 - `INCOMPLETE` / `2`: red or empty baseline. Baseline facts are retained; survivor claims are not reusable.
 - `INCOMPLETE` / `4`: unknown enumeration, omitted work, execution error, unavailable snapshot, cancellation, deadline, or other inconclusive evidence.
-- `NOT_APPLICABLE` / `5`: no effective valid candidates. A future validated `allowNotApplicable` configuration may map this outcome to exit `0`; the report outcome remains `NOT_APPLICABLE`.
+- `NOT_APPLICABLE` / `5`: no effective valid candidates. Validated `allowNotApplicable` configuration maps this outcome to exit `0`; the report outcome remains `NOT_APPLICABLE`.
 - Usage errors remain exit `1` and cannot produce an evaluation outcome.
 
 `INCOMPLETE` takes precedence over `FAIL`, while every known policy failure remains in `reasons`. Unknown enumeration is represented by `counts.enumerated: null`; it is never interpreted as zero sites. Run-level failures such as unavailable capture, deadline exhaustion, cancellation, and unmapped suites are recorded in `incompleteConditions`; any such condition forces `INCOMPLETE` even when the baseline, ledger, and counts are otherwise complete. Exact-ID reruns additionally carry schema-visible `diagnosticPartial` state on their units and report plus the intrinsic `TARGETED_DIAGNOSTIC` incomplete condition. Report validation and proven-state publication consume that structural state rather than evidence prose.
@@ -47,7 +46,7 @@ Every unit and every report outcome carries evidence, including synthetic eviden
 
 ## Report durability
 
-The versioned schema is [`contracts/evaluation-report-v1.schema.json`](contracts/evaluation-report-v1.schema.json). A strict run writes a unique report under `.mutate4csharp/reports/` by default. `--report PATH` selects an explicit destination.
+The current schema is [`contracts/evaluation-report-v2.schema.json`](contracts/evaluation-report-v2.schema.json). A strict run writes a unique report under `.mutate4csharp/reports/` by default. `--report PATH` selects an explicit destination.
 
 Writes use an OS-released exclusive lock in a hidden `.<report-name>.lock` file beside the report, a same-directory `CreateNew` report file, a flush of the report bytes, and atomic replacement. A crash may leave an inert lock file, but not an active lock, so later runs recover without manual cleanup. Lock files persist beside reports; do not delete them while writers are active, because unlinking an active lock can split coordination across different file handles. Overwrite eligibility comes from the regular, bounded v1 report envelope (including mode and run ID), never from lock-file existence. The report directory must be writable and trusted: its existing permissions control access to both report and lock, avoiding a shared multi-user temporary lock root. This is cooperating-writer coordination, not a sandbox against actors able to modify the destination directory. Destination eligibility is checked while the lock is held and rechecked before replacement. A failed or concurrent write returns nonzero and does not authorize consumers to trust an older report at that path. Explicit destinations must use `.json`, cannot alias an input, and cannot overwrite an unrelated file, non-regular file, or symbolic link. Consumers must correlate both `schemaVersion` and `runId`; every successful strict report write prints the same run ID, and refused/failed report writes print the current attempted run ID so a stale explicit report cannot be mistaken for the current invocation. The flush narrows but does not eliminate power-loss durability risk.
 

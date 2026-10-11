@@ -87,7 +87,7 @@ public sealed class AdversarialRoundFiveTests : IDisposable
         }).ToArray();
 
     private static EvaluationReport Report(EvaluationFacts facts, EvaluationDecision decision,
-        string snapshotId) => new("1", "round-five-publication", DateTimeOffset.UnixEpoch, "check",
+        string snapshotId) => new(ReportWriter.SchemaVersion, "round-five-publication", DateTimeOffset.UnixEpoch, "check",
         new("inputs", null, ["src/A.cs"]), ScopePlan.Empty("inputs", ".", null),
         EvaluationReport.DefaultPolicy, facts.Baseline,
         [new("suite-a", BaselineStatus.Green, [new("BASELINE_GREEN", "Fresh baseline passed.")])],

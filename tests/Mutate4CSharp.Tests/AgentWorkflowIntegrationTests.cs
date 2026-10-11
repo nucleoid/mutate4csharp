@@ -38,7 +38,7 @@ public sealed class AgentWorkflowIntegrationTests
         Assert.Contains("`INCOMPLETE`", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("`FINALIZATION_PENDING`", workflow, StringComparison.Ordinal);
         Assert.Contains("revalidates the original tree", workflow, StringComparison.Ordinal);
-        Assert.Contains("\"schemaVersion\": \"1\"", workflow, StringComparison.Ordinal);
+        Assert.Contains("\"schemaVersion\": \"2\"", workflow, StringComparison.Ordinal);
         Assert.Contains("\"incompleteConditions\"", workflow, StringComparison.Ordinal);
         Assert.Contains("\"executed\": 1", workflow, StringComparison.Ordinal);
         Assert.Contains("\"killed\": 1", workflow, StringComparison.Ordinal);

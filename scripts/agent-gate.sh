@@ -182,12 +182,22 @@ validate_report() {
   (cd "$SDK_DIRECTORY" && python3 -I - "$report" "$process_exit" "$state_mode" "$target_repository" "$TOOL_SDK_RECEIPT") <<'PY' || exit "$ORCHESTRATION_REFUSAL"
 import glob, hashlib, json, os, stat, sys
 path, process_exit, state_mode, repository, sdk_receipt = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key: " + key)
+        result[key] = value
+    return result
+def read_json(stream):
+    return json.load(stream, object_pairs_hook=unique_object,
+                     parse_constant=lambda value: (_ for _ in ()).throw(ValueError("nonfinite JSON number")))
 try:
     metadata = os.lstat(path)
     if not stat.S_ISREG(metadata.st_mode):
         raise ValueError("report is not a regular file")
     with open(path, "rb") as stream:
-        report = json.load(stream)
+        report = read_json(stream)
     if not isinstance(report, dict):
         raise ValueError("report root must be an object")
     if report.get("schemaVersion") != "2" or report.get("mode") != "check":
@@ -207,7 +217,7 @@ try:
             isinstance(item, str) and 0 < len(item) <= 256 and item == item.strip() and
             "/" not in item and "\\" not in item and item not in (".", "..") for item in value
         ) and len({item.upper() for item in value}) == len(value)
-    if report.get("exitCode") != process_exit:
+    if type(report.get("exitCode")) is not int or report["exitCode"] != process_exit:
         raise ValueError("report exitCode does not match process result")
     expected_outcomes = {0: "PASS", 2: "INCOMPLETE", 3: "FAIL", 4: "INCOMPLETE", 5: "NOT_APPLICABLE"}
     allowed_na = process_exit == 0 and report.get("outcome") == "NOT_APPLICABLE" and report.get("policy", {}).get("allowNotApplicable") is True
@@ -380,7 +390,7 @@ try:
             if not stat.S_ISREG(candidate_metadata.st_mode):
                 continue
             with open(candidate, "rb") as stream:
-                discovery = json.load(stream)
+                discovery = read_json(stream)
             if (isinstance(discovery, dict) and discovery.get("recordKind") == "DISCOVERY" and
                     discovery.get("reportSha256") == expected_hash and
                     discovery.get("reportLength") == len(report_bytes)):
@@ -403,7 +413,7 @@ try:
                 if not stat.S_ISREG(candidate_metadata.st_mode):
                     continue
                 with open(candidate, "rb") as stream:
-                    proven = json.load(stream)
+                    proven = read_json(stream)
                 if (isinstance(proven, dict) and proven.get("recordKind") == "PROVEN" and
                         proven.get("evaluationFingerprint") == fingerprints[0] and
                         proven.get("runId") == report.get("runId") and
@@ -557,7 +567,7 @@ prepare() {
   payload_sha256 "$payload" >/dev/null
   local orchestration_sdk_version
   orchestration_sdk_version=$(trusted_sdk_version)
-  # Receipt v3 retains the historical runtime_version key for compatibility; its value is the orchestration SDK.
+  # Receipt v4 retains the historical runtime_version key; its value is the orchestration SDK.
   write_receipt "$receipt" format mutate4csharp-agent-gate-v4 local_tool_version "$local_tool_version" tool_package "$package" tool_payload "$payload" runtime_version "$orchestration_sdk_version" dotnet_host "$TRUSTED_DOTNET"
   printf 'RECEIPT=%s\nPACKAGE_SHA256=%s\nPAYLOAD_SHA256=%s\nTOOL_SOURCE_COMMIT=%s\nSDK_VERSION=%s\nDOTNET_HOST=%s\n' "$receipt" "$(sha256_file "$package")" "$(payload_sha256 "$payload")" "$source_commit" "$orchestration_sdk_version" "$TRUSTED_DOTNET"
 }

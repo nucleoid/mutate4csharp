@@ -11,6 +11,8 @@ internal static class ReportWriter
     internal const string SchemaVersion = "2";
     private static readonly Regex CodePattern = new("^[A-Z][A-Z0-9_]*$",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+    private static readonly Regex ConfigurationIdentifier = new("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -233,6 +235,9 @@ internal static class ReportWriter
             !EvaluationFingerprint.IsSha256(accounting.CoverageIdentity) ||
             accounting.PathMap != "baseline-clone-to-snapshot-v1" ||
             accounting.Configuration.Runner != "vstest" || accounting.Configuration.Framework != "net10.0" ||
+            !ConfigurationIdentifier.IsMatch(accounting.Configuration.Id) ||
+            !ConfigurationIdentifier.IsMatch(accounting.Configuration.Configuration) ||
+            accounting.Configuration.Path.Contains(':') ||
             accounting.Configuration.Path.Replace('\\', '/').Split('/').Any(item => item is "" or "." or "..") ||
             Path.IsPathRooted(accounting.Configuration.Path) ||
             CheckConfiguration.SuiteIdentity(accounting.Configuration) != suite.SuiteId)
