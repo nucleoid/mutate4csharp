@@ -112,6 +112,7 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
     [InlineData("ENUMERATION_COMPILE_INVENTORY_UNSUPPORTED")]
     [InlineData("UNSUPPORTED_CHANGED_INPUT")]
     [InlineData("UNSUPPORTED_SYNTAX")]
+    [InlineData("SCOPE_UNSUPPORTED_ENCODING")]
     [InlineData("NO_SUPPORTED_DECLARATION")]
     [InlineData("UNMAPPED_PROJECT")]
     [InlineData("AMBIGUOUS_PROJECT_OWNERSHIP")]

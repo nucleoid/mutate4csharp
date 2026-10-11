@@ -81,3 +81,6 @@ Cancellation is honored up to the final publication check; a signal after that c
 retroactively invalidate an already completed invocation. Real installed cancellation reports are also
 parsed by the shipped report validator in both state modes. Sourcing the Bash script exposes diagnostic
 helpers only; functional certification still requires the identity-bound `gate` invocation.
+An incomplete discovery record may retain a captured snapshot and bound ledger whose final audit did
+not finish. Its validation-failure condition prevents acceptance and proven publication; discovery is
+descriptive evidence, never reusable proof.

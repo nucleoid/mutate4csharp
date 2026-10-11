@@ -184,7 +184,7 @@ public sealed partial class ToolPackagingIntegrationTests
                         .Concat(report.RootElement.GetProperty("incompleteConditions").EnumerateArray())
                         .Select(reason => reason.GetProperty("code").GetString()).ToArray();
                     var expectedReason = scenario switch { "red" => "BASELINE_RED", "empty" => "BASELINE_EMPTY", "plan" => "PLAN_ONLY",
-                        "partial" => "UNIT_OMITTED", "unsupported" => "ENUMERATION_ENCODING_UNSUPPORTED", "timeout" => "BASELINE_TIMEOUT",
+                        "partial" => "UNIT_OMITTED", "unsupported" => "SCOPE_UNSUPPORTED_ENCODING", "timeout" => "BASELINE_TIMEOUT",
                         "cancel" => "EXECUTION_CANCELLED", "drift" => "SNAPSHOT_DIVERGED", _ => null };
                     if (expectedReason is not null) Assert.Contains(expectedReason, reasonCodes);
                     if (scenario == "partial")
