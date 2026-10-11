@@ -18,9 +18,9 @@ internal static class EvaluationPublication
         try
         {
             // No positive artifact is written until proof eligibility is checked.
-            var bytes = ReportWriter.Serialize(report);
             if (store is not null && material is not null)
                 fingerprint = EvaluationFingerprint.Compute(material);
+            var bytes = ReportWriter.Serialize(report);
             if (report.Outcome == EvaluationOutcome.Pass)
             {
                 phase = EvaluationPublicationPhase.Eligibility;
