@@ -160,6 +160,7 @@ internal sealed class OwnedDirectory : IAsyncDisposable
             var marker = Path.Combine(fullRoot, MarkerName);
             if (!File.Exists(marker) || !string.Equals(File.ReadAllText(marker), _token, StringComparison.Ordinal))
                 throw new IOException("Refusing cleanup without the matching ownership marker.");
+            WindowsProcessTree.AssertDirectoryMayBeRemoved(fullRoot);
             Directory.Delete(fullRoot, recursive: true);
         }
         catch (Exception ex)

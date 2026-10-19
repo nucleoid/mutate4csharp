@@ -13,7 +13,11 @@ internal sealed record CheckProject(string Id, string Project, string TargetFram
     string ParseContext, string LanguageVersion, string? Nullable,
     IReadOnlyList<string>? DefineConstants, IReadOnlyList<string> Sources,
     IReadOnlyList<string> SharedSources,
-    IReadOnlyList<string> TestSuites);
+    IReadOnlyList<string> TestSuites)
+{
+    public string? Configuration { get; init; }
+    public bool HasLanguageVersionAssertion { get; init; } = true;
+}
 
 internal sealed record CheckTestSuite(string Id, string Path, string Runner, string Framework,
     string Configuration, IReadOnlyList<string> ExpectedMembers);
@@ -28,6 +32,10 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
     IReadOnlyList<SuiteExecution> ExecutionSuites, IReadOnlyList<CheckExclusion> Exclusions,
     EvaluationPolicy Policy)
 {
+    public const string ResolvedGraphProfile = "resolved-project-graph-v1";
+    public bool IsResolvedGraph => SchemaVersion == "2";
+    public string SemanticProfile => IsResolvedGraph ? ResolvedGraphProfile : "strict-self-contained-v1";
+
     private const int MaxWorkers = 32;
     private const int MaxMutationCap = 100_000;
     private const int MaxPhaseTimeoutSeconds = 86_400;
@@ -43,13 +51,13 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
 
     private sealed record Document(int Version = 0, List<ProjectDocument>? Projects = null,
         List<SuiteDocument>? TestSuites = null, List<ExclusionDocument>? Exclusions = null,
-        PolicyDocument? Policy = null);
+        PolicyDocument? Policy = null, string? SemanticProfile = null);
     private sealed record ProjectDocument(string? Id = null, string? Project = null,
         string? TargetFramework = null, string? ParseContext = null,
         string? LanguageVersion = null, string? Nullable = null,
         List<string>? DefineConstants = null, List<string>? Sources = null,
         List<string>? SharedSources = null,
-        List<string>? TestSuites = null);
+        List<string>? TestSuites = null, string? Configuration = null);
     private sealed record SuiteDocument(string? Id = null, string? Path = null, string? Runner = null,
         string? Framework = null, string? Configuration = null, List<string>? ExpectedMembers = null);
     private sealed record ExclusionDocument(string? Path = null, string? Reason = null);
@@ -58,6 +66,19 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
         int? OverallDeadlineSeconds = null, bool? AllowNotApplicable = null,
         int? StabilityRepetitions = null);
 
+    internal static bool RequiresStrictValidation(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return false;
+        if (root.EnumerateObject().Any(property =>
+            property.Name.Equals("semanticProfile", StringComparison.OrdinalIgnoreCase) ||
+            property.Name.Equals("testSuites", StringComparison.OrdinalIgnoreCase) ||
+            property.Name.Equals("version", StringComparison.OrdinalIgnoreCase) &&
+            (property.Value.ValueKind != JsonValueKind.Number ||
+             !property.Value.TryGetInt32(out var version) || version != 1))) return true;
+        return root.TryGetProperty("projects", out var projects) && projects.ValueKind == JsonValueKind.Array &&
+            projects.EnumerateArray().Any(project => project.ValueKind == JsonValueKind.Object &&
+                project.EnumerateObject().Any(property => property.Name.Equals("testSuites", StringComparison.OrdinalIgnoreCase)));
+    }
     public static CheckConfiguration Load(string root, byte[] capturedBytes)
     {
         ArgumentNullException.ThrowIfNull(capturedBytes);
@@ -88,8 +109,12 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
             throw new ArgumentException($"Invalid mutate4csharp.json (unknown, duplicate, or malformed setting): {ex.Message}", ex);
         }
 
-        if (document.Version != 1)
-            throw new ArgumentException("mutate4csharp.json requires version 1.");
+        if (document.Version is not (1 or 2) ||
+            document.Version == 2 && document.SemanticProfile != ResolvedGraphProfile)
+            throw new ArgumentException("mutate4csharp.json requires version 1, or version 2 with explicit semanticProfile resolved-project-graph-v1.");
+        if (document.Version == 1 && (document.SemanticProfile is not null ||
+            document.Projects?.Any(project => project?.Configuration is not null) == true))
+            throw new ArgumentException("Version 1 does not accept graph semanticProfile or production configuration fields.");
         if (document.Projects is null || document.Projects.Count == 0)
             throw new ArgumentException("mutate4csharp.json requires at least one production project.");
         if (document.TestSuites is null || document.TestSuites.Count == 0)
@@ -97,9 +122,16 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
 
         if (document.Projects.Any(item => item is null) || document.TestSuites.Any(item => item is null))
             throw new CheckConfigurationException("Configured projects and testSuites cannot contain null members.");
-        var projects = document.Projects.Select((item, index) => ParseProject(item!, index)).ToArray();
+        var projects = document.Projects.Select((item, index) => ParseProject(item!, index, document.Version == 2)).ToArray();
         var suites = document.TestSuites.Select((item, index) => ParseSuite(item!, index)).ToArray();
         RejectDuplicateIds(projects.Select(item => item.Id), "production project");
+        if (document.Version == 2)
+        {
+            var duplicatePath = projects.GroupBy(project => project.Project, StringComparer.Ordinal)
+                .FirstOrDefault(group => group.Count() > 1);
+            if (duplicatePath is not null)
+                throw new CheckConfigurationException("Resolved graph scope currently requires one configured production selection per project path; duplicate path: " + duplicatePath.Key);
+        }
         RejectDuplicateIds(suites.Select(item => item.Id), "test suite");
 
         var executions = new List<SuiteExecution>();
@@ -140,7 +172,7 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
             throw new ArgumentException($"Duplicate exclusion path: {duplicateExclusion.Key}.");
 
         var policy = ParsePolicy(document.Policy);
-        return new("1", fullRoot, projects.OrderBy(item => item.Id, StringComparer.Ordinal).ToArray(),
+        return new(document.Version.ToString(System.Globalization.CultureInfo.InvariantCulture), fullRoot, projects.OrderBy(item => item.Id, StringComparer.Ordinal).ToArray(),
             suites.OrderBy(item => item.Id, StringComparer.Ordinal).ToArray(),
             executions.OrderBy(item => item.Identity, StringComparer.Ordinal).ToArray(), exclusions, policy);
     }
@@ -171,7 +203,7 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
         return existing.Length == 1 ? existing[0] : aliases[0].Path;
     }
 
-    private static CheckProject ParseProject(ProjectDocument item, int index)
+    private static CheckProject ParseProject(ProjectDocument item, int index, bool resolvedGraph)
     {
         var id = ParseId(item.Id, $"projects[{index}].id");
         var project = NormalizePath(item.Project, $"projects[{index}].project");
@@ -206,8 +238,19 @@ internal sealed record CheckConfiguration(string SchemaVersion, string Root,
             throw new ArgumentException(
                 $"Production project {id} sharedSources must also appear in sources: {undeclaredShared}.");
         var suites = DistinctValues(item.TestSuites, $"projects[{index}].testSuites", requireNonEmpty: true);
+        string? configuration = null;
+        if (resolvedGraph)
+        {
+            configuration = Required(item.Configuration, $"projects[{index}].configuration", 128);
+            if (!ConfigurationName.IsMatch(configuration))
+                throw new ArgumentException($"Production project {id} configuration must be a stable ASCII identifier.");
+        }
         return new(id, project, framework, parseContext, languageVersion, nullable,
-            defineConstants, sources, sharedSources, suites);
+            defineConstants, sources, sharedSources, suites)
+        {
+            Configuration = configuration,
+            HasLanguageVersionAssertion = !resolvedGraph || item.LanguageVersion is not null
+        };
     }
 
     private static CheckTestSuite ParseSuite(SuiteDocument item, int index)

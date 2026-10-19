@@ -42,6 +42,9 @@ internal static class ProcessTree
         CancellationToken cancellationToken, IReadOnlyDictionary<string, string?>? environment = null,
         long maxOutputBytes = DefaultMaxOutputBytes, bool requireLinuxSessionIsolation = false)
     {
+        if (OperatingSystem.IsWindows())
+            return await WindowsProcessTree.RunAsync(executable, arguments, workingDirectory, timeout,
+                cancellationToken, environment, maxOutputBytes);
         using var strictLaunch = platform.IsLinux && requireLinuxSessionIsolation
             ? LinuxStrictLaunch.Create()
             : null;
@@ -367,7 +370,7 @@ internal static class ProcessTree
             CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
     }
 
-    private static async Task<string> ReadBoundedAsync(Stream stream, long maxBytes,
+    internal static async Task<string> ReadBoundedAsync(Stream stream, long maxBytes,
         CancellationToken cancellationToken)
     {
         if (maxBytes < 1) throw new ArgumentOutOfRangeException(nameof(maxBytes));
@@ -655,7 +658,7 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
 
     public async Task RestoreWorkerAsync(SnapshotClone worker, string projectPath, OwnedPackageCache packages,
         TimeSpan timeout, CancellationToken cancellationToken, string? framework = null,
-        string? configuration = null)
+        string? configuration = null, bool restoreAuthoredFrameworkGraph = false)
     {
         foreach (var file in Directory.EnumerateFiles(GraphRoot, "packages.lock.json", SearchOption.AllDirectories))
         {
@@ -680,7 +683,8 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
             "-p:RestoreAdditionalProjectFallbackFolders=", $"-p:NuGetPackageRoot={packages.Root}" };
         if (framework is not null)
         {
-            arguments.Add("-p:TargetFramework=" + framework);
+            // Graph restore must retain authored child frameworks, not inherit a synthetic root override.
+            if (!restoreAuthoredFrameworkGraph) arguments.Add("-p:TargetFramework=" + framework);
             arguments.Add("-p:Configuration=" + configuration);
         }
         var run = await ProcessTree.RunAsync(dotnet, arguments, worker.Root, timeout, cancellationToken,
@@ -688,14 +692,7 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
         if (run.TimedOut)
             throw new TimeoutException($"Frozen worker restore exceeded its {timeout.TotalSeconds:g}-second timeout.");
         if (run.ExitCode != 0)
-        {
-            var diagnostic = string.Join(' ', new[] { run.StandardError, run.StandardOutput }
-                .SelectMany(value => value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)));
-            const string prefix = "Frozen worker restore failed: ";
-            diagnostic = EvaluationTextBounds.Suffix(diagnostic,
-                EvaluationEvidence.MaxDiagnosticLength - prefix.Length);
-            throw new SnapshotCaptureException(prefix + diagnostic);
-        }
+            throw CreateRestoreFailure(run, project, framework, configuration, worker.Root);
         ExecutionEnvironment.ValidateResolvedPackageRoots(worker.Root, packages.Root, config);
         if (!string.Equals(PackageFingerprint,
                 ExecutionEnvironment.FingerprintPackages(packages.Root, cancellationToken: cancellationToken),
@@ -703,6 +700,98 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
             throw new ExecutionBoundaryIntegrityException(
                 "Worker restore changed its private frozen package-cache copy.");
     }
+
+    internal static SnapshotCaptureException CreateRestoreFailure(ProcessTreeResult actualReturn,
+        string? requestedProject = null, string? framework = null, string? configuration = null, string? workerRoot = null)
+    {
+        // Already returned bounded DATA only; no file reads, evaluation or restore retry.
+        if (actualReturn.ExitCode == 0 || actualReturn.TimedOut)
+            throw new ArgumentException("Only the original nonzero, non-timeout restore return may issue this diagnostic.");
+        static object Digest(string value) => new { Characters = value.Length,
+            Sha256 = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant() };
+        static string Scalar(string? value) => value is null ? "[unspecified]" : value is { Length: > 0 and <= 32 } &&
+            value.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-') ? value : "[value-withheld]";
+        // Captured diagnostic text is not trusted path syntax. Formatting must not
+        // replace the original restore failure with a path-normalization failure.
+        static string? Normalized(string? path)
+        {
+            if (path is null || path.Length is 0 or > 4096 || path.IndexOf('\0') >= 0) return null;
+            try { return Path.IsPathFullyQualified(path) ? Path.GetFullPath(path) : null; }
+            catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException)
+            { return null; }
+        }
+        var normalizedRoot = Normalized(workerRoot);
+        var normalizedRequested = Normalized(requestedProject);
+        string Label(string? path)
+        {
+            var normalized = Normalized(path);
+            if (normalized is null || normalizedRoot is null) return "[unparsed]";
+            try
+            {
+                var relative = Path.GetRelativePath(normalizedRoot, normalized).Replace('\\', '/');
+                if (relative.StartsWith("../", StringComparison.Ordinal) || relative == ".." || Path.IsPathFullyQualified(relative))
+                    return "[outside-worker-root]";
+                return relative is { Length: > 0 and <= 96 } && relative.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-' or '/')
+                    ? relative : "[worker-project]";
+            }
+            catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException)
+            { return "[unparsed]"; }
+        }
+        const string prefix = "Frozen worker restore failed: ";
+        string? diagnostic = null, reportedProject = null, selectedRole = null;
+        var projectOpen = -1;
+        foreach (var (role, stream) in new[] { ("stderr", actualReturn.StandardError), ("stdout", actualReturn.StandardOutput) })
+        {
+            var error = stream.IndexOf(": error ", StringComparison.OrdinalIgnoreCase);
+            if (error < 0) continue;
+            var start = error + 2;
+            var lineEnd = stream.IndexOfAny(['\r', '\n'], start);
+            if (lineEnd < 0) lineEnd = stream.Length;
+            var complete = stream.AsSpan(start, lineEnd - start);
+            // Withhold malformed/qualified bracket suffixes before parsing identity.
+            projectOpen = complete.IndexOf('[');
+            var close = complete.LastIndexOf(']');
+            var open = projectOpen;
+            if (open >= 0 && close - open is > 1 and <= 4097)
+            {
+                var candidate = complete[(open + 1)..close];
+                // Keep only bounded local digest material. Unsupported syntax is
+                // deliberately not interpreted as the requested project.
+                if (close == complete.Length - 1 && candidate.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+                    reportedProject = candidate.ToString();
+            }
+            var maximum = EvaluationEvidence.MaxDiagnosticLength - prefix.Length;
+            var take = Math.Min(complete.Length, maximum);
+            // On contextual calls cut the private project suffix BEFORE any prefix truncation.
+            var line = (workerRoot is not null || requestedProject is not null) && projectOpen >= 0
+                ? complete[..Math.Min(projectOpen, take)].ToString() + "[reported-project]"
+                : complete[..take].ToString();
+            line = Regex.Replace(line, @"https?://\S+", "[source-uri]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            diagnostic = $"exit={actualReturn.ExitCode}; source={role}; {line}";
+            selectedRole = role;
+            break;
+        }
+        diagnostic ??= $"exit={actualReturn.ExitCode}; no explicit error line; stdoutChars={actualReturn.StandardOutput.Length}; stderrChars={actualReturn.StandardError.Length}; raw streams withheld";
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var normalizedReported = Normalized(reportedProject);
+        bool? matches = normalizedReported is null || normalizedRequested is null ? null :
+            string.Equals(normalizedReported, normalizedRequested, comparison);
+        var context = requestedProject is null ? "" : "requested=" + Label(requestedProject) + "; tfm=" + Scalar(framework) +
+            "; configuration=" + Scalar(configuration) + "; errorProject=" + Label(reportedProject) + "; projectMatches=" +
+            (matches?.ToString() ?? "Unknown") + "; ";
+        var failure = new SnapshotCaptureException(prefix + EvaluationTextBounds.Prefix(context + diagnostic,
+            EvaluationEvidence.MaxDiagnosticLength - prefix.Length));
+        failure.Data["FrozenWorkerRestore.ActualReturn"] = actualReturn;
+        if (requestedProject is not null)
+            failure.Data["FrozenWorkerRestore.SelectionContext"] = JsonSerializer.Serialize(new { Version = 1, DiagnosticOnly = true,
+                RequestedProjectRole = Label(requestedProject), RequestedProject = Digest(requestedProject),
+                RequestedFramework = Scalar(framework), FrameworkDigest = framework is null ? null : Digest(framework),
+                RequestedConfiguration = Scalar(configuration), ConfigurationDigest = configuration is null ? null : Digest(configuration),
+                ErrorStream = selectedRole, ReportedProjectRole = Label(reportedProject),
+                ReportedProject = reportedProject is null ? null : Digest(reportedProject), ReportedProjectMatchesRequested = matches });
+        return failure;
+    }
+
 
     public ValueTask DisposeAsync() => owner.DisposeAsync();
 }

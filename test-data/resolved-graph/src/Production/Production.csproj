@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Subject.cs" /><Compile Include="../../shared/LinkedValue.cs" Link="LinkedValue.cs" />
+    <Compile Include="ReleaseOnly.cs" Condition="'$(Configuration)' == 'Release'" />
+    <ProjectReference Include="../Dependency/Dependency.csproj" Aliases="dependencyAlias" />
+  </ItemGroup>
+</Project>

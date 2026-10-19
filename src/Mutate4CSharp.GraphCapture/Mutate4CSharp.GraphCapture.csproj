@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Inactive private selected-SDK logger deployment; not a public CLI/fork. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DefineConstants>$(DefineConstants);MUTATE_RESOLVED_GRAPH_LOGGER</DefineConstants>
+    <IsPackable>false</IsPackable>
+    <UseSharedCompilation>false</UseSharedCompilation>
+  </PropertyGroup>
+  <ItemGroup>
+    <AssemblyMetadata Include="MutateSelectedSdk" Value="$(NETCoreSdkVersion)" />
+    <Compile Include="../Mutate4CSharp/*.cs" />
+    <Reference Include="Microsoft.Build.Framework">
+      <HintPath>$(MSBuildBinPath)/Microsoft.Build.Framework.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.CodeAnalysis">
+      <HintPath>$(MSBuildSDKsPath)/../Roslyn/bincore/Microsoft.CodeAnalysis.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Microsoft.CodeAnalysis.CSharp">
+      <HintPath>$(MSBuildSDKsPath)/../Roslyn/bincore/Microsoft.CodeAnalysis.CSharp.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+  <Target Name="RequireSelectedGraphEventContract" BeforeTargets="CoreCompile">
+    <Error Condition="'$(GraphSelectedSdkVersion)' == '' Or '$(NETCoreSdkVersion)' != '$(GraphSelectedSdkVersion)'"
+      Text="Graph logger requires the exact original selected SDK/MSBuild event contract." />
+  </Target>
+</Project>

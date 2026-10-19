@@ -428,8 +428,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         {
             var bytes = File.ReadAllBytes(path);
             using var document = System.Text.Json.JsonDocument.Parse(bytes);
-            if (!document.RootElement.EnumerateObject().Any(property =>
-                    property.Name.Equals("testSuites", StringComparison.OrdinalIgnoreCase))) return null;
+            if (!CheckConfiguration.RequiresStrictValidation(document.RootElement)) return null;
             return CheckConfiguration.Load(snapshot.CaptureRoot, bytes);
         }
         catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or
@@ -464,8 +463,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         try
         {
             using var document = System.Text.Json.JsonDocument.Parse(bytes);
-            if (!document.RootElement.EnumerateObject().Any(property =>
-                    property.Name.Equals("testSuites", StringComparison.OrdinalIgnoreCase))) return null;
+            if (!CheckConfiguration.RequiresStrictValidation(document.RootElement)) return null;
             return CheckConfiguration.Load(root, bytes);
         }
         catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or

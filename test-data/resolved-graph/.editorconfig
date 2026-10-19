@@ -1,0 +1,5 @@
+root = true
+[*.cs]
+dotnet_diagnostic.CS0168.severity = error
+[**/OwnedGraphGenerated.cs]
+generated_code = true

@@ -67,12 +67,44 @@ internal static class StrictMutationEnumerator
             return Refused("ENUMERATION_CONFIGURATION_MISMATCH",
                 "Strict configuration was not loaded from the immutable snapshot root.");
 
+        if (configuration.IsResolvedGraph)
+            return Refused("ENUMERATION_CAPTURE_REQUIRED",
+                "The resolved-project-graph profile requires its actual selected-compiler capture worker; legacy synthesis cannot substitute.");
+        var captured = snapshot.Files.Where(file => file.Exists)
+            .ToDictionary(file => file.RelativePath, StringComparer.Ordinal);
+        return EnumerateContexts(configuration, scopePlan, captured.Keys,
+            project => BuildContext(snapshot, captured, project, configuration, sdkVersion, cancellationToken),
+            cancellationToken, maxCandidates);
+    }
+
+    // SAME mutation/declaration/selection algorithms execute in the selected SDK
+    // worker. A caller graph document never enters the legacy synthetic context.
+    internal static StrictMutationEnumerationResult EnumerateCaptured(CheckConfiguration configuration,
+        ScopePlan scopePlan, IReadOnlyList<string> capturedPaths,
+        IReadOnlyDictionary<string, ResolvedCompilerContext> contexts,
+        CancellationToken cancellationToken, int maxCandidates = MaxCandidates)
+    {
+        if (!configuration.IsResolvedGraph || !scopePlan.IsComplete)
+            return Refused("ENUMERATION_CAPTURE_REQUIRED", "Explicit complete resolved graph profile required.");
+        return EnumerateContexts(configuration, scopePlan, capturedPaths, project =>
+        {
+            if (!contexts.TryGetValue(project.Project, out var actual) ||
+                actual.Framework != project.TargetFramework || actual.Configuration != project.Configuration)
+                throw new EnumerationContextException("ENUMERATION_CONTEXT_MISMATCH", "Actual selected graph context differs from configured production selection.");
+            return new(actual.SourcePaths, actual.ExcludedPaths, actual.Sources, actual.Trees,
+                actual.Compilation, actual.Identity);
+        }, cancellationToken, maxCandidates);
+    }
+
+    private static StrictMutationEnumerationResult EnumerateContexts(CheckConfiguration configuration,
+        ScopePlan scopePlan, IEnumerable<string> capturedPaths, Func<CheckProject, ProjectContext> contextFactory,
+        CancellationToken cancellationToken, int maxCandidates)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxCandidates, 1);
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var captured = snapshot.Files.Where(file => file.Exists)
-                .ToDictionary(file => file.RelativePath, StringComparer.Ordinal);
-            var ambiguous = FindAmbiguousOwnership(captured.Keys, configuration);
+            var ambiguous = FindAmbiguousOwnership(capturedPaths, configuration);
             if (ambiguous is not null) return Refused(ambiguous.Code, ambiguous.Message);
             var projects = configuration.Projects.ToDictionary(project => project.Project,
                 StringComparer.Ordinal);
@@ -85,8 +117,7 @@ internal static class StrictMutationEnumerator
                 if (!projects.TryGetValue(unit.Project, out var project))
                     return Refused("ENUMERATION_PROJECT_UNMAPPED",
                         $"Scope project {unit.Project} has no exact strict configuration context.");
-                var context = BuildContext(snapshot, captured, project, configuration,
-                    sdkVersion, cancellationToken);
+                var context = contextFactory(project);
                 contextIdentities.Add((project.Project, context.Identity));
                 var targetPaths = SelectTargetPaths(unit, scopePlan, context.SourcePaths)
                     .Where(path => !context.ExcludedPaths.Contains(path)).ToArray();

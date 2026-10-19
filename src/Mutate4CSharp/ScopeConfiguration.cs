@@ -35,14 +35,7 @@ internal sealed record ScopeConfiguration(
         try
         {
             using var parsed = JsonDocument.Parse(capturedBytes);
-            var hasStrictSuites = parsed.RootElement.ValueKind == JsonValueKind.Object &&
-                (parsed.RootElement.EnumerateObject().Any(property =>
-                     property.Name.Equals("testSuites", StringComparison.OrdinalIgnoreCase)) ||
-                 parsed.RootElement.TryGetProperty("projects", out var strictProjects) &&
-                 strictProjects.ValueKind == JsonValueKind.Array && strictProjects.EnumerateArray().Any(project =>
-                     project.ValueKind == JsonValueKind.Object && project.EnumerateObject().Any(property =>
-                         property.Name.Equals("testSuites", StringComparison.OrdinalIgnoreCase))));
-            if (hasStrictSuites)
+            if (CheckConfiguration.RequiresStrictValidation(parsed.RootElement))
             {
                 var strict = CheckConfiguration.Load(fullRoot, capturedBytes);
                 var strictSuitePaths = strict.ExecutionPathsByAlias();
