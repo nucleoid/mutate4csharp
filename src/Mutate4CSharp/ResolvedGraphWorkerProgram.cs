@@ -17,7 +17,7 @@ internal static class ResolvedGraphWorkerProgram
     private const int MaxRequestBytes = 16 * 1024 * 1024;
     internal static int Main(string[] args)
     {
-        if (args.Length != 7 || !Path.IsPathFullyQualified(args[0]) || !Path.IsPathFullyQualified(args[1]) ||
+        if (args.Length != 9 || !Path.IsPathFullyQualified(args[0]) || !Path.IsPathFullyQualified(args[1]) ||
             args[2].Length != 64 || args[2].Any(c => !char.IsAsciiHexDigitLower(c))) return 1;
         var numeric = new long[4];
         for (var index = 0; index < numeric.Length; ++index)
@@ -25,15 +25,21 @@ internal static class ResolvedGraphWorkerProgram
                 !long.TryParse(args[index + 3], System.Globalization.NumberStyles.None,
                     System.Globalization.CultureInfo.InvariantCulture, out numeric[index])) return 1;
         var observedBudget = new ResolvedGraphBudgetObservation(numeric[0], numeric[1], numeric[2], numeric[3], null);
-        var originalBudget = new ResolvedGraphBudget(observedBudget, CancellationToken.None);
+        if (!long.TryParse(args[7], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var ioBytes)) return 1;
+        var grant = new GraphChildGrant("worker", args[8], ioBytes);
+        ResolvedGraphResources.RequireGrant(grant, "worker");
+        var originalBudget = new ResolvedGraphBudget(observedBudget, CancellationToken.None, grant);
         using var inputs = new ResolvedGraphInputs(originalBudget);
+        try
+        {
         var input = inputs.Read(args[0], "config", MaxRequestBytes);
         if (input.Bytes.Length > MaxRequestBytes || input.Sha256 != args[2]) return 1;
         var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = false,
             UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow, MaxDepth = 64 };
+        ResolvedGraphProtocol.RequireUnique(input.Bytes);
         var request = JsonSerializer.Deserialize<GraphWorkerRequest>(input.Bytes, options) ??
             throw new EvaluationContractException("Complete private graph worker request required.");
-        if (request.Version != 1 || request.Projects.Length is < 1 or > ResolvedGraphCapture.MaxContexts ||
+        if (request.Version != 3 || request.Grant != grant || request.Projects.Length is < 1 or > ResolvedGraphCapture.MaxContexts ||
             request.CapturedPaths.Length is < 1 or > ResolvedGraphInputs.MaximumFiles ||
             request.CapturedPaths.Distinct(StringComparer.Ordinal).Count() != request.CapturedPaths.Length)
             throw new EvaluationContractException("Private worker request membership/version limit.");
@@ -48,19 +54,25 @@ internal static class ResolvedGraphWorkerProgram
             var actual = request.Projects.Where(c => c.Selection.Project == project.Project &&
                 c.Selection.Framework == project.TargetFramework && c.Selection.Configuration == project.Configuration).ToArray();
             if (actual.Length != 1) throw new EvaluationContractException("Exactly one original compiler context per configured production selection required.");
-            contexts.Add(project.Project, BuildContext(request.Root, project, configuration, actual[0], inputs));
+            contexts.Add(project.Project, BuildContext(request.Root, request.PackageRoot, project, configuration, actual[0], inputs, originalBudget));
         }
         var result = StrictMutationEnumerator.EnumerateCaptured(configuration, request.Scope,
             request.CapturedPaths, contexts, CancellationToken.None);
         CheckLoadedCompiler(request.Compiler, inputs);
         inputs.Recheck(input);
-        var output = JsonSerializer.SerializeToUtf8Bytes(result);
+        var source = typeof(ResolvedGraphWorkerProgram).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+            .SingleOrDefault(a => a.Key == "MutateSourceRevision")?.Value;
+        if (source != request.SourceRevision) throw new EvaluationContractException("Worker source revision differs from original request.");
+        var output = ResolvedGraphProtocol.SerializeBounded(new GraphWorkerResult(2, input.Sha256, request.SourceRevision,
+            request.Compiler, originalBudget.Observe(), result, originalBudget.Resources.ObservePreDelivery()), inputs, 32 * 1024 * 1024);
         if (output.Length > 32 * 1024 * 1024) throw new SnapshotLimitException("Complete worker result exceeds finite output bound.");
         RequireWithin(request.Root, args[1]);
         if (Path.GetFileName(args[1]) != "resolved-graph-result.json")
             throw new EvaluationContractException("Fixed owned graph result leaf required.");
         inputs.WriteNewResult(args[1], output);
         return result.IsComplete ? 0 : 1;
+        }
+        catch { originalBudget.BeginFailureCleanup(); throw; }
     }
 
     private static void CheckLoadedCompiler(GraphCompilerImages compiler, ResolvedGraphInputs inputs)
@@ -70,7 +82,7 @@ internal static class ResolvedGraphWorkerProgram
         foreach (var pair in new[] { (typeof(Compilation).Assembly, compiler.CommonSha256),
                      (typeof(CSharpCompilation).Assembly, compiler.CSharpSha256) })
         {
-            var image = inputs.Read(pair.Item1.Location, "compiler");
+            var image = inputs.PinImage(pair.Item1.Location);
             if (image.Sha256 != pair.Item2) throw new EvaluationContractException("Loaded compiler deployment differs from original selected compiler.");
         }
         var sdk = typeof(ResolvedGraphWorkerProgram).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
@@ -79,8 +91,8 @@ internal static class ResolvedGraphWorkerProgram
             throw new EvaluationContractException("Worker build selection differs from actual graph SDK selection.");
     }
 
-    private static ResolvedCompilerContext BuildContext(string root, CheckProject project,
-        CheckConfiguration configuration, ResolvedProjectCapture actual, ResolvedGraphInputs inputs)
+    private static ResolvedCompilerContext BuildContext(string root, string packageRoot, CheckProject project,
+        CheckConfiguration configuration, ResolvedProjectCapture actual, ResolvedGraphInputs inputs, ResolvedGraphBudget original)
     {
         var directory = Path.GetDirectoryName(Path.GetFullPath(project.Project, root))!;
         var originalTask = actual.FirstCsc ?? throw new EvaluationContractException("Original first-Csc capture is required; later synthetic/query-only tokens are insufficient.");
@@ -101,6 +113,8 @@ internal static class ResolvedGraphWorkerProgram
             project.DefineConstants is not null && !project.DefineConstants.Order(StringComparer.Ordinal)
                 .SequenceEqual(parsed.ParseOptions.PreprocessorSymbolNames.Order(StringComparer.Ordinal), StringComparer.Ordinal))
             throw new EvaluationContractException("Evaluated compiler options violate explicit configured assertions.");
+        var pathMap = ResolvedGraphPathProfile.Require(parsed.PathMap, root, packageRoot);
+        if (!parsed.CompilationOptions.Deterministic) throw new EvaluationContractException("Actual graph compiler must use deterministic outputs.");
         var sourceRows = actual.Items["Compile"];
         var compilerPaths = parsed.SourceFiles.Select(s => Path.GetFullPath(s.Path, directory)).ToArray();
         var compilePaths = sourceRows.Select(item => Path.GetFullPath(item.Identity, directory)).ToArray();
@@ -108,6 +122,7 @@ internal static class ResolvedGraphWorkerProgram
             !compilePaths.Order(PathComparer).SequenceEqual(compilerPaths.Order(PathComparer), PathComparer))
             throw new EvaluationContractException("Csc token sources differ from complete actual Compile inventory.");
         var retained = new List<ResolvedGraphFile>();
+        var compiledSources = new Dictionary<string, byte[]>(StringComparer.Ordinal);
         var trees = new Dictionary<string, SyntaxTree>(StringComparer.Ordinal);
         var sourceTexts = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var path in compilerPaths) AddSource(path, false);
@@ -151,6 +166,10 @@ internal static class ResolvedGraphWorkerProgram
             var file = inputs.Read(Path.GetFullPath(embedded.Identity, directory), "source");
             retained.Add(file);
         }
+        var compiled = originalTask.Compiled ?? throw new EvaluationContractException("Actual Csc source/output correspondence is required.");
+        if (compiled.PathMap.Count != pathMap.Count || pathMap.Any(p => !compiled.PathMap.TryGetValue(p.Key, out var value) || value != p.Value))
+            throw new EvaluationContractException("Compiler source snapshot path mapping differs from actual parsed options.");
+        ResolvedGraphCompiledSources.Verify(compiled, compiledSources, inputs, original);
         var treeOptions = new ResolvedGraphTreeOptions(inputs, configurations, trees.Values);
         var references = new List<MetadataReference>();
         var referencePaths = new List<string>();
@@ -169,7 +188,7 @@ internal static class ResolvedGraphWorkerProgram
         // aliased source assembly attributes. Reject those effects before normal
         // same-options diagnostics/semantic queries; never rewrite consumer attrs.
         var safeOptions = parsed.CompilationOptions.WithSyntaxTreeOptionsProvider(treeOptions).WithStrongNameProvider(null)
-            .WithMetadataReferenceResolver(null).WithSourceReferenceResolver(null).WithXmlReferenceResolver(null);
+            .WithMetadataReferenceResolver(null).WithSourceReferenceResolver(new ResolvedGraphSourceResolver(pathMap, directory)).WithXmlReferenceResolver(null);
         inputs.CheckWork();
         var compilation = CSharpCompilation.Create(parsed.CompilationName, trees.Values, references, safeOptions);
         inputs.CheckWork();
@@ -187,11 +206,7 @@ internal static class ResolvedGraphWorkerProgram
         var excluded = owned.Where(path => configuration.Exclusions.Any(e => ProjectOwnershipResolver.GlobMatches(path, e.Path)) ||
             ScopePlanner.IsGeneratedSource(path, sourceTexts[path]) ||
             ScopePlanner.IsTestSource(path, configuration.TestSuites.Select(s => s.Path))).ToHashSet(StringComparer.Ordinal);
-        var identity = MutationIdentity.ComputeDigest("resolved-compiler-context-v1", new[] {
-            ("project", project.Project), ("framework", project.TargetFramework), ("configuration", project.Configuration!),
-            ("parse", project.ParseContext), ("completeActualQuery", actual.RawSha256),
-            ("completeInputs", MutationIdentity.ComputeDigest("graph-physical-inputs", retained.Select((f, i) =>
-                ("input-" + i.ToString("D8", System.Globalization.CultureInfo.InvariantCulture), f.Path + "|" + f.Sha256)).ToArray())) });
+        var identity = new ResolvedGraphCanonicalContext(root, packageRoot).Identity(actual, retained, inputs);
         return new(project.TargetFramework, project.Configuration!, owned, excluded, sourceTexts, trees, compilation, identity);
 
         void CaptureAuxiliary(IEnumerable<string> tokenPaths, string itemName, string role, bool text)
@@ -219,10 +234,14 @@ internal static class ResolvedGraphWorkerProgram
         }
         void AddSource(string path, bool generatedSource)
         {
-            path = Path.GetFullPath(path, directory); RequireWithin(root, path);
-            var relative = Path.GetRelativePath(root, path).Replace('\\', '/');
+            path = Path.GetFullPath(path, directory);
+            var inSource = IsWithin(root, path);
+            if (!inSource && !IsWithin(packageRoot, path))
+                throw new SnapshotCaptureException("Compiler source is outside the actual owned source/package roots.");
+            var relative = inSource ? Path.GetRelativePath(root, path).Replace('\\', '/') : "$packages/" + Path.GetRelativePath(packageRoot, path).Replace('\\', '/');
             if (trees.ContainsKey(relative)) throw new EvaluationContractException("Duplicate actual compiler/generated source.");
             var file = inputs.Read(path, generatedSource ? "generated-source" : "source"); retained.Add(file);
+            compiledSources.Add(path, file.Bytes);
             using var bytes = new MemoryStream(file.Bytes, writable: false);
             inputs.CheckWork();
             var text = SourceText.From(bytes, parsed.Encoding, parsed.ChecksumAlgorithm);
@@ -232,6 +251,11 @@ internal static class ResolvedGraphWorkerProgram
             trees.Add(relative, tree); sourceTexts.Add(relative, text.ToString());
         }
     }
+    private static bool IsWithin(string root, string path)
+    {
+        var relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(path));
+        return !Path.IsPathRooted(relative) && relative != ".." && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+    }
     private static void RequireWithin(string root, string path)
     {
         var relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(path));
@@ -240,8 +264,4 @@ internal static class ResolvedGraphWorkerProgram
     }
     private static StringComparer PathComparer => OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 }
-internal sealed record GraphCompilerImages(string SdkVersion, string CommonSha256, string CSharpSha256);
-internal sealed record GraphWorkerRequest(int Version, string Root, byte[] ConfigurationBytes,
-    ScopePlan Scope, string[] CapturedPaths, ResolvedProjectCapture[] Projects, GraphCompilerImages Compiler,
-    ResolvedGraphBudgetObservation OriginalBudget);
 #endif

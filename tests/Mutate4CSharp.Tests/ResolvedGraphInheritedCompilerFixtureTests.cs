@@ -27,9 +27,7 @@ public sealed class ResolvedGraphInheritedCompilerFixtureTests : IDisposable
         var manifest = producerInputs.Read(manifestPath, "config", 1_048_576);
         Assert.Equal(manifestSha, manifest.Sha256);
         original.CheckWork();
-        var logger = JsonSerializer.Deserialize<ResolvedGraphLoggerSelection>(manifest.Bytes,
-            new JsonSerializerOptions { UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow,
-                MaxDepth = 8 }) ?? throw new IOException("Complete selected logger deployment required.");
+        var logger = ResolvedGraphDeployment.Load(producerInputs).Logger;
         original.CheckWork();
         var configuration = CheckConfiguration.Load(_repository.Root,
             _repository.Read(".mutate4csharp.json"));
@@ -132,9 +130,7 @@ public sealed class ResolvedGraphInheritedCompilerFixtureTests : IDisposable
             ?? throw new IOException("Root-bound selected logger digest required.");
         var manifest = producerInputs.Read(manifestPath, "config", 1_048_576);
         Assert.Equal(manifestSha, manifest.Sha256);
-        var logger = JsonSerializer.Deserialize<ResolvedGraphLoggerSelection>(manifest.Bytes,
-            new JsonSerializerOptions { UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow,
-                MaxDepth = 8 }) ?? throw new IOException("Complete selected logger deployment required.");
+        var logger = ResolvedGraphDeployment.Load(producerInputs).Logger;
         var configuration = CheckConfiguration.Load(_repository.Root, _repository.Read(".mutate4csharp.json"));
         await using var environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
             ["src/App/App.csproj", "tests/CompilerSuite/CompilerSuite.csproj"],
@@ -269,6 +265,121 @@ public sealed class ResolvedGraphInheritedCompilerFixtureTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task Public_graph_dispatch_uses_actual_capture_before_baseline_and_never_promotes_missing_suite()
+    {
+        WriteFixture();
+        _repository.WriteText("mutate4csharp.json", System.Text.Encoding.UTF8.GetString(_repository.Read(".mutate4csharp.json")));
+        _repository.Git("add", ".");
+        _repository.Git("commit", "-m", "public graph dispatch fixture");
+        var token = TestContext.Current.CancellationToken;
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
+            SnapshotCaptureOptions.Default, token);
+        var explicitScope = await ScopePlanner.PlanExplicitAsync(["src/App/App.cs"], snapshot.CaptureRoot, token);
+        var configuration = CheckConfiguration.Load(snapshot.CaptureRoot, explicitScope.ConfigurationBytes!);
+        var result = await StrictExecutionPipeline.RunAsync(snapshot, snapshot.Identity.CaptureId,
+            "public-graph-regression", explicitScope.Plan, configuration, [], null, token);
+        Assert.True(result.EnumerationCount > 0);
+        // This compiler-only fixture intentionally has no test adapter. Genuine
+        // semantic enumeration does not manufacture a green baseline or PASS.
+        Assert.NotEqual(BaselineStatus.Green, result.Baseline);
+        Assert.All(result.Units, unit => Assert.Equal(UnitDisposition.Omitted, unit.Disposition));
+    }
+    [Fact]
+    public async Task Actual_fresh_owned_cold_and_warm_roots_keep_one_complete_candidate_identity()
+    {
+        WriteFixture();
+        _repository.WriteText("mutate4csharp.json", System.Text.Encoding.UTF8.GetString(_repository.Read(".mutate4csharp.json")));
+        _repository.Git("add", "."); _repository.Git("commit", "-m", "portable actual graph fixture");
+        var token = TestContext.Current.CancellationToken;
+        var original = new ResolvedGraphBudget(TimeSpan.FromSeconds(1100), token);
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [], SnapshotCaptureOptions.Default, token);
+        using var inputs = new ResolvedGraphInputs(original);
+        var deployment = ResolvedGraphDeployment.Load(inputs);
+        var scope = await ScopePlanner.PlanExplicitAsync(["src/App/App.cs"], snapshot.CaptureRoot, token);
+        var configuration = CheckConfiguration.Load(snapshot.CaptureRoot, scope.ConfigurationBytes!);
+        await using var environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
+            ["src/App/App.csproj", "tests/CompilerSuite/CompilerSuite.csproj"],
+            DependencyPreparationOptions.Default with { Timeout = original.RemainingWork }, token);
+        var first = await ResolvedGraphExecution.EnumerateAsync(snapshot, configuration, scope.Plan, environment, deployment, original, token);
+        var second = await ResolvedGraphExecution.EnumerateAsync(snapshot, configuration, scope.Plan, environment, deployment, original, token);
+        Assert.True(first.IsComplete); Assert.True(second.IsComplete); Assert.NotEmpty(first.Candidates);
+        Assert.Equal(first.SemanticContextIdentity, second.SemanticContextIdentity);
+        Assert.Equal(first.Candidates.Select(c => c.EvaluationUnitId), second.Candidates.Select(c => c.EvaluationUnitId));
+        Assert.Null(original.Observe().Cleanup);
+    }
+
+    [Fact]
+    public async Task Actual_compiler_generated_checksum_positive_precedes_after_compile_source_replacement_refusal()
+    {
+        WriteFixture(); _repository.Git("add", "."); _repository.Git("commit", "-m", "actual PDB source correspondence");
+        var token = TestContext.Current.CancellationToken;
+        var original = new ResolvedGraphBudget(TimeSpan.FromSeconds(1100), token);
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [], SnapshotCaptureOptions.Default, token);
+        using var inputs = new ResolvedGraphInputs(original);
+        var deployment = ResolvedGraphDeployment.Load(inputs);
+        var configuration = CheckConfiguration.Load(_repository.Root, _repository.Read(".mutate4csharp.json"));
+        await using var environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
+            ["src/App/App.csproj", "tests/CompilerSuite/CompilerSuite.csproj"],
+            DependencyPreparationOptions.Default with { Timeout = original.RemainingWork }, token);
+        await using var capture = await ResolvedGraphCapture.CreateAsync(snapshot, configuration, environment,
+            original.RemainingWork, token, deployment.Logger, original);
+        var app = Assert.Single(capture.Projects, p => p.Selection.Project == "src/App/App.csproj");
+        var compiled = Assert.IsType<GraphCompiledSnapshot>(Assert.IsType<ResolvedGraphObservedTask>(app.FirstCsc).Compiled);
+        Dictionary<string, byte[]> ReadDocuments() => compiled.Documents.ToDictionary(d => d.Path,
+            d => inputs.Read(d.Path, "source").Bytes, StringComparer.Ordinal);
+        Assert.Equal(compiled.Proof, ResolvedGraphCompiledSources.Verify(compiled, ReadDocuments(), inputs, original));
+        var generated = Assert.Single(compiled.Documents, d => d.Path.EndsWith("GeneratedFixture.cs", StringComparison.Ordinal));
+        original.CheckWork(); File.AppendAllText(generated.Path, "\n// after actual compiler replacement\n"); original.CheckWork();
+        var changed = ReadDocuments();
+        Assert.Throws<SnapshotDivergedException>(() => ResolvedGraphCompiledSources.Verify(compiled, changed, inputs, original));
+        Assert.NotNull(original.Observe().Cleanup);
+        Assert.Throws<EvaluationContractException>(original.CheckWork);
+    }
+    [Fact]
+    public async Task Actual_positive_then_AfterCoreCompile_rewrite_is_rejected_before_semantic_worker()
+    {
+        WriteFixture(); _repository.Git("add", "."); _repository.Git("commit", "-m", "positive before compiler-output drift");
+        var token = TestContext.Current.CancellationToken;
+        var original = new ResolvedGraphBudget(TimeSpan.FromSeconds(1100), token);
+        using var inputs = new ResolvedGraphInputs(original);
+        var deployment = ResolvedGraphDeployment.Load(inputs);
+        await Capture(false);
+        original.CheckWork();
+        var targets = System.Text.Encoding.UTF8.GetString(_repository.Read("Directory.Build.targets"));
+        _repository.WriteText("Directory.Build.targets", targets.Replace("</Project>", """
+            <Target Name="ReplaceAfterActualCsc" AfterTargets="CoreCompile" Condition="'$(MSBuildProjectName)' == 'App'">
+              <WriteLinesToFile File="$(IntermediateOutputPath)GeneratedFixture.cs" Lines="internal static class GeneratedFixture { internal const int Value = 99%3B }" Overwrite="true" />
+            </Target></Project>
+            """, StringComparison.Ordinal));
+        _repository.Git("add", "."); _repository.Git("commit", "-m", "replace generated bytes after actual compiler");
+        await Capture(true);
+        Assert.NotNull(original.Observe().Cleanup);
+        Assert.Throws<EvaluationContractException>(original.CheckWork);
+
+        async Task Capture(bool refuse)
+        {
+            await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [], SnapshotCaptureOptions.Default, token);
+            var configuration = CheckConfiguration.Load(_repository.Root, _repository.Read(".mutate4csharp.json"));
+            await using var environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
+                ["src/App/App.csproj", "tests/CompilerSuite/CompilerSuite.csproj"],
+                DependencyPreparationOptions.Default with { Timeout = original.RemainingWork }, token);
+            if (refuse)
+                await Assert.ThrowsAnyAsync<SnapshotCaptureException>(async () =>
+                {
+                    await using var unexpected = await ResolvedGraphCapture.CreateAsync(snapshot, configuration, environment,
+                        original.RemainingWork, token, deployment.Logger, original);
+                });
+            else
+            {
+                await using var actual = await ResolvedGraphCapture.CreateAsync(snapshot, configuration, environment,
+                    original.RemainingWork, token, deployment.Logger, original);
+                Assert.Equal(3, actual.Projects.Count);
+                Assert.All(actual.Projects, p => Assert.NotNull(p.FirstCsc!.Compiled));
+                actual.ValidateAuthoredInputs();
+            }
+        }
+    }
     private void WriteFixture()
     {
         _repository.WriteText("global.json", """

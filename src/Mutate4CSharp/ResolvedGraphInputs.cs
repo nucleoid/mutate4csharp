@@ -12,7 +12,8 @@ internal sealed class ResolvedGraphInputs : IDisposable
     private readonly List<Frame> _frames = [];
     private readonly List<DirectoryFrame> _directories = [];
     private readonly ResolvedGraphBudget _budget;
-    private long _reserved;
+    private byte[]? _imageScratch;
+    private bool _imageScratchBorrowed;
     private bool _closing;
     private bool _disposeReturned;
     private Exception? _disposeFailure;
@@ -38,6 +39,7 @@ internal sealed class ResolvedGraphInputs : IDisposable
         // Enroll before the synchronous constructor; retained failure and first
         // disposition flags prevent any retry from being mistaken for that call.
         var frame = new Frame();
+        _budget.Resources.AdmitFrame();
         _frames.Add(frame);
         try
         {
@@ -54,9 +56,10 @@ internal sealed class ResolvedGraphInputs : IDisposable
             frame.Stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             frame.AcquireReturned = true; Check();
             var length = frame.Stream.Length; Check();
-            if (length < 0 || length > maximumFileBytes || length > MaximumBytes - _reserved)
+            if (length < 0 || length > maximumFileBytes)
                 throw new SnapshotLimitException("Complete graph input byte admission exceeded.");
-            _reserved += length; // No success/failure refund or prefix acceptance.
+            _budget.Resources.AdmitSemantic(length);
+            _budget.Resources.AdmitIo(length + 1); // Complete extent and EOF observation, no refunds.
             Check(); frame.Bytes = new byte[(int)length]; Check();
             var offset = 0;
             while (offset < frame.Bytes.Length)
@@ -88,12 +91,14 @@ internal sealed class ResolvedGraphInputs : IDisposable
     {
         Check();
         if (!Path.IsPathFullyQualified(path) || path.Length > 4096 || _frames.Count + _directories.Count >= MaximumFiles ||
-            completeBytes.LongLength > MaximumFileBytes || completeBytes.LongLength > MaximumBytes - _reserved)
+            completeBytes.LongLength > MaximumFileBytes)
             throw new SnapshotLimitException("Complete worker result admission exceeded.");
         path = Path.GetFullPath(path);
         var frame = new Frame { Bytes = completeBytes };
+        _budget.Resources.AdmitFrame();
         _frames.Add(frame);
-        _reserved += completeBytes.LongLength;
+        _budget.Resources.AdmitSemantic(completeBytes.LongLength);
+        _budget.Resources.AdmitIo(completeBytes.LongLength);
         try
         {
             // Parent must have created the exact owned destination directory.
@@ -141,7 +146,7 @@ internal sealed class ResolvedGraphInputs : IDisposable
         Check();
         if (!Path.IsPathFullyQualified(path) || path.Length > 4096 || _frames.Count + _directories.Count >= MaximumFiles)
             throw new SnapshotLimitException("Generated directory admission limit.");
-        var frame = new DirectoryFrame(); _directories.Add(frame);
+        var frame = new DirectoryFrame(); _budget.Resources.AdmitFrame(); _directories.Add(frame);
         var output = new List<ResolvedGraphEntry>();
         try
         {
@@ -154,9 +159,9 @@ internal sealed class ResolvedGraphInputs : IDisposable
                 var more = frame.Enumerator.MoveNext(); frame.StepReturned++; Check();
                 if (!more) break;
                 var current = frame.Enumerator.Current; Check();
-                if (current.Length > 4096 || output.Count == 8192 || current.Length * 2L > MaximumBytes - _reserved)
+                if (current.Length > 4096 || output.Count == 8192)
                     throw new SnapshotLimitException("Complete generated directory string/count allocation admission.");
-                _reserved += current.Length * 2L;
+                _budget.Resources.AdmitSemantic(current.Length * 2L);
                 var attributes = File.GetAttributes(current); Check();
                 if ((attributes & (FileAttributes.ReparsePoint | FileAttributes.Device)) != 0)
                     throw new SnapshotCaptureException("Generated directory entry redirect/device refused.");
@@ -201,6 +206,94 @@ internal sealed class ResolvedGraphInputs : IDisposable
     }
 
     internal void CheckWork() => Check();
+    internal void BeginFailureCleanup() => _budget.BeginFailureCleanup();
+    internal void CheckDisposition() => _budget.CheckDisposition();
+
+    // Additional managed buffers belong to this SAME cumulative ledger. This
+    // reserves before allocating and never refunds on success, failure or close.
+    internal void ReserveAllocation(long bytes)
+    {
+        Check();
+        _budget.Resources.AdmitSemantic(bytes);
+        Check();
+    }
+
+    // Hash-only images retain a complete private acquisition/disposition frame,
+    // not image bytes. EVERY call and recheck reads its entire actual file.
+    internal ResolvedGraphImagePin PinImage(string path, string role = "compiler")
+    {
+        Check();
+        if (role is not ("compiler" or "import") || !Path.IsPathFullyQualified(path) || path.Length > 4096)
+            throw new EvaluationContractException("Exact closed hash-only image role/path required.");
+        path = Path.GetFullPath(path);
+        var frame = new Frame(); _budget.Resources.AdmitFrame(); _frames.Add(frame);
+        long length = -1;
+        try
+        {
+            if (_imageScratchBorrowed) throw new EvaluationContractException("Original image buffer is already borrowed.");
+            if (_imageScratch is null)
+            {
+                _budget.Resources.AdmitSemantic(65_536); Check(); _imageScratch = new byte[65_536]; Check();
+            }
+            _imageScratchBorrowed = true;
+            for (var ancestor = path; ancestor is not null; ancestor = Path.GetDirectoryName(ancestor))
+            {
+                Check(); var attributes = File.GetAttributes(ancestor); Check();
+                if ((attributes & FileAttributes.ReparsePoint) != 0) throw new SnapshotCaptureException("Redirected actual image refused.");
+            }
+            Check(); var fileAttributes = File.GetAttributes(path); Check();
+            if ((fileAttributes & (FileAttributes.Directory | FileAttributes.Device)) != 0)
+                throw new SnapshotCaptureException("Actual image must be a regular file.");
+            Check(); frame.AcquireEntered = true;
+            frame.Stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            frame.AcquireReturned = true; Check();
+            length = frame.Stream.Length; Check();
+            if (length is <= 0 or > MaximumFileBytes) throw new SnapshotLimitException("Complete actual image extent admission exceeded.");
+            _budget.Resources.AdmitIo(length + 1); Check();
+            frame.HashAcquireEntered = true; frame.Hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            frame.HashAcquireReturned = true; Check();
+            long offset = 0;
+            while (offset < length)
+            {
+                Check(); var count = frame.Stream.Read(_imageScratch, 0, (int)Math.Min(_imageScratch.Length, length - offset)); Check();
+                if (count <= 0) throw new SnapshotDivergedException("Complete actual image ended early.");
+                frame.Hash.AppendData(_imageScratch, 0, count); Check(); offset += count;
+            }
+            Check(); var eof = frame.Stream.ReadByte(); Check(); var secondLength = frame.Stream.Length; Check();
+            if (eof != -1 || secondLength != length) throw new SnapshotDivergedException("Actual image EOF/length changed.");
+            _budget.Resources.AdmitSemantic(512); Check(); // Digest + both bounded hex strings and fixed overhead.
+            var digest = frame.Hash.GetHashAndReset(); Check();
+            frame.Sha256 = Convert.ToHexString(digest).ToLowerInvariant(); Check();
+        }
+        catch (Exception primary) { frame.Primary = primary; _failure ??= primary; _budget.BeginFailureCleanup(); }
+        try { CheckEndpoint(); }
+        catch (Exception post) { frame.Post = post; _failure ??= post; _budget.BeginFailureCleanup(); }
+        // First hash disposition and stream disposition are independent. A
+        // failed close is retained and never retried by final Dispose.
+        FirstCloseHash(frame); FirstClose(frame); _imageScratchBorrowed = false;
+        ThrowFrame(frame); Check();
+        return new(path, role, length, frame.Sha256!);
+    }
+
+    internal void Recheck(ResolvedGraphImagePin expected)
+    {
+        var actual = PinImage(expected.Path, expected.Role);
+        if (actual.Bytes != expected.Bytes || actual.Sha256 != expected.Sha256)
+        {
+            var failure = new SnapshotDivergedException("Actual complete image changed across compiler boundary: " + expected.Path);
+            _failure ??= failure; _budget.BeginFailureCleanup(); throw failure;
+        }
+    }
+
+    private void FirstCloseHash(Frame frame)
+    {
+        if (!frame.HashAcquireReturned || frame.Hash is null || frame.HashCloseAttempted) return;
+        frame.HashCloseAttempted = true;
+        try { CheckEndpoint(); frame.HashCloseEntered = true; frame.Hash.Dispose(); frame.HashCloseReturned = true; }
+        catch (Exception close) { frame.HashCloseFailure = close; _failure ??= close; _budget.BeginFailureCleanup(); }
+        try { CheckEndpoint(); }
+        catch (Exception post) { frame.HashClosePost = post; _failure ??= post; _budget.BeginFailureCleanup(); }
+    }
 
     private void Check()
     {
@@ -225,13 +318,15 @@ internal sealed class ResolvedGraphInputs : IDisposable
     }
     private static void ThrowFrame(Frame frame)
     {
-        var failures = new[] { frame.Primary, frame.Post, frame.CloseFailure, frame.ClosePost }
+        var failures = new[] { frame.Primary, frame.Post, frame.HashCloseFailure, frame.HashClosePost, frame.CloseFailure, frame.ClosePost }
             .OfType<Exception>().ToArray();
         if (failures.Length > 0) throw new AggregateException("Actual graph input and independent first-close outcomes retained.", failures);
         if (frame.WriteEntered && !frame.WriteReturned || frame.FlushEntered && !frame.FlushReturned)
             throw new EvaluationContractException("Original worker result write/flush remains unknown.");
         if (frame.AcquireEntered && (!frame.AcquireReturned || !frame.CloseEntered || !frame.CloseReturned))
             throw new EvaluationContractException("Actual original graph input acquisition/disposition remains unknown.");
+        if (frame.HashAcquireEntered && (!frame.HashAcquireReturned || !frame.HashCloseEntered || !frame.HashCloseReturned))
+            throw new EvaluationContractException("Actual original image hash acquisition/disposition remains unknown.");
     }
     public void Dispose()
     {
@@ -253,7 +348,7 @@ internal sealed class ResolvedGraphInputs : IDisposable
             }
             for (var i = _frames.Count - 1; i >= 0; --i)
             {
-                FirstClose(_frames[i]);
+                FirstCloseHash(_frames[i]); FirstClose(_frames[i]);
                 try { ThrowFrame(_frames[i]); }
                 catch (Exception failure) { failures.Add(failure); }
             }
@@ -275,14 +370,18 @@ internal sealed class ResolvedGraphInputs : IDisposable
     private sealed class Frame
     {
         internal FileStream? Stream;
+        internal IncrementalHash? Hash;
         internal byte[]? Bytes;
         internal string? Sha256;
         internal bool AcquireEntered, AcquireReturned, DispositionAttempted, CloseEntered, CloseReturned;
         internal bool WriteEntered, WriteReturned, FlushEntered, FlushReturned;
+        internal bool HashAcquireEntered, HashAcquireReturned, HashCloseAttempted, HashCloseEntered, HashCloseReturned;
+        internal Exception? HashCloseFailure, HashClosePost;
         internal Exception? Primary, Post, CloseFailure, ClosePost;
     }
 }
 
 internal sealed record ResolvedGraphFile(string Path, string Role, byte[] Bytes, string Sha256);
+internal sealed record ResolvedGraphImagePin(string Path, string Role, long Bytes, string Sha256);
 
 internal sealed record ResolvedGraphEntry(string Path, FileAttributes Attributes);

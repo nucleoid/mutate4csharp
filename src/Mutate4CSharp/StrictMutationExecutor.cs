@@ -8,12 +8,13 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
     private readonly IReadOnlyDictionary<string, SuiteExecution> _suites;
     private readonly IReadOnlyDictionary<string, bool> _healthyControls;
     private readonly TimeProvider _timeProvider;
+    private readonly bool _resolvedGraph;
     private readonly Func<TestRunResult, bool, string, string, CompileEvidence> _compilerEvidenceEvaluator;
 
     public StrictMutationExecutor(InputSnapshot snapshot, FrozenExecutionEnvironment environment,
         IReadOnlyList<MutationCandidate> candidates, IReadOnlyList<SuiteExecution> suites,
         IReadOnlyDictionary<string, bool> healthyControls, TimeProvider? timeProvider = null,
-        Func<TestRunResult, bool, string, string, CompileEvidence>? compilerEvidenceEvaluator = null)
+        Func<TestRunResult, bool, string, string, CompileEvidence>? compilerEvidenceEvaluator = null, bool resolvedGraph = false)
     {
         _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
         _environment = environment ?? throw new ArgumentNullException(nameof(environment));
@@ -24,6 +25,7 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
         _suites = suites.ToDictionary(item => item.Identity, StringComparer.Ordinal);
         _healthyControls = healthyControls;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _resolvedGraph = resolvedGraph;
         _compilerEvidenceEvaluator = compilerEvidenceEvaluator ??
             ((run, healthy, targetPath, workingDirectory) =>
                 CompilerEvidence.Evaluate(run, healthy, targetPath, workingDirectory));
@@ -97,7 +99,7 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
                     collectCoverage: false, cancellationToken,
                     ExecutionEnvironment.ProcessEnvironment(ownedPackages.Root), noRestore: true,
                     requireExecutionBoundary: true, framework: suite.Framework,
-                    configuration: suite.Configuration);
+                    configuration: suite.Configuration, resolvedGraph: _resolvedGraph);
                 if (!string.Equals(_environment.PackageFingerprint,
                         ExecutionEnvironment.FingerprintPackages(ownedPackages.Root,
                             cancellationToken: cancellationToken), StringComparison.Ordinal))

@@ -13,10 +13,11 @@ internal static class ResolvedGraphTaskCapture
             throw Refuse("Exact private first-Csc request digest required.");
         var actual = inputs.Read(path, "config");
         inputs.CheckWork();
+        ResolvedGraphProtocol.RequireUnique(actual.Bytes);
         using var document = JsonDocument.Parse(actual.Bytes, new JsonDocumentOptions { MaxDepth = 16 });
         inputs.CheckWork();
-        var root = Fields(document.RootElement, "Version", "RequestSha256", "Tasks");
-        if (root["Version"].ValueKind != JsonValueKind.Number || !root["Version"].TryGetInt32(out var version) || version != 3 || Text(root["RequestSha256"]) != requestSha256)
+        var root = Fields(document.RootElement, "Version", "RequestSha256", "Tasks", "PreDelivery");
+        if (root["Version"].ValueKind != JsonValueKind.Number || !root["Version"].TryGetInt32(out var version) || version != 5 || Text(root["RequestSha256"]) != requestSha256)
             throw Refuse("First-Csc result differs from its original request/version.");
         var tasks = root["Tasks"];
         if (tasks.ValueKind != JsonValueKind.Array || (!permitEmptyTasks && tasks.GetArrayLength() == 0) ||
@@ -29,7 +30,7 @@ internal static class ResolvedGraphTaskCapture
         foreach (var task in tasks.EnumerateArray())
         {
             inputs.CheckWork();
-            var fields = Fields(task, "Identity", "Project", "TaskAssemblyLocation", "TaskFile", "Tokens", "Switches");
+            var fields = Fields(task, "Identity", "Project", "TaskAssemblyLocation", "TaskFile", "Tokens", "Switches", "Compiled");
             var identity = Fields(fields["Identity"], "Project", "Target", "Task");
             var projectIdentity = Fields(identity["Project"], "Submission", "Node", "ProjectContext", "ProjectInstance");
             var instance = Number(projectIdentity["ProjectInstance"]);
@@ -90,11 +91,17 @@ internal static class ResolvedGraphTaskCapture
             rows.Add(new(key, Absolute(Text(project["ProjectFile"])), retainedGlobals,
                 Absolute(Text(fields["TaskAssemblyLocation"])), Absolute(Text(fields["TaskFile"])),
                 argv, switches.TryGetValue("SkipCompilerExecution", out skip) ? skip.GetBoolean() : null)
-            { EvaluatedProperties = evaluated, ProjectInstanceId = instance, EvaluationId = evaluation });
+                        { EvaluatedProperties = evaluated, ProjectInstanceId = instance, EvaluationId = evaluation,
+                Compiled = JsonSerializer.Deserialize<GraphCompiledSnapshot>(fields["Compiled"].GetRawText(), ResolvedGraphProtocol.Options)
+                    ?? throw Refuse("Complete actual Csc compiled document/output snapshot required.") });
         }
         inputs.Recheck(actual);
         inputs.CheckWork();
-        return new(actual, requestSha256, rows);
+        var usage = JsonSerializer.Deserialize<GraphResourceUsage>(root["PreDelivery"].GetRawText(), ResolvedGraphProtocol.Options)
+            ?? throw Refuse("Complete logger pre-delivery resource observations required.");
+        if (usage.Grant is null) throw Refuse("Logger resource grant missing.");
+        ResolvedGraphResources.RequireGrant(usage.Grant, "logger");
+        return new(actual, requestSha256, rows, usage);
 
         string Charge(string value)
         {
@@ -139,7 +146,7 @@ internal static class ResolvedGraphTaskCapture
 }
 
 internal sealed record ResolvedGraphTaskData(ResolvedGraphFile OriginalFile, string RequestSha256,
-    IReadOnlyList<ResolvedGraphObservedTask> Tasks)
+    IReadOnlyList<ResolvedGraphObservedTask> Tasks, GraphResourceUsage PreDelivery)
 {
     internal ResolvedGraphObservedTask Select(string root, ResolvedProjectSelection selection)
     {
@@ -158,6 +165,7 @@ internal sealed record ResolvedGraphObservedTask(string EventIdentity, string Pr
     IReadOnlyList<string> Tokens, bool? SkipCompilerExecution)
 {
     internal IReadOnlyDictionary<string, string> EvaluatedProperties { get; init; } = new Dictionary<string, string>();
+    internal GraphCompiledSnapshot? Compiled { get; init; }
     internal int ProjectInstanceId { get; init; } = -1;
     internal int EvaluationId { get; init; } = -1;
     internal void RequireObservedExecutionSwitch()

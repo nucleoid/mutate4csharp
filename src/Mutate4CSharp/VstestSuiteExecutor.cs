@@ -14,7 +14,7 @@ internal sealed class TrxAccountingException : Exception
 
 internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutionEnvironment environment,
     TimeProvider? timeProvider = null,
-    Action<SnapshotClone, IReadOnlyList<string>>? beforeCoverageParsing = null) : ISuiteExecutor
+    Action<SnapshotClone, IReadOnlyList<string>>? beforeCoverageParsing = null, bool resolvedGraph = false) : ISuiteExecutor
 {
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
@@ -68,7 +68,7 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                 var testPath = Path.Combine(worker.Root, suite.Path.Replace('/', Path.DirectorySeparatorChar));
                 var run = await TestRunner.RunAsync(worker.Root, testPath, results, remaining, collectCoverage: true,
                     linked.Token, ExecutionEnvironment.ProcessEnvironment(packages.Root), noRestore: true,
-                    requireExecutionBoundary: true, framework: suite.Framework, configuration: suite.Configuration);
+                    requireExecutionBoundary: true, framework: suite.Framework, configuration: suite.Configuration, resolvedGraph: resolvedGraph);
                 if (!string.Equals(environment.PackageFingerprint,
                         ExecutionEnvironment.FingerprintPackages(packages.Root,
                             cancellationToken: linked.Token), StringComparison.Ordinal))
@@ -78,7 +78,7 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                 var rawCoverage = TestRunner.FindCoverage(results);
                 if (disposition == SuiteRunDisposition.Passed) beforeCoverageParsing?.Invoke(worker, rawCoverage);
                 var coverageMap = disposition == SuiteRunDisposition.Passed
-                    ? CoverageMap.Load(rawCoverage, worker, snapshot) : null;
+                    ? CoverageMap.Load(rawCoverage, worker, snapshot, resolvedGraph, resolvedGraph ? packages.Root : null) : null;
                 coverage = disposition == SuiteRunDisposition.Passed
                     ? await PreserveOpenCoverReportsAsync(rawCoverage,
                         $"baseline-{Sanitize(suite.Aliases[0])}") : null;

@@ -13,6 +13,7 @@ internal sealed class ResolvedGraphBudget
     private readonly TimeSpan _whole;
     private readonly TimeSpan _work;
     private long? _cleanup;
+    internal ResolvedGraphResources Resources { get; }
 
     internal ResolvedGraphBudget(TimeSpan enclosingRemaining, CancellationToken token)
     {
@@ -21,11 +22,12 @@ internal sealed class ResolvedGraphBudget
         _original = Stopwatch.GetTimestamp();
         _whole = _work = enclosingRemaining;
         _token = token;
+        Resources = new ResolvedGraphResources(this);
     }
 
     // The creating parent supplies its already-running original, never a fresh
     // worker allowance. Exact frequency/limits join before the first file read.
-    internal ResolvedGraphBudget(ResolvedGraphBudgetObservation enclosing, CancellationToken token)
+    internal ResolvedGraphBudget(ResolvedGraphBudgetObservation enclosing, CancellationToken token, GraphChildGrant? childGrant = null)
     {
         var now = Stopwatch.GetTimestamp();
         if (enclosing.Frequency != Stopwatch.Frequency || enclosing.Original <= 0 || enclosing.Original > now ||
@@ -38,6 +40,7 @@ internal sealed class ResolvedGraphBudget
         _work = TimeSpan.FromTicks(enclosing.WorkTicks);
         _cleanup = enclosing.Cleanup;
         _token = token;
+        Resources = new ResolvedGraphResources(this, childGrant);
         CheckWork();
     }
 

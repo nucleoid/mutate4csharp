@@ -138,14 +138,22 @@ public sealed class ResolvedGraphTaskContextContractTests
             ["TaskAssemblyLocation"] = Path.Combine(owner.Root, "Microsoft.Build.Tasks.CodeAnalysis.dll"),
             ["TaskFile"] = Path.Combine(owner.Root, "Microsoft.CSharp.Core.targets"),
             ["Tokens"] = new[] { "/define:DATA_ONLY" },
-            ["Switches"] = new { ProvideCommandLineArgs = true, UseSharedCompilation = false, SkipCompilerExecution = false }
+            ["Switches"] = new { ProvideCommandLineArgs = true, UseSharedCompilation = false, SkipCompilerExecution = false },
+            // Schema DATA only. No file exists and Verify cannot promote these
+            // names/proof into actual output correspondence or native authority.
+            ["Compiled"] = new GraphCompiledSnapshot(Path.Combine(owner.Root, "DATA_ONLY.dll"), new string('0', 64),
+                Path.Combine(owner.Root, "DATA_ONLY.pdb"), new string('0', 64),
+                [new(Path.Combine(owner.Root, "DATA_ONLY.cs"), new string('0', 64))],
+                new Dictionary<string, string>(), new(Guid.Empty, Guid.Empty, 0, 1, new string('0', 64), new string('0', 64)))
         };
         var first = Row(11);
         if (mode == "missing-instance") ((Dictionary<string, object>)first["Project"]).Remove("ProjectInstanceId");
         var rows = mode == "ambiguous" ? new[] { first, Row(12) } : new[] { first };
         var digest = new string('a', 64);
         var file = Path.Combine(owner.Root, "data-events.json");
-        inputs.WriteNewResult(file, JsonSerializer.SerializeToUtf8Bytes(new { Version = 3, RequestSha256 = digest, Tasks = rows }));
+        // Pure schema DATA only, never a parent-retained actual reservation.
+        var usage = new GraphResourceUsage(new("logger", new string('a', 32), ResolvedGraphResources.LoggerIoLimit), 0, 0, 0);
+        inputs.WriteNewResult(file, JsonSerializer.SerializeToUtf8Bytes(new { Version = 5, RequestSha256 = digest, Tasks = rows, PreDelivery = usage }));
         if (mode is not ("complete" or "ambiguous"))
         {
             Assert.Throws<EvaluationContractException>(() => ResolvedGraphTaskCapture.Read(file, digest, inputs));

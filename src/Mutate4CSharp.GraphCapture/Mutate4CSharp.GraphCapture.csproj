@@ -10,6 +10,7 @@
     <IsPackable>false</IsPackable>
     <UseSharedCompilation>false</UseSharedCompilation>
   </PropertyGroup>
+  <ItemGroup><AssemblyMetadata Include="MutateSourceRevision" Value="$(SourceRevisionId)" /></ItemGroup>
   <ItemGroup>
     <AssemblyMetadata Include="MutateSelectedSdk" Value="$(NETCoreSdkVersion)" />
     <Compile Include="../Mutate4CSharp/*.cs" />

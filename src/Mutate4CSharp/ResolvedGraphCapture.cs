@@ -35,6 +35,7 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
     }
 
     internal string Root => _clone.Root;
+    internal string PackageRoot => _packages.Root;
     internal ResolvedGraphBudgetObservation ObserveOriginalBudget() => _budget.Observe();
     internal IReadOnlyList<ResolvedProjectCapture> Projects => _projects;
 
@@ -126,6 +127,7 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
         var logger = _logger ?? throw new EvaluationContractException("Actual selected logger is absent.");
         _budget.CheckWork();
         var images = logger.ReadActual(_inputs);
+        var taskDefinition = _inputs.Read(Path.Combine(Path.GetDirectoryName(logger.CscTask.Path)!, "Microsoft.CSharp.Core.targets"), "import");
         _budget.CheckWork();
         if (_producerDirectories.Count >= MaxContexts)
             throw new SnapshotLimitException("Complete compiler producer attempt limit exceeded.");
@@ -134,9 +136,13 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
         _budget.CheckWork();
         var requestPath = Path.Combine(files.Root, "resolved-graph-csc-request.json");
         var queryPath = Path.Combine(files.Root, "resolved-graph-query.json");
+        var childGrant = _budget.Resources.ReserveChild("logger");
         var request = JsonSerializer.SerializeToUtf8Bytes(new
         {
-            Version = 2, Root = files.Root, OriginalBudget = _budget.Observe(),
+            Version = 4, Root = files.Root, SourceRoot = Root, PackageRoot = _packages.Root, OriginalBudget = _budget.Observe(), Grant = childGrant,
+            Compiler = new GraphCompilerImages(logger.SdkVersion,
+                logger.LoggerClosure.Single(i => Path.GetFileName(i.Path) == "Microsoft.CodeAnalysis.dll").Sha256,
+                logger.LoggerClosure.Single(i => Path.GetFileName(i.Path) == "Microsoft.CodeAnalysis.CSharp.dll").Sha256),
             PermitEmptyTasks = _firstTasks.ContainsKey(selection)
         });
         _budget.CheckWork();
@@ -151,14 +157,15 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
             origin.Original.ToString(System.Globalization.CultureInfo.InvariantCulture),
             origin.Frequency.ToString(System.Globalization.CultureInfo.InvariantCulture),
             origin.WholeTicks.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            origin.WorkTicks.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            origin.WorkTicks.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            childGrant.IoBytes.ToString(System.Globalization.CultureInfo.InvariantCulture), childGrant.Nonce);
         // One same-owner actual compiler invocation. Later/up-to-date queries
         // may use only a task retained from an earlier ACTUAL producer in this
         // same capture, never a rebuild or synthetic command-line fallback.
         var arguments = new[] { "msbuild", project, "-target:Compile", "-nologo", "-verbosity:diagnostic", "-noconsolelogger",
             "-m:1", "-nodeReuse:false", "-p:UseSharedCompilation=false",
-            "-p:ProvideCommandLineArgs=true", "-p:EmitCompilerGeneratedFiles=true",
-            "-p:Configuration=" + selection.Configuration,
+            "-p:ProvideCommandLineArgs=true", "-p:EmitCompilerGeneratedFiles=true", "-p:SkipCompilerExecution=false",
+            "-p:Configuration=" + selection.Configuration, ResolvedGraphPathProfile.Argument(Root, _packages.Root),
             "-logger:Mutate4CSharp.ResolvedGraphCscLogger," + logger.LoggerPath + ";" + parameters,
             // Selected MSBuild intentionally suppresses all user loggers when
             // query results go to stdout. A separate fixed owned result file
@@ -178,9 +185,11 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
             throw new SnapshotCaptureException("Resolved graph compiler producer did not complete successfully: " +
                 EvaluationTextBounds.Suffix(run.StandardError + " " + run.StandardOutput, EvaluationEvidence.MaxDiagnosticLength));
         foreach (var image in images) _inputs.Recheck(image);
+        _inputs.Recheck(taskDefinition);
         _inputs.Recheck(requestFile);
         var actualTasks = ResolvedGraphTaskCapture.Read(Path.Combine(files.Root, "resolved-graph-csc-events.json"),
             requestFile.Sha256, _inputs, _firstTasks.ContainsKey(selection));
+        _budget.Resources.ObserveChildReturn(childGrant, actualTasks.PreDelivery, actualTasks.OriginalFile.Bytes.LongLength);
         _actualTaskFiles.Add(actualTasks);
         var observedContexts = new HashSet<ResolvedProjectSelection>();
         foreach (var task in actualTasks.Tasks)
@@ -200,6 +209,9 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
                 throw new EvaluationContractException(JoinMismatchDiagnostic(task, selection, logger,
                     hasFramework, actualFramework, hasConfiguration, actualConfiguration, taskImageMatches));
             }
+            if (!Path.GetFullPath(task.TaskFile).Equals(taskDefinition.Path,
+                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                throw new EvaluationContractException("Custom Csc target/factory definition is outside the selected stock task profile.");
             var taskSelection = new ResolvedProjectSelection(SnapshotInputPolicy.NormalizeRelative(
                 Path.GetRelativePath(Root, task.ProjectFile).Replace('\\', '/')), framework, configuration);
             if (task.ProjectInstanceId < 0 || !observedContexts.Add(taskSelection))

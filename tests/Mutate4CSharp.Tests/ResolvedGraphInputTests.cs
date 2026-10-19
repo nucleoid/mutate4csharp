@@ -75,6 +75,36 @@ public sealed class ResolvedGraphInputTests : IDisposable
         var unchanged = new byte[bytes.Length]; exclusive.ReadExactly(unchanged);
         Assert.Equal(bytes, unchanged);
     }
+    [Fact]
+    public void Complete_large_streamed_image_positive_rechecks_every_byte_and_retains_no_image_array()
+    {
+        var path = Path.Combine(_root, "compiler-image.dll");
+        const int length = 19 * 1024 * 1024;
+        using (var created = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+        {
+            created.SetLength(length); created.Position = length - 1; created.WriteByte(17); created.Flush(true);
+        }
+        var original = new ResolvedGraphBudget(TimeSpan.FromSeconds(30), CancellationToken.None);
+        using var inputs = new ResolvedGraphInputs(original);
+        var pin = inputs.PinImage(path);
+        Assert.Equal(length, pin.Bytes);
+        using (var complete = File.OpenRead(path))
+            Assert.Equal(Convert.ToHexString(SHA256.HashData(complete)).ToLowerInvariant(), pin.Sha256);
+        inputs.Recheck(pin);
+        var charged = original.Resources.ObservePreDelivery();
+        Assert.Equal(2L * (length + 1), charged.IoCharged);
+        Assert.True(charged.SemanticCharged < 128 * 1024);
+        // First stream/hash dispositions have returned: obtain a real exclusive
+        // writer, then change the final byte, not only a cached prefix.
+        using (var changed = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            changed.Position = length - 1; changed.WriteByte(18); changed.Flush(true);
+        }
+        Assert.Throws<SnapshotDivergedException>(() => inputs.Recheck(pin));
+        Assert.NotNull(original.Observe().Cleanup);
+        Assert.Throws<EvaluationContractException>(() => inputs.PinImage(path));
+    }
+
     public void Dispose()
     {
         var target = Path.GetFullPath(_root);

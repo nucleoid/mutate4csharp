@@ -13,14 +13,82 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+      MSBUILDDISABLENODEREUSE: 1
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.103
-      - run: dotnet build mutate4csharp.slnx -m:1
+          dotnet-version: |
+            10.0.103
+            10.0.401
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: ordinary-sdk103-locked-build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $revision = (& git rev-parse HEAD)
+          if ($LASTEXITCODE -ne 0 -or $revision -cnotmatch '^[0-9a-f]{40}$') { throw 'Actual clean source revision required' }
+          if ((& dotnet --version) -cne '10.0.103' -or $LASTEXITCODE -ne 0) { throw 'Ordinary source must select SDK103' }
+          & dotnet restore mutate4csharp.slnx --locked-mode -m:1 -nodeReuse:false -p:UseSharedCompilation=false
+          if ($LASTEXITCODE -ne 0) { throw 'Ordinary locked restore failed' }
+          & dotnet build mutate4csharp.slnx -m:1 --no-restore -nodeReuse:false -p:UseSharedCompilation=false "-p:SourceRevisionId=$revision"
+          if ($LASTEXITCODE -ne 0) { throw 'Ordinary SDK103 build failed' }
+      - name: same-source-sdk401-graph-deployment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Existing hosted job owns this finite sequential preparation. This is
+          # not a new native runner or proof of local native resource closure.
+          $revision = (& git rev-parse HEAD)
+          if ($LASTEXITCODE -ne 0 -or $revision -cnotmatch '^[0-9a-f]{40}$') { throw 'Actual source revision required' }
+          $hostFile = Get-Item -LiteralPath (Get-Command dotnet -CommandType Application).Source
+          if ($hostFile.LinkType) { $hostFile = $hostFile.ResolveLinkTarget($true) }
+          $hostPath = $hostFile.FullName
+          $sdkTask = Join-Path $hostFile.DirectoryName 'sdk/10.0.401/Roslyn/Microsoft.Build.Tasks.CodeAnalysis.dll'
+          if (-not (Test-Path -LiteralPath $sdkTask -PathType Leaf)) { throw 'Actual same-host SDK401 task missing' }
+          $workspace = Join-Path $env:RUNNER_TEMP "mutate4csharp-graph-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if (Test-Path -LiteralPath $workspace) { throw 'Graph preparation must be fresh' }
+          [void][IO.Directory]::CreateDirectory($workspace)
+          $clone = Join-Path $workspace 'source'
+          & git clone --quiet --no-local $env:GITHUB_WORKSPACE $clone
+          if ($LASTEXITCODE -ne 0) { throw 'Same-source clone failed' }
+          & git -C $clone checkout --quiet --detach $revision
+          if ($LASTEXITCODE -ne 0) { throw 'Exact same-source checkout failed' }
+          $dirty = @(& git -C $clone status --porcelain=v1 --untracked-files=all)
+          if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) { throw 'Clone must be clean before explicit SDK profile' }
+          $profile = Join-Path $clone 'global.json'
+          [IO.File]::WriteAllBytes((Join-Path $workspace 'original-global103.json'), [IO.File]::ReadAllBytes($profile))
+          [IO.File]::WriteAllText($profile, '{"sdk":{"version":"10.0.401","rollForward":"disable","allowPrerelease":false}}' + "`n", [Text.UTF8Encoding]::new($false))
+          Push-Location $clone
+          try {
+            if ((& $hostPath --version) -cne '10.0.401' -or $LASTEXITCODE -ne 0) { throw 'Actual graph SDK must be401' }
+            foreach ($role in @('logger','worker')) {
+              $project = if ($role -eq 'logger') { 'Mutate4CSharp.GraphCapture' } else { 'Mutate4CSharp.GraphWorker' }
+              $output = Join-Path $workspace $role
+              $obj = (Join-Path $workspace "obj/$role") + [IO.Path]::DirectorySeparatorChar
+              [void][IO.Directory]::CreateDirectory($output)
+              & $hostPath build "src/$project/$project.csproj" --configuration Release -m:1 -nodeReuse:false -p:UseSharedCompilation=false -p:BuildInParallel=false "-p:GraphSelectedSdkVersion=10.0.401" "-p:SourceRevisionId=$revision" "-p:BaseIntermediateOutputPath=$obj" "-p:MSBuildProjectExtensionsPath=$obj" "-p:OutputPath=$output$([IO.Path]::DirectorySeparatorChar)" -p:AppendTargetFrameworkToOutputPath=false "-p:RestoreConfigFile=$env:GITHUB_WORKSPACE/NuGet.Config"
+              if ($LASTEXITCODE -ne 0) { throw "Actual graph $role build failed" }
+            }
+            & git diff --exit-code -- . ':(exclude)global.json'
+            if ($LASTEXITCODE -ne 0) { throw 'Graph preparation changed authored source outside explicit SDK profile' }
+            if ([IO.File]::ReadAllText($profile) -cne ('{"sdk":{"version":"10.0.401","rollForward":"disable","allowPrerelease":false}}' + "`n")) { throw 'Explicit SDK profile drifted' }
+          } finally { Pop-Location }
+          $manifest = Join-Path $workspace 'deployment.json'
+          $digest = @(& python -I scripts/create-graph-deployment.py --host $hostPath --logger-dir (Join-Path $workspace 'logger') --worker-dir (Join-Path $workspace 'worker') --task $sdkTask --source-revision $revision --output $manifest)
+          if ($LASTEXITCODE -ne 0 -or $digest.Count -ne 1 -or $digest[0] -cnotmatch '^[0-9a-f]{64}$') { throw 'Exact fresh graph deployment publication failed' }
+          if ((Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant() -cne $digest[0]) { throw 'Published graph digest differs' }
+          # Native paths from PowerShell/BCL avoid MSYS path conversion in both
+          # process arguments and the exact manifest/environment path values.
+          @("DOTNET_HOST_PATH=$hostPath", "MUTATE4CSHARP_GRAPH_CAPTURE_MANIFEST=$manifest", "MUTATE4CSHARP_GRAPH_CAPTURE_MANIFEST_SHA256=$($digest[0])") | Out-File -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: round-ten-contract-regressions
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~IssueEightReviewRoundTenTests" -- xUnit.MaxParallelThreads=1
       - run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests" -- xUnit.MaxParallelThreads=1

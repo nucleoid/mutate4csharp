@@ -22,11 +22,13 @@ public sealed class ResolvedGraphCscLogger : ILogger
     private readonly Dictionary<ProjectKey, ProjectRow> _projects = [];
     private readonly Dictionary<TaskKey, TaskRow> _tasks = [];
     private readonly List<PropertyEnumeration> _propertyEnumerations = [];
+    private readonly List<ResolvedGraphFile> _compiledFiles = [];
+    private readonly List<ResolvedGraphImagePin> _loadedImages = [];
     private ResolvedGraphBudget? _budget;
     private ResolvedGraphInputs? _inputs;
     private ResolvedGraphFile? _requestFile;
     private IEventSource? _source;
-    private string? _root;
+    private string? _root, _sourceRoot, _packageRoot;
     private bool _initialized, _closing, _closed, _finished, _permitEmptyTasks;
     private Exception? _failure;
     private long _characters;
@@ -43,7 +45,7 @@ public sealed class ResolvedGraphCscLogger : ILogger
             // Fixed private ABI, never an arbitrary file or caller clock issuer.
             // Parent must pin/join this exact request and actual original owner.
             var parts = Parameters?.Split('|');
-            if (parts is null || parts.Length != 6 || !Path.IsPathFullyQualified(parts[0]) ||
+            if (parts is null || parts.Length != 8 || !Path.IsPathFullyQualified(parts[0]) ||
                 parts[1].Length != 64 || parts[1].Any(c => !char.IsAsciiHexDigitLower(c)))
                 throw new LoggerException("Exact private graph Csc logger binding required.");
             var numbers = new long[4];
@@ -52,7 +54,11 @@ public sealed class ResolvedGraphCscLogger : ILogger
                     !long.TryParse(parts[i + 2], NumberStyles.None, CultureInfo.InvariantCulture, out numbers[i]))
                     throw new LoggerException("Exact original graph budget integers required.");
             var original = new ResolvedGraphBudgetObservation(numbers[0], numbers[1], numbers[2], numbers[3], null);
-            _budget = new ResolvedGraphBudget(original, CancellationToken.None);
+            if (!long.TryParse(parts[6], NumberStyles.None, CultureInfo.InvariantCulture, out var ioBytes))
+                throw new LoggerException("Exact child I/O grant integer required.");
+            var grant = new GraphChildGrant("logger", parts[7], ioBytes);
+            ResolvedGraphResources.RequireGrant(grant, "logger");
+            _budget = new ResolvedGraphBudget(original, CancellationToken.None, grant);
             _inputs = new ResolvedGraphInputs(_budget);
             _requestFile = _inputs.Read(parts[0], "config", 1_048_576);
             if (_requestFile.Bytes.Length > 1_048_576 || _requestFile.Sha256 != parts[1])
@@ -60,11 +66,24 @@ public sealed class ResolvedGraphCscLogger : ILogger
             var request = JsonSerializer.Deserialize<CaptureRequest>(_requestFile.Bytes,
                 new JsonSerializerOptions { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow, MaxDepth = 8 })
                 ?? throw new LoggerException("Complete Csc capture request required.");
-            if (request.Version != 2 || request.OriginalBudget != original ||
+            if (request.Version != 4 || request.OriginalBudget != original || request.Grant != grant ||
                 !Path.IsPathFullyQualified(request.Root) || request.Root.Length > 4096 ||
                 Path.GetFullPath(request.Root) != request.Root)
                 throw new LoggerException("Private Csc request differs from actual pre-read original binding.");
-            _root = request.Root;
+            _root = request.Root; _sourceRoot = request.SourceRoot; _packageRoot = request.PackageRoot;
+            var selectedSdk = typeof(ResolvedGraphCscLogger).Assembly.GetCustomAttributes(
+                typeof(System.Reflection.AssemblyMetadataAttribute), false)
+                .Cast<System.Reflection.AssemblyMetadataAttribute>()
+                .SingleOrDefault(a => a.Key == "MutateSelectedSdk")?.Value;
+            if (request.Compiler.SdkVersion != "10.0.401" || selectedSdk != request.Compiler.SdkVersion)
+                throw new LoggerException("Actual logger selected SDK stamp differs from requested compiler profile.");
+            foreach (var pair in new[] { (typeof(Microsoft.CodeAnalysis.Compilation).Assembly, request.Compiler.CommonSha256),
+                         (typeof(Microsoft.CodeAnalysis.CSharp.CSharpCompilation).Assembly, request.Compiler.CSharpSha256) })
+            {
+                var loaded = _inputs.PinImage(pair.Item1.Location);
+                if (loaded.Sha256 != pair.Item2) throw new LoggerException("Actual loaded logger parser differs from selected compiler image.");
+                _loadedImages.Add(loaded);
+            }
             _permitEmptyTasks = request.PermitEmptyTasks;
             if (eventSource is not IEventSource3 rich) throw new LoggerException("Selected task-parameter event contract required.");
             rich.IncludeTaskInputs();
@@ -182,6 +201,8 @@ public sealed class ResolvedGraphCscLogger : ILogger
                 !task.Switches.TryGetValue("UseSharedCompilation", out var shared) || shared ||
                 task.Switches.TryGetValue("SkipCompilerExecution", out var skip) && skip)
                 throw new EvaluationContractException("Actual original Csc did not complete with its full argv output.");
+            task.Compiled = ResolvedGraphCompiledSources.Capture(task.Tokens, task.Project.ProjectFile, _sourceRoot!, _packageRoot!,
+                _inputs!, _budget!, _compiledFiles);
         });
     }
 
@@ -282,10 +303,17 @@ public sealed class ResolvedGraphCscLogger : ILogger
                 _source!.ProjectStarted -= ProjectStarted; _source.TaskStarted -= TaskStarted;
                 _source.TaskFinished -= TaskFinished; _source.AnyEventRaised -= AnyEvent; _source.BuildFinished -= BuildFinished;
                 _inputs!.Recheck(_requestFile!);
+                foreach (var file in _compiledFiles) _inputs.Recheck(file);
+                foreach (var image in _loadedImages) _inputs.Recheck(image);
+                _inputs.ReserveAllocation(checked(_tasks.Count * 256L + _tokens * (long)IntPtr.Size));
                 var data = _tasks.Select(row => new TaskData(row.Key, row.Value.Project,
-                    row.Value.TaskAssemblyLocation, row.Value.TaskFile, row.Value.Tokens.ToArray(), row.Value.Switches)).ToArray();
+                    row.Value.TaskAssemblyLocation, row.Value.TaskFile, row.Value.Tokens.ToArray(), row.Value.Switches, row.Value.Compiled)).ToArray();
                 _budget.CheckWork();
-                var bytes = JsonSerializer.SerializeToUtf8Bytes(new CaptureData(3, _requestFile!.Sha256, data));
+                var preDelivery = _budget.Resources.ObservePreDelivery();
+                // Complete counting/admission precedes output allocation. Full
+                // Compiled document/path metadata is included in BOTH passes.
+                var bytes = ResolvedGraphProtocol.SerializeBounded(new CaptureData(5, _requestFile!.Sha256, data, preDelivery),
+                    _inputs, 32 * 1024 * 1024, 1_048_576);
                 _budget.CheckWork();
                 _inputs.WriteNewResult(Path.Combine(_root!, "resolved-graph-csc-events.json"), bytes);
                 _inputs.Dispose(); _closed = true;
@@ -299,19 +327,20 @@ public sealed class ResolvedGraphCscLogger : ILogger
     private static ProjectKey Project(BuildEventContext c) => new(c.SubmissionId, c.NodeId, c.ProjectContextId,
         c.ProjectInstanceId);
     private static TaskKey Task(BuildEventContext c) => new(Project(c), c.TargetId, c.TaskId);
-    private sealed record CaptureRequest(int Version, string Root, ResolvedGraphBudgetObservation OriginalBudget, bool PermitEmptyTasks);
+    private sealed record CaptureRequest(int Version, string Root, string SourceRoot, string PackageRoot, ResolvedGraphBudgetObservation OriginalBudget, GraphCompilerImages Compiler, bool PermitEmptyTasks, GraphChildGrant Grant);
     private sealed record ProjectKey(int Submission, int Node, int ProjectContext, int ProjectInstance);
     private sealed record TaskKey(ProjectKey Project, int Target, int Task);
     private sealed record ProjectRow(string ProjectFile, Dictionary<string, string> GlobalProperties,
         int ProjectInstanceId, int EvaluationId, Dictionary<string, string> EvaluatedProperties);
-    private sealed record TaskData(TaskKey Identity, ProjectRow Project, string TaskAssemblyLocation, string TaskFile, string[] Tokens, Dictionary<string, bool> Switches);
-    private sealed record CaptureData(int Version, string RequestSha256, TaskData[] Tasks);
+    private sealed record TaskData(TaskKey Identity, ProjectRow Project, string TaskAssemblyLocation, string TaskFile, string[] Tokens, Dictionary<string, bool> Switches, GraphCompiledSnapshot? Compiled);
+    private sealed record CaptureData(int Version, string RequestSha256, TaskData[] Tasks, GraphResourceUsage PreDelivery);
     private sealed class TaskRow(ProjectRow project, string assembly, string file)
     {
         internal readonly ProjectRow Project = project;
         internal readonly string TaskAssemblyLocation = assembly, TaskFile = file;
         internal readonly List<string> Tokens = [];
         internal readonly Dictionary<string, bool> Switches = new(StringComparer.Ordinal);
+        internal GraphCompiledSnapshot? Compiled;
         internal bool OutputSeen, Finished, Succeeded;
     }
     private sealed class Callback(BuildEventArgs actual)

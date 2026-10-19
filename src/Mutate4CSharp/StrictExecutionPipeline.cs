@@ -41,6 +41,13 @@ internal static class StrictExecutionPipeline
         if (preparationTimeout > DependencyPreparationOptions.Default.Timeout)
             preparationTimeout = DependencyPreparationOptions.Default.Timeout;
 
+        var graphBudget = configuration.IsResolvedGraph ? new ResolvedGraphBudget(Remaining(deadline), cancellationToken) : null;
+        using var graphInputs = graphBudget is null ? null : new ResolvedGraphInputs(graphBudget);
+        var graphDeployment = graphInputs is null ? null : ResolvedGraphDeployment.Load(graphInputs);
+        if (graphDeployment is not null && !Path.GetFullPath(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ??
+                throw new EvaluationContractException("Supported graph setup requires explicit selected DOTNET_HOST_PATH."))
+                .Equals(graphDeployment.DotnetHost.Path, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            throw new EvaluationContractException("Dependency and compiler/worker host selections must be identical.");
         FrozenExecutionEnvironment environment;
         try
         {
@@ -78,8 +85,10 @@ internal static class StrictExecutionPipeline
         Func<Exception, StrictExecutionOutcome>? recoverInterruptedExecution = null;
         try
         {
-        var enumeration = StrictMutationEnumerator.Enumerate(snapshot, configuration, scopePlan,
-            cancellationToken, environment.SdkVersion);
+        var enumeration = configuration.IsResolvedGraph
+            ? await ResolvedGraphExecution.EnumerateAsync(snapshot, configuration, scopePlan, environment,
+                graphDeployment!, graphBudget!, cancellationToken)
+            : StrictMutationEnumerator.Enumerate(snapshot, configuration, scopePlan, cancellationToken, environment.SdkVersion);
         if (!enumeration.IsComplete)
             throw new StrictExecutionRefusalException(enumeration.Reasons.FirstOrDefault() ??
                 new EvaluationReason("ENUMERATION_CONTEXT_UNSUPPORTED",
@@ -88,7 +97,7 @@ internal static class StrictExecutionPipeline
         var semanticContext = enumeration.SemanticContextIdentity ??
             throw new EvaluationContractException("Complete semantic enumeration requires one context identity.");
         baselines = await new SuiteCoordinator(new VstestSuiteExecutor(snapshot, environment,
-                beforeCoverageParsing: beforeCoverageParsing),
+                beforeCoverageParsing: beforeCoverageParsing, resolvedGraph: configuration.IsResolvedGraph),
             Clock).RunBaselinesAsync(snapshotId, configuration.ExecutionSuites,
             TimeSpan.FromSeconds(policy.BaselineTimeoutSeconds), deadline, cancellationToken);
         var aliases = MapBaselineExecutions(configuration.ExecutionSuites, baselines.Executions);
@@ -203,7 +212,7 @@ internal static class StrictExecutionPipeline
             var controls = configuration.ExecutionSuites.ToDictionary(item => item.Identity,
                 item => aliases[item.Identity].Result.HealthyControl, StringComparer.Ordinal);
             var executor = new StrictMutationExecutor(snapshot, environment, plan.Selected,
-                configuration.ExecutionSuites, controls, Clock);
+                configuration.ExecutionSuites, controls, Clock, resolvedGraph: configuration.IsResolvedGraph);
             var batch = await RunContiguousAttemptsAsync(executor, scheduled,
                 policy.StabilityRepetitions, TimeSpan.FromSeconds(policy.MutantTimeoutSeconds), deadline,
                 Clock, cancellationToken);

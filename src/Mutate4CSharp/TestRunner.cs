@@ -13,7 +13,7 @@ internal static class TestRunner
         TimeSpan timeout, bool collectCoverage, CancellationToken cancellationToken,
         IReadOnlyDictionary<string, string?>? environment = null, bool noRestore = false,
         bool requireExecutionBoundary = false, string? dotnetExecutable = null,
-        string? framework = null, string? configuration = null)
+        string? framework = null, string? configuration = null, bool resolvedGraph = false)
     {
         if (requireExecutionBoundary) ExecutionEnvironment.ValidateExecutionAncestors(root);
         Directory.CreateDirectory(resultsDirectory);
@@ -39,6 +39,7 @@ internal static class TestRunner
             var insertion = separator < 0 ? arguments.Count : separator;
             arguments.Insert(insertion++, "-nodeReuse:false");
             arguments.Insert(insertion++, "-p:UseSharedCompilation=false");
+            if (resolvedGraph) arguments.Insert(insertion++, ResolvedGraphPathProfile.Argument(root, packageRoot));
             arguments.Insert(insertion, $"-p:NuGetPackageRoot={Path.GetFullPath(packageRoot).TrimEnd(
                 Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)}{Path.DirectorySeparatorChar}");
         }
@@ -216,20 +217,20 @@ internal sealed class CoverageMap
     public static CoverageMap? Load(IEnumerable<string> reports, SnapshotClone clone)
         => Load(reports, clone.Root, clone.ToCanonicalPath(clone.Root), clone.ToCanonicalPath);
 
-    public static CoverageMap? Load(IEnumerable<string> reports, SnapshotClone clone, InputSnapshot snapshot)
+    public static CoverageMap? Load(IEnumerable<string> reports, SnapshotClone clone, InputSnapshot snapshot, bool resolvedGraph = false, string? graphPackageRoot = null)
     {
         var diagnostics = new List<string>();
         var map = Load(reports, clone.Root, clone.ToCanonicalPath(clone.Root), clone.ToCanonicalPath,
             module => OpenCoverPortablePdb.Load(module, clone, snapshot, value =>
             {
                 if (diagnostics.Count < 12) diagnostics.Add("coverage-span-map=" + value);
-            }));
+            }, resolvedGraph), resolvedGraph, graphPackageRoot);
         if (map is not null) map.ProjectionDiagnostics = diagnostics;
         return map;
     }
 
     private static CoverageMap? Load(IEnumerable<string> reports, string parseRoot, string canonicalRoot,
-        Func<string, string>? canonicalize, Func<XElement, OpenCoverPortablePdb?>? pdbResolver = null)
+        Func<string, string>? canonicalize, Func<XElement, OpenCoverPortablePdb?>? pdbResolver = null, bool resolvedGraph = false, string? graphPackageRoot = null)
     {
         var paths = reports.Where(File.Exists).Distinct(StringComparer.Ordinal).ToArray();
         if (paths.Length == 0) return null;
@@ -260,9 +261,15 @@ internal sealed class CoverageMap
                         { incomplete = true; continue; }
                         try
                         {
-                            var normalized = Normalize(fullPath, parseRoot);
+                            var packageDocument = resolvedGraph && fullPath.StartsWith(ResolvedGraphPathProfile.Packages + "/", StringComparison.Ordinal);
+                            var physicalPath = packageDocument
+                                ? ResolvedGraphPathProfile.UnmapPackages(fullPath, graphPackageRoot ?? throw new EvaluationContractException("Actual graph package root required."))
+                                : resolvedGraph ? ResolvedGraphPathProfile.UnmapSource(fullPath, parseRoot) : fullPath;
+                            var normalized = Normalize(physicalPath, parseRoot);
                             cloneFiles.Add(uid, normalized);
-                            files.Add(uid, canonicalize is null ? normalized : canonicalize(normalized));
+                            files.Add(uid, packageDocument
+                                ? Path.GetFullPath("$graph-packages/" + SnapshotInputPolicy.NormalizeRelative(fullPath[(ResolvedGraphPathProfile.Packages.Length + 1)..]), canonicalRoot)
+                                : canonicalize is null ? normalized : canonicalize(normalized));
                         }
                         catch { incomplete = true; }
                     }

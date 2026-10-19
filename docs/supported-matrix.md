@@ -1,5 +1,11 @@
 # Verified support matrix
 
+The source32 resolved-graph implementation adds an explicit SDK401 capture/worker
+profile described in [resolved graph setup](resolved-graph-setup.md). Its new
+public dispatch, portable path mapping and compiler-source correspondence are
+pending fresh distinct review and genuine RED/GREEN/default103/package/Linux
+validation. They are not added to the verified rows below by source inspection.
+
 The release candidate is intentionally narrow. Evidence is scoped by mode; this is not a statement that nearby
 combinations probably work.
 

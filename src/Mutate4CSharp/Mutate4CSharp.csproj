@@ -22,6 +22,7 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RestoreLockedMode>true</RestoreLockedMode>
   </PropertyGroup>
+  <ItemGroup><AssemblyMetadata Include="MutateSourceRevision" Value="$(SourceRevisionId)" /></ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
   </ItemGroup>
@@ -130,5 +131,33 @@
     </Exec>
     <Error Condition="'@(_IgnoredBuildControlInputOutput)' != ''"
            Text="Pack refuses ignored MSBuild, NuGet, editorconfig, SDK-selection, or project-extension inputs anywhere in the repository." />
+  </Target>
+  <ItemGroup Condition="'$(GraphDeploymentDirectory)' != ''">
+    <None Include="$(GraphDeploymentDirectory)/deployment.json" Pack="true" PackagePath="tools/net10.0/any/graph/sdk401/" />
+    <None Include="$(GraphDeploymentDirectory)/logger/Mutate4CSharp.GraphCapture.dll" Pack="true" PackagePath="tools/net10.0/any/graph/sdk401/logger" />
+    <None Include="$(GraphDeploymentDirectory)/logger/Mutate4CSharp.GraphCapture.pdb" Pack="true" PackagePath="tools/net10.0/any/graph/sdk401/logger" />
+    <None Include="$(GraphDeploymentDirectory)/logger/Mutate4CSharp.GraphCapture.deps.json" Pack="true" PackagePath="tools/net10.0/any/graph/sdk401/logger" />
+    <None Include="$(GraphDeploymentDirectory)/logger/Microsoft.CodeAnalysis.dll" Pack="true" PackagePath="tools/net10.0/any/graph/sdk401/logger" />
+    <None Include="$(GraphDeploymentDirectory)/logger/Microsoft.CodeAnalysis.CSharp.dll" Pack="true" PackagePath="tools/net10.0/any/graph/sdk401/logger" />
+    <None Include="$(GraphDeploymentDirectory)/worker/Mutate4CSharp.GraphWorker.dll" Pack="true" PackagePath="tools/net10.0/any/graph/sdk401/worker" />
+    <None Include="$(GraphDeploymentDirectory)/worker/Mutate4CSharp.GraphWorker.pdb" Pack="true" PackagePath="tools/net10.0/any/graph/sdk401/worker" />
+    <None Include="$(GraphDeploymentDirectory)/worker/Mutate4CSharp.GraphWorker.deps.json" Pack="true" PackagePath="tools/net10.0/any/graph/sdk401/worker" />
+    <None Include="$(GraphDeploymentDirectory)/worker/Mutate4CSharp.GraphWorker.runtimeconfig.json" Pack="true" PackagePath="tools/net10.0/any/graph/sdk401/worker" />
+    <None Include="$(GraphDeploymentDirectory)/worker/Microsoft.CodeAnalysis.dll" Pack="true" PackagePath="tools/net10.0/any/graph/sdk401/worker" />
+    <None Include="$(GraphDeploymentDirectory)/worker/Microsoft.CodeAnalysis.CSharp.dll" Pack="true" PackagePath="tools/net10.0/any/graph/sdk401/worker" />
+  </ItemGroup>
+  <Target Name="RequireCompleteGraphPackageDeployment" BeforeTargets="GenerateNuspec" Condition="'$(GraphDeploymentDirectory)' != ''">
+    <Error Condition="!Exists('$(GraphDeploymentDirectory)/deployment.json')" Text="Complete graph package deployment missing: deployment.json" />
+    <Error Condition="!Exists('$(GraphDeploymentDirectory)/logger/Mutate4CSharp.GraphCapture.dll')" Text="Complete graph package deployment missing: logger/Mutate4CSharp.GraphCapture.dll" />
+    <Error Condition="!Exists('$(GraphDeploymentDirectory)/logger/Mutate4CSharp.GraphCapture.pdb')" Text="Complete graph package deployment missing: logger/Mutate4CSharp.GraphCapture.pdb" />
+    <Error Condition="!Exists('$(GraphDeploymentDirectory)/logger/Mutate4CSharp.GraphCapture.deps.json')" Text="Complete graph package deployment missing: logger/Mutate4CSharp.GraphCapture.deps.json" />
+    <Error Condition="!Exists('$(GraphDeploymentDirectory)/logger/Microsoft.CodeAnalysis.dll')" Text="Complete graph package deployment missing: logger/Microsoft.CodeAnalysis.dll" />
+    <Error Condition="!Exists('$(GraphDeploymentDirectory)/logger/Microsoft.CodeAnalysis.CSharp.dll')" Text="Complete graph package deployment missing: logger/Microsoft.CodeAnalysis.CSharp.dll" />
+    <Error Condition="!Exists('$(GraphDeploymentDirectory)/worker/Mutate4CSharp.GraphWorker.dll')" Text="Complete graph package deployment missing: worker/Mutate4CSharp.GraphWorker.dll" />
+    <Error Condition="!Exists('$(GraphDeploymentDirectory)/worker/Mutate4CSharp.GraphWorker.pdb')" Text="Complete graph package deployment missing: worker/Mutate4CSharp.GraphWorker.pdb" />
+    <Error Condition="!Exists('$(GraphDeploymentDirectory)/worker/Mutate4CSharp.GraphWorker.deps.json')" Text="Complete graph package deployment missing: worker/Mutate4CSharp.GraphWorker.deps.json" />
+    <Error Condition="!Exists('$(GraphDeploymentDirectory)/worker/Mutate4CSharp.GraphWorker.runtimeconfig.json')" Text="Complete graph package deployment missing: worker/Mutate4CSharp.GraphWorker.runtimeconfig.json" />
+    <Error Condition="!Exists('$(GraphDeploymentDirectory)/worker/Microsoft.CodeAnalysis.dll')" Text="Complete graph package deployment missing: worker/Microsoft.CodeAnalysis.dll" />
+    <Error Condition="!Exists('$(GraphDeploymentDirectory)/worker/Microsoft.CodeAnalysis.CSharp.dll')" Text="Complete graph package deployment missing: worker/Microsoft.CodeAnalysis.CSharp.dll" />
   </Target>
 </Project>
