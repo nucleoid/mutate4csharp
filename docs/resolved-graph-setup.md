@@ -37,7 +37,7 @@ never copy missing transitive dependencies by hand or adopt earlier outputs.
 After the owned builds, use the metadata-only script:
 
 ```text
-python scripts/create-graph-deployment.py --host <absolute-dotnet-host> \
+python scripts/create-graph-deployment.py --external-manifest --host <absolute-dotnet-host> \
   --logger-dir <complete-logger-output> --worker-dir <complete-worker-output> \
   --task <sdk401/Roslyn/Microsoft.Build.Tasks.CodeAnalysis.dll> \
   --source-revision <actual-commit> --output <fresh-absolute-deployment.json>

@@ -122,7 +122,9 @@ jobs:
             if ([IO.File]::ReadAllText($profile) -cne ('{"sdk":{"version":"10.0.401","rollForward":"disable","allowPrerelease":false}}' + "`n")) { throw 'Explicit SDK profile drifted' }
           } finally { Pop-Location }
           $manifest = Join-Path $workspace 'deployment.json'
-          $digest = @(& python -I scripts/create-graph-deployment.py --host $hostPath --logger-dir (Join-Path $workspace 'logger') --worker-dir (Join-Path $workspace 'worker') --task $sdkTask --source-revision $revision --output $manifest)
+          # This is an explicit external source-test deployment, never the
+          # package preparation route below, even though outputs are colocated.
+          $digest = @(& python -I scripts/create-graph-deployment.py --external-manifest --host $hostPath --logger-dir (Join-Path $workspace 'logger') --worker-dir (Join-Path $workspace 'worker') --task $sdkTask --source-revision $revision --output $manifest)
           if ($LASTEXITCODE -ne 0 -or $digest.Count -ne 1 -or $digest[0] -cnotmatch '^[0-9a-f]{64}$') { throw 'Exact fresh graph deployment publication failed' }
           if ((Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant() -cne $digest[0]) { throw 'Published graph digest differs' }
           # Native paths from PowerShell/BCL avoid MSYS path conversion in both
