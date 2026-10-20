@@ -92,7 +92,7 @@ internal static class StrictExecutionPipeline
         var semanticContext = enumeration.SemanticContextIdentity ??
             throw new EvaluationContractException("Complete semantic enumeration requires one context identity.");
         baselines = await new SuiteCoordinator(new VstestSuiteExecutor(snapshot, environment,
-                beforeCoverageParsing: beforeCoverageParsing, resolvedGraph: configuration.IsResolvedGraph),
+                beforeCoverageParsing: beforeCoverageParsing, resolvedGraph: configuration.IsResolvedGraph, originalBudget: graphBudget),
             Clock).RunBaselinesAsync(snapshotId, configuration.ExecutionSuites,
             TimeSpan.FromSeconds(policy.BaselineTimeoutSeconds), deadline, cancellationToken);
         var aliases = MapBaselineExecutions(configuration.ExecutionSuites, baselines.Executions);
@@ -207,7 +207,7 @@ internal static class StrictExecutionPipeline
             var controls = configuration.ExecutionSuites.ToDictionary(item => item.Identity,
                 item => aliases[item.Identity].Result.HealthyControl, StringComparer.Ordinal);
             var executor = new StrictMutationExecutor(snapshot, environment, plan.Selected,
-                configuration.ExecutionSuites, controls, Clock, resolvedGraph: configuration.IsResolvedGraph);
+                configuration.ExecutionSuites, controls, Clock, resolvedGraph: configuration.IsResolvedGraph, originalBudget: graphBudget);
             var batch = await RunContiguousAttemptsAsync(executor, scheduled,
                 policy.StabilityRepetitions, TimeSpan.FromSeconds(policy.MutantTimeoutSeconds), deadline,
                 Clock, cancellationToken);

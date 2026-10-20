@@ -14,9 +14,13 @@ internal sealed class TrxAccountingException : Exception
 
 internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutionEnvironment environment,
     TimeProvider? timeProvider = null,
-    Action<SnapshotClone, IReadOnlyList<string>>? beforeCoverageParsing = null, bool resolvedGraph = false) : ISuiteExecutor
+    Action<SnapshotClone, IReadOnlyList<string>>? beforeCoverageParsing = null, bool resolvedGraph = false,
+    ResolvedGraphBudget? originalBudget = null) : ISuiteExecutor
 {
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+    private sealed record RetainedOriginal(ResolvedGraphBudget? Original, ResolvedGraphInputs? Inputs,
+        SnapshotClone? Worker, OwnedPackageCache? Packages, Exception? Failure, bool InputsClosed);
+    private static readonly List<RetainedOriginal> Retained = [];
 
     public async Task<SuiteRunResult> RunBaselineAsync(SuiteExecution suite, TimeSpan timeout,
         CancellationToken cancellationToken)
@@ -24,6 +28,8 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
         if (!suite.Runner.Equals("vstest", StringComparison.Ordinal))
             throw new EvaluationContractException(
                 $"Unsupported test runner '{suite.Runner}'; version 1 supports only VSTest/TRX.");
+        if (resolvedGraph)
+            (originalBudget ?? throw new EvaluationContractException("Same live graph original required before baseline birth.")).CheckWork();
         var started = _timeProvider.GetUtcNow();
         using var timeoutSource = new CancellationTokenSource(timeout, _timeProvider);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
@@ -47,35 +53,41 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
 
         async Task<SuiteRunResult> ExecuteWithOwnedResourcesAsync()
         {
+            lock (Retained)
+                if (resolvedGraph && Retained.Count >= 256) throw new SnapshotLimitException("Retained baseline originals exhausted; no further baseline birth.");
             SnapshotClone? worker = null;
             OwnedPackageCache? packages = null;
             OwnedCoverageReports? coverage = null;
+            ResolvedGraphInputs? coverageInputs = null;
             SuiteRunResult? completed = null;
             Exception? failure = null;
             try
             {
                 worker = await SnapshotWorkspace.CreateCloneAsync(snapshot,
-                    $"baseline-{Sanitize(suite.Aliases[0])}", linked.Token);
+                    $"baseline-{Sanitize(suite.Aliases[0])}", linked.Token, originalBudget);
                 packages = await environment.CreateWorkerPackageCacheAsync(
                     $"baseline-{Sanitize(suite.Aliases[0])}", linked.Token);
+                if (resolvedGraph)
+                    coverageInputs = new(originalBudget ?? throw new EvaluationContractException("Same graph original required for baseline coverage inputs."));
                 var remaining = Remaining();
                 if (remaining <= TimeSpan.Zero) throw new TimeoutException();
                 await environment.RestoreWorkerAsync(worker, suite.Path, packages, remaining, linked.Token,
-                    suite.Framework, suite.Configuration);
+                    suite.Framework, suite.Configuration, originalBudget: originalBudget);
                 remaining = Remaining();
                 if (remaining <= TimeSpan.Zero) throw new TimeoutException();
                 var results = Path.Combine(worker.OwnedRoot, "results");
                 var testPath = Path.Combine(worker.Root, suite.Path.Replace('/', Path.DirectorySeparatorChar));
                 var run = await TestRunner.RunAsync(worker.Root, testPath, results, remaining, collectCoverage: true,
                     linked.Token, ExecutionEnvironment.ProcessEnvironment(packages.Root), noRestore: true,
-                    requireExecutionBoundary: true, framework: suite.Framework, configuration: suite.Configuration, resolvedGraph: resolvedGraph);
+                    requireExecutionBoundary: true, framework: suite.Framework, configuration: suite.Configuration, resolvedGraph: resolvedGraph,
+                    originalBudget: originalBudget, coverageInputs: coverageInputs);
                 if (!string.Equals(environment.PackageFingerprint,
                         ExecutionEnvironment.FingerprintPackages(packages.Root,
                             cancellationToken: linked.Token), StringComparison.Ordinal))
                     throw new ExecutionBoundaryIntegrityException(
                         "Baseline execution changed its private frozen package-cache copy.");
                 var disposition = ClassifyBaseline(run);
-                var rawCoverage = TestRunner.FindCoverage(results);
+                var rawCoverage = TestRunner.FindCoverage(results, coverageInputs);
                 if (disposition == SuiteRunDisposition.Passed) beforeCoverageParsing?.Invoke(worker, rawCoverage);
                 var coverageMap = disposition == SuiteRunDisposition.Passed
                     ? CoverageMap.Load(rawCoverage, worker, snapshot, resolvedGraph, resolvedGraph ? packages.Root : null) : null;
@@ -86,7 +98,11 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                     coverage is null, worker.Root, packages.Root).ToList();
                 diagnostics.AddRange(coverageMap?.ProjectionDiagnostics ?? []);
                 if (disposition == SuiteRunDisposition.Passed && coverage is null)
+                {
                     diagnostics.Add(CoverageInventory(results));
+                    if (resolvedGraph && originalBudget is not null)
+                        diagnostics.Insert(0, RetainedCoverageFailure.Preserve(results, originalBudget, coverageInputs!));
+                }
                 completed = new(disposition, _timeProvider.GetUtcNow() - started, AccountedMembers(run.TrxPaths),
                     run.FailedTestIds ?? [], diagnostics.Take(20).ToArray(), coverage?.Reports ?? [])
                     {
@@ -99,10 +115,29 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
             }
             catch (Exception ex) { failure = ex; }
 
-            try { await AsyncDisposal.DisposeAllAsync([packages, worker]); }
-            catch (Exception cleanupFailure)
+            var inputsClosed = false;
+            try { coverageInputs?.Dispose(); inputsClosed = true; }
+            catch (Exception inputCleanup)
             {
-                failure = AsyncDisposal.CombineFailure(failure, cleanupFailure);
+                failure = AsyncDisposal.CombineFailure(failure, inputCleanup);
+            }
+            // Every graph failure retains its exact namespace, including a
+            // native cleanup-unknown before any collector file was opened and
+            // a failure-data bound/refusal before the raw bundle completed.
+            // Successful first-close is required before dependent retirement.
+            if (resolvedGraph && (!inputsClosed || failure is not null || completed?.Disposition != SuiteRunDisposition.Passed))
+            {
+                var retained = new RetainedOriginal(originalBudget, coverageInputs, worker, packages, failure, inputsClosed);
+                lock (Retained) Retained.Add(retained);
+                if (failure is not null) failure.Data["ResolvedGraphCoverage.RetainedOriginal"] = retained;
+            }
+            else
+            {
+                try { await AsyncDisposal.DisposeAllAsync([packages, worker]); }
+                catch (Exception cleanupFailure)
+                {
+                    failure = AsyncDisposal.CombineFailure(failure, cleanupFailure);
+                }
             }
 
             if (failure is not null)

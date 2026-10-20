@@ -13,8 +13,13 @@ internal static class TestRunner
         TimeSpan timeout, bool collectCoverage, CancellationToken cancellationToken,
         IReadOnlyDictionary<string, string?>? environment = null, bool noRestore = false,
         bool requireExecutionBoundary = false, string? dotnetExecutable = null,
-        string? framework = null, string? configuration = null, bool resolvedGraph = false)
+        string? framework = null, string? configuration = null, bool resolvedGraph = false,
+        ResolvedGraphBudget? originalBudget = null, ResolvedGraphInputs? coverageInputs = null)
     {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (resolvedGraph) (originalBudget ?? throw new EvaluationContractException("Same graph original required before test effects.")).CheckWork();
+        if (resolvedGraph && (!requireExecutionBoundary || !noRestore))
+            throw new EvaluationContractException("Resolved graph tests require the actual restored private worker boundary.");
         if (requireExecutionBoundary) ExecutionEnvironment.ValidateExecutionAncestors(root);
         Directory.CreateDirectory(resultsDirectory);
         var dotnet = dotnetExecutable ?? Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
@@ -43,8 +48,39 @@ internal static class TestRunner
             arguments.Insert(insertion, $"-p:NuGetPackageRoot={Path.GetFullPath(packageRoot).TrimEnd(
                 Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)}{Path.DirectorySeparatorChar}");
         }
-        var run = await ProcessTree.RunAsync(dotnet, arguments, root, timeout, cancellationToken,
-            processEnvironment, requireLinuxSessionIsolation: requireExecutionBoundary);
+        var preparationRemaining = timeout - System.Diagnostics.Stopwatch.GetElapsedTime(started);
+        if (preparationRemaining <= TimeSpan.Zero) throw new TimeoutException("Complete test operation allowance ended before birth.");
+        var mapping = resolvedGraph && collectCoverage
+            ? await ResolvedGraphCoverletMapping.BuildAsync(dotnet, root, testPath,
+                processEnvironment.Last(item => item.Key.Equals("NUGET_PACKAGES", StringComparison.OrdinalIgnoreCase)).Value!,
+                framework ?? throw new EvaluationContractException("Actual graph framework is required."),
+                configuration ?? throw new EvaluationContractException("Actual graph configuration is required."),
+                resultsDirectory, processEnvironment, noRestore, preparationRemaining,
+                originalBudget ?? throw new EvaluationContractException("Same graph original is required for coverage preparation."),
+                coverageInputs ?? throw new EvaluationContractException("Actual baseline-owned coverage inputs are required."),
+                cancellationToken)
+            : null;
+        if (mapping is not null)
+        {
+            mapping.Recheck();
+            // The normal build already returned. No subsequent build may
+            // regenerate the exact post-compiler collector mapping artifact.
+            arguments.Insert(1, "--no-build");
+            if (!arguments.Contains("--no-restore", StringComparer.Ordinal)) arguments.Insert(1, "--no-restore");
+        }
+        var remaining = timeout - System.Diagnostics.Stopwatch.GetElapsedTime(started);
+        if (remaining <= TimeSpan.Zero) throw new TimeoutException("Complete graph coverage build/test allowance ended.");
+        var run = await ProcessTree.RunAsync(dotnet, arguments, root, remaining, cancellationToken,
+            processEnvironment, requireLinuxSessionIsolation: requireExecutionBoundary, originalBudget: originalBudget);
+        mapping?.Recheck();
+        if (mapping is not null)
+        {
+            originalBudget!.Resources.AdmitSemantic(checked(2L * (mapping.ActualBuild.StandardOutput.Length +
+                mapping.ActualBuild.StandardError.Length + run.StandardOutput.Length + run.StandardError.Length + 2)));
+            run = run with { Duration = System.Diagnostics.Stopwatch.GetElapsedTime(started),
+                StandardOutput = mapping.ActualBuild.StandardOutput + "\n" + run.StandardOutput,
+                StandardError = mapping.ActualBuild.StandardError + "\n" + run.StandardError };
+        }
         var evidence = AnalyzeTrx(resultsDirectory);
         if (run.TimedOut)
         {
@@ -164,18 +200,31 @@ internal static class TestRunner
 
     private static string Bound(string value, int maximum) => EvaluationTextBounds.Prefix(value, maximum);
 
-    public static IReadOnlyList<string> FindCoverage(string directory) => Directory.Exists(directory)
-        ? ProjectLocator.EnumerateFilesSafe(directory, "*.xml")
+    public static IReadOnlyList<string> FindCoverage(string directory, ResolvedGraphInputs? coverageInputs = null)
+    {
+        if (!Directory.Exists(directory)) return [];
+        return (coverageInputs is null ? ProjectLocator.EnumerateFilesSafe(directory, "*.xml") : RetainedCoverageFailure.EnumerateResultFiles(directory, coverageInputs))
+            .Where(x => x.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
             .Where(x => Path.GetFileName(x).Contains("coverage", StringComparison.OrdinalIgnoreCase))
-            .Where(IsNonemptyOpenCover)
-            .OrderBy(x => x, StringComparer.Ordinal).ToArray()
-        : [];
+            .Where(path => IsNonemptyOpenCover(path, coverageInputs))
+            .OrderBy(x => x, StringComparer.Ordinal).ToArray();
+    }
 
-    private static bool IsNonemptyOpenCover(string path)
+    private static bool IsNonemptyOpenCover(string path, ResolvedGraphInputs? coverageInputs)
     {
         try
         {
-            var document = XDocument.Load(path);
+            XDocument document;
+            if (coverageInputs is not null)
+            {
+                var bytes = coverageInputs.Read(path, "config").Bytes;
+                coverageInputs.ReserveAllocation(checked(bytes.LongLength * 8 + 8192));
+                using var stream = new MemoryStream(bytes, false);
+                using var reader = System.Xml.XmlReader.Create(stream, new System.Xml.XmlReaderSettings {
+                    DtdProcessing = System.Xml.DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = ResolvedGraphInputs.MaximumFileBytes });
+                document = XDocument.Load(reader);
+            }
+            else document = XDocument.Load(path);
             return document.Root?.Name.LocalName == "CoverageSession" &&
                 document.Root.Descendants().Any(item => item.Name.LocalName == "Module");
         }

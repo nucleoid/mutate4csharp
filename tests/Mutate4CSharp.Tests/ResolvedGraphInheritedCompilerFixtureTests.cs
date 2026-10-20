@@ -4,7 +4,7 @@ namespace Mutate4CSharp.Tests;
 
 // Invokes actual restore/compiler producers, never query DTOs. Failed producer
 // transcripts remain bounded test diagnostics; they cannot authorize a result.
-public sealed class ResolvedGraphInheritedCompilerFixtureTests : IDisposable
+public sealed partial class ResolvedGraphInheritedCompilerFixtureTests : IDisposable
 {
     private readonly SnapshotTestRepository _repository = new();
 

@@ -26,6 +26,11 @@ internal sealed class ResolvedGraphInputs : IDisposable
     {
         _budget = actualBudget ?? throw new ArgumentNullException(nameof(actualBudget));
     }
+    internal void RequireOriginal(ResolvedGraphBudget original)
+    {
+        if (!ReferenceEquals(_budget, original)) throw new EvaluationContractException("Exact same graph input original is required.");
+        Check();
+    }
     internal ResolvedGraphFile Read(string path, string role, int maximumFileBytes = MaximumFileBytes)
     {
         Check();
@@ -38,7 +43,7 @@ internal sealed class ResolvedGraphInputs : IDisposable
         path = Path.GetFullPath(path);
         // Enroll before the synchronous constructor; retained failure and first
         // disposition flags prevent any retry from being mistaken for that call.
-        var frame = new Frame();
+        var frame = new Frame { Path = path, Role = role };
         _budget.Resources.AdmitFrame();
         _frames.Add(frame);
         try
@@ -125,6 +130,63 @@ internal sealed class ResolvedGraphInputs : IDisposable
             throw new EvaluationContractException("Original complete worker result write/flush did not return.");
         Check();
     }
+    // Post-build Coverlet artifact only. Preserve the original complete bytes,
+    // exclusively verify them again, and append a bounded producer suffix.
+    // This does not replace a compiler input or adopt an arbitrary pathname.
+    internal ResolvedGraphFile AppendKnownResult(ResolvedGraphFile expected, byte[] suffix, int maximumBytes)
+    {
+        Check();
+        if (expected.Role != "config" || maximumBytes is <= 0 or > 65_536 || suffix.Length == 0 ||
+            expected.Bytes.LongLength + suffix.LongLength > maximumBytes ||
+            !_frames.Any(f => f.Path == expected.Path && f.Role == expected.Role && ReferenceEquals(f.Bytes, expected.Bytes)))
+            throw new EvaluationContractException("Exact original bounded collector artifact required before append.");
+        var frame = new Frame(); _budget.Resources.AdmitFrame(); _frames.Add(frame);
+        _budget.Resources.AdmitSemantic(expected.Bytes.LongLength);
+        _budget.Resources.AdmitIo(expected.Bytes.LongLength + 1 + suffix.LongLength);
+        try
+        {
+            for (var ancestor = expected.Path; ancestor is not null; ancestor = Path.GetDirectoryName(ancestor))
+            {
+                Check(); var attributes = File.GetAttributes(ancestor); Check();
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    throw new SnapshotCaptureException("Redirected collector artifact refused.");
+            }
+            Check(); frame.AcquireEntered = true;
+            frame.Stream = new FileStream(expected.Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            frame.AcquireReturned = true; Check();
+            if (frame.Stream.Length != expected.Bytes.LongLength) throw new SnapshotDivergedException("Original collector extent changed.");
+            frame.Bytes = new byte[expected.Bytes.Length]; var offset = 0;
+            while (offset < frame.Bytes.Length)
+            {
+                Check(); var read = frame.Stream.Read(frame.Bytes, offset, frame.Bytes.Length - offset); Check();
+                if (read == 0) throw new SnapshotDivergedException("Original collector artifact ended early.");
+                offset += read;
+            }
+            Check(); var eof = frame.Stream.ReadByte(); Check();
+            if (eof != -1 || frame.Stream.Length != expected.Bytes.LongLength || !frame.Bytes.AsSpan().SequenceEqual(expected.Bytes))
+                throw new SnapshotDivergedException("Original collector bytes changed before append.");
+            frame.WriteEntered = true; frame.Stream.Write(suffix); frame.WriteReturned = true; Check();
+            frame.FlushEntered = true; frame.Stream.Flush(true); frame.FlushReturned = true; Check();
+            if (frame.Stream.Length != expected.Bytes.LongLength + suffix.LongLength)
+                throw new SnapshotDivergedException("Complete appended collector extent differs.");
+        }
+        catch (Exception failure) { frame.Primary = failure; _failure ??= failure; _budget.BeginFailureCleanup(); }
+        try { CheckEndpoint(); }
+        catch (Exception failure) { frame.Post = failure; _failure ??= failure; _budget.BeginFailureCleanup(); }
+        FirstClose(frame); ThrowFrame(frame); Check();
+        if (!frame.WriteReturned || !frame.FlushReturned)
+            throw new EvaluationContractException("Original collector append did not complete and close.");
+        var actual = Read(expected.Path, "config", maximumBytes);
+        if (actual.Bytes.Length != expected.Bytes.Length + suffix.Length ||
+            !actual.Bytes.AsSpan(0, expected.Bytes.Length).SequenceEqual(expected.Bytes) ||
+            !actual.Bytes.AsSpan(expected.Bytes.Length).SequenceEqual(suffix))
+        {
+            var failure = new SnapshotDivergedException("Complete appended collector bytes changed.");
+            _failure ??= failure; _budget.BeginFailureCleanup(); throw failure;
+        }
+        return actual;
+    }
+
     internal bool GeneratedDirectoryPresent(string path)
     {
         Check();
@@ -370,6 +432,7 @@ internal sealed class ResolvedGraphInputs : IDisposable
     private sealed class Frame
     {
         internal FileStream? Stream;
+        internal string? Path, Role;
         internal IncrementalHash? Hash;
         internal byte[]? Bytes;
         internal string? Sha256;
