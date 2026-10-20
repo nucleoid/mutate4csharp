@@ -227,3 +227,21 @@ prebirth2CPU/4GiB-per-runtime admission, complete native closure, elapsed limits
 and quantitative full graph fit remain mandatory. Larger graphs can exhaust
 these finite limits and must return INCOMPLETE; none of the bounds establishes
 that the complete Forge graph fits before its actual census and genuine run.
+
+Canonical semantic context version5 gives one explicit equivalence to the first
+MSBuildAllProjects slot. MSBuild can select either generated NuGet import by its
+last-modified timestamp, so the exact selected project's queried source-owned
+MSBuildProjectExtensionsPath and same-directory ProjectAssetsFile locator join
+the two exact `.nuget.g.props` / `.nuget.g.targets` names. Both complete files are
+read and rechecked on the same original, limited to64KiB each, and strictUTF8
+contents bind after exact owned source/package root mapping, including XML text
+and quoted-attribute token boundaries. The raw query is unchanged; complete pair
+bytes/hashes remain on the same input owner for its analysis lifetime, without
+automatically joining a permanent external artifact census. This is an explicit profile
+equivalence, not proof that MSBuild assigned the value or that the assets locator
+certifies restore: a custom target choosing that same exact pair has the same
+equivalence. Every suffix slot/order, global override, other scalar, actual Csc
+option and compiler/source/reference input still binds. Aliases, unknown imports
+and foreign directories receive no first-slot normalization; incomplete pairs
+refuse. Version5 changes only the semantic digest domain/record, not a transport
+schema, resource grant, caller hook policy or native authority.

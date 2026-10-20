@@ -5,9 +5,9 @@ using System.Security.Cryptography;
 namespace Mutate4CSharp;
 
 // Raw event/query/image evidence remains retained separately. Only these exact
-// creation-owned roots and independently reread fixed editorconfig boundary may
-// vary between equivalent cold invocations. External SDK/compiler/reference/
-// import names and all values/bytes remain significant.
+// creation-owned roots, fixed editorconfig boundary and exact generated NuGet
+// pair's first incremental hint have explicit equivalence rules. Complete pair
+// contents, custom suffixes and external compiler/reference/imports still bind.
 internal sealed class ResolvedGraphCanonicalContext
 {
     private readonly (string Root, string Role)[] _roots;
@@ -21,7 +21,7 @@ internal sealed class ResolvedGraphCanonicalContext
     internal string Value(string value)
         => Value(value, null);
 
-    private string Value(string value, ResolvedGraphFile? boundary)
+    private string Value(string value, ResolvedGraphFile? boundary, bool generatedImport = false)
     {
         if (value.Length > 65_536 || value.Contains('\0')) throw new SnapshotLimitException("Canonical graph scalar extent.");
         if (boundary is not null)
@@ -41,8 +41,10 @@ internal sealed class ResolvedGraphCanonicalContext
                 var index = value.IndexOf(root, start, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
                 if (index < 0) break;
                 var end = index + root.Length;
-                var before = index == 0 || value[index - 1] is '=' or ':' or ';' or ',' or '"' or ' ';
-                var after = end == value.Length || value[end] is '/' or '\\' or ';' or ',' or '"' or ' ' or '=';
+                var before = index == 0 || value[index - 1] is '=' or ':' or ';' or ',' or '"' or ' ' ||
+                    generatedImport && (value[index - 1] is '>' or '\'');
+                var after = end == value.Length || value[end] is '/' or '\\' or ';' or ',' or '"' or ' ' or '=' ||
+                    generatedImport && (value[end] is '<' or '\'');
                 if (before && after)
                 {
                     var replacement = "$owned-" + role;
@@ -61,7 +63,7 @@ internal sealed class ResolvedGraphCanonicalContext
         // The complete bounded record can exceed the identity framing API's
         // 16KiB scalar limit. Hash EVERY canonical byte, then frame its fixed
         // digest under a new domain; never truncate or expand that global limit.
-        return MutationIdentity.ComputeDigest("resolved-canonical-context-v4",
+        return MutationIdentity.ComputeDigest("resolved-canonical-context-v5",
             [("complete-semantic-record-sha256", Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant())]);
     }
 
@@ -69,10 +71,13 @@ internal sealed class ResolvedGraphCanonicalContext
     {
         var first = actual.FirstCsc ?? throw new EvaluationContractException("Original Csc context required.");
         var boundary = ReadObservedBoundary(actual, retained, inputs);
+        var incremental = ReadIncrementalHint(actual, inputs);
         // Do not include process/event numeric IDs or complete raw-query SHA in
         // semantic identity: they are physical joins, retained on the original.
         var semantic = new {
-            actual.Selection, actual.Properties,
+            actual.Selection, Properties = incremental.Properties,
+            IncrementalHintImports = incremental.Files.Select(file => new {
+                Path = Value(file.Path), SemanticBytes = GeneratedImportIdentity(file, inputs) }).ToArray(),
             Items = actual.Items.ToDictionary(p => p.Key, p => p.Value.Select(i => new { i.Identity,
                 Metadata = SemanticMetadata(i.Metadata, boundary) }).ToArray(), StringComparer.Ordinal),
             Edges = actual.Edges.Select(e => new { e.Selection, ActualMetadata = SemanticMetadata(e.ActualMetadata, boundary) }).ToArray(),
@@ -87,10 +92,70 @@ internal sealed class ResolvedGraphCanonicalContext
         var bytes = ResolvedGraphProtocol.WriteBounded(writer => Write(document.RootElement, writer, 0, boundary),
             inputs, ResolvedGraphCapture.MaxQueryBytes, 1_048_576);
         if (boundary is not null) inputs.Recheck(boundary, 12);
+        foreach (var file in incremental.Files) inputs.Recheck(file, 65_536);
         inputs.CheckWork();
         inputs.ReserveAllocation(4L * bytes.Length);
         return bytes;
     }
+
+    private (IReadOnlyDictionary<string, string> Properties, ResolvedGraphFile[] Files) ReadIncrementalHint(
+        ResolvedProjectCapture actual, ResolvedGraphInputs inputs)
+    {
+        // MSBuild prepends a timestamp-selected import to MSBuildAllProjects.
+        // This is a deliberately narrow semantic profile, NOT proof of which
+        // target assigned the property: a custom target choosing this SAME
+        // exact pair also receives this equivalence. Its full suffix, globals,
+        // Csc inputs/options and BOTH complete import contents remain significant.
+        // Unknown paths, aliases and global overrides get no first-slot rule.
+        if (!actual.Properties.TryGetValue("MSBuildAllProjects", out var raw) || raw.Length == 0 ||
+            actual.FirstCsc!.GlobalProperties.Keys.Any(key => key.Equals("MSBuildAllProjects", StringComparison.OrdinalIgnoreCase)) ||
+            !actual.Properties.TryGetValue("MSBuildProjectFullPath", out var project) ||
+            !actual.Properties.TryGetValue("MSBuildProjectExtensionsPath", out var extensionPath) ||
+            !actual.Properties.TryGetValue("ProjectAssetsFile", out var assets))
+            return (actual.Properties, []);
+        if (raw.Length > 65_536) throw new SnapshotLimitException("Canonical incremental hint extent.");
+        var separator = raw.IndexOf(';');
+        var hint = separator < 0 ? raw : raw[..separator];
+        if (!ExactPath(project) || !ExactPath(extensionPath) || !ExactPath(assets) || !ExactPath(hint))
+            return (actual.Properties, []);
+        var extensions = Path.TrimEndingDirectorySeparator(extensionPath);
+        var selected = Path.GetFullPath(actual.Selection.Project, _roots[0].Root);
+        if (!project.Equals(selected, StringComparison.Ordinal) ||
+            !project.Equals(actual.FirstCsc.ProjectFile, StringComparison.Ordinal) ||
+            !Within(_roots[0].Root, project) || !Within(_roots[0].Root, extensions) ||
+            !string.Equals(Path.GetDirectoryName(assets), extensions, StringComparison.Ordinal) ||
+            !string.Equals(Path.GetFileName(assets), "project.assets.json", StringComparison.Ordinal))
+            return (actual.Properties, []);
+        // No guessed obj/bin location or filename wildcard. These exact names
+        // join the selected project filename and its actually queried directory.
+        var props = Path.Combine(extensions, Path.GetFileName(project) + ".nuget.g.props");
+        var targets = Path.Combine(extensions, Path.GetFileName(project) + ".nuget.g.targets");
+        if (!hint.Equals(props, StringComparison.Ordinal) && !hint.Equals(targets, StringComparison.Ordinal))
+            return (actual.Properties, []);
+        var files = new[] { inputs.Read(props, "import", 65_536), inputs.Read(targets, "import", 65_536) };
+        var properties = actual.Properties.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        properties["MSBuildAllProjects"] = "$owned-generated-nuget-pair" + (separator < 0 ? "" : raw[separator..]);
+        return (properties, files);
+    }
+
+    private string GeneratedImportIdentity(ResolvedGraphFile file, ResolvedGraphInputs inputs)
+    {
+        // Preserve raw bytes/SHA for the SAME bounded input owner's analysis
+        // lifetime; this does not add an external artifact/export census. Only exact
+        // owned source/package roots in complete throwing-UTF8 text become
+        // roles; no XML parse, list sorting, omission or generic path redaction.
+        inputs.ReserveAllocation(checked(8L * file.Bytes.LongLength + 256));
+        var text = new UTF8Encoding(false, true).GetString(file.Bytes);
+        // The exact generated pair also has XML element-text/single-quoted
+        // attribute boundaries. This only extends root-token boundaries for
+        // these two complete files; all other canonical strings keep Value's
+        // prior rules and every XML byte outside owned-root tokens still binds.
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Value(text, null, generatedImport: true)))).ToLowerInvariant();
+    }
+
+    private static bool ExactPath(string path) => path.Length is > 0 and <= 4096 &&
+        !path.Contains('\0') && Path.IsPathFullyQualified(path) &&
+        path.Equals(Path.GetFullPath(path), StringComparison.Ordinal);
 
     private string InputIdentity(ResolvedGraphFile file, ResolvedGraphInputs inputs)
     {

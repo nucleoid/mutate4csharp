@@ -566,7 +566,7 @@ internal sealed record ResolvedProjectCapture(ResolvedProjectSelection Selection
 {
     internal static readonly string[] PropertyNames = ["MSBuildProjectFullPath", "MSBuildToolsPath", "NETCoreSdkVersion",
         "TargetFramework", "Configuration", "LangVersion", "Nullable", "DefineConstants", "MSBuildAllProjects",
-        "ProjectAssetsFile", "CscToolPath", "CscToolExe", "CscEnvironment", "UseSharedCompilation",
+        "ProjectAssetsFile", "MSBuildProjectExtensionsPath", "CscToolPath", "CscToolExe", "CscEnvironment", "UseSharedCompilation",
         "ProvideCommandLineArgs", "SkipCompilerExecution", "CompilerGeneratedFilesOutputPath", "CustomBeforeMicrosoftCSharpTargets",
         "CustomAfterMicrosoftCSharpTargets", "IntermediateAssembly", "TargetPath", "TargetRefPath",
         "ManagePackageVersionsCentrally", "DirectoryPackagesPropsPath", "DirectoryBuildPropsPath", "DirectoryBuildTargetsPath"];
