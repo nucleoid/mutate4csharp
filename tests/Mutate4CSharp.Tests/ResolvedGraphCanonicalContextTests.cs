@@ -7,6 +7,107 @@ namespace Mutate4CSharp.Tests;
 public sealed class ResolvedGraphCanonicalContextTests
 {
     [Fact]
+    public void Derived_owned_directory_joins_full_path_before_fresh_root_normalization()
+    {
+        var parent = Path.Combine(Path.GetTempPath(), "graph-derived-directory");
+        var firstRoot = Path.Combine(parent, "first"); var secondRoot = Path.Combine(parent, "second");
+        ResolvedProjectCapture Actual(string root)
+        {
+            var actual = Context(root, "physical", "external-compiler");
+            var path = Path.Combine(root, "source", "A.cs");
+            return actual with { Items = new Dictionary<string, IReadOnlyList<ResolvedGraphItem>> {
+                ["Compile"] = [new("A.cs", ItemMetadata(path))] } };
+        }
+        Assert.Equal(Identity(firstRoot, Actual(firstRoot)), Identity(secondRoot, Actual(secondRoot)));
+        var changed = Actual(secondRoot);
+        var metadata = ItemMetadata(Path.Combine(secondRoot, "source", "A.cs"));
+        metadata["CustomSemanticDirectory"] = "different";
+        changed = changed with { Items = new Dictionary<string, IReadOnlyList<ResolvedGraphItem>> {
+            ["Compile"] = [new("A.cs", metadata)] } };
+        Assert.NotEqual(Identity(firstRoot, Actual(firstRoot)), Identity(secondRoot, changed));
+    }
+
+    [Theory]
+    [InlineData("mismatched-directory")]
+    [InlineData("directory-alias")]
+    [InlineData("full-path-alias")]
+    public void Owned_derived_directory_does_not_accept_mismatched_or_aliased_joins(string corruption)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "graph-derived-invalid");
+        var path = Path.Combine(root, "source", "A.cs");
+        var metadata = ItemMetadata(path);
+        if (corruption == "mismatched-directory") metadata["Directory"] += "unowned" + Path.DirectorySeparatorChar;
+        else if (corruption == "directory-alias") metadata["Directory"] += "." + Path.DirectorySeparatorChar;
+        else metadata["FullPath"] = Path.Combine(root, "source", ".", "A.cs");
+        var actual = Context(root, "physical", "compiler") with {
+            Items = new Dictionary<string, IReadOnlyList<ResolvedGraphItem>> { ["Compile"] = [new("A.cs", metadata)] } };
+        Assert.Throws<EvaluationContractException>(() => Identity(root, actual));
+    }
+
+    [Fact]
+    public void Only_exact_reread_boundary_file_and_derived_directory_have_one_fresh_root_role()
+    {
+        var parent = Path.Combine(Path.GetTempPath(), "graph-boundary-data-" + Guid.NewGuid().ToString("N"));
+        var firstRoot = Path.Combine(parent, "first"); var secondRoot = Path.Combine(parent, "second");
+        Directory.CreateDirectory(firstRoot); Directory.CreateDirectory(secondRoot);
+        var firstPath = Path.Combine(firstRoot, ".editorconfig"); var secondPath = Path.Combine(secondRoot, ".editorconfig");
+        File.WriteAllBytes(firstPath, "root = true\n"u8.ToArray());
+        File.WriteAllBytes(secondPath, "root = true\n"u8.ToArray());
+        try
+        {
+            var first = BoundaryContext(firstRoot, firstPath);
+            var second = BoundaryContext(secondRoot, secondPath);
+            Assert.Equal(Identity(firstRoot, first), Identity(secondRoot, second));
+            // A sibling prefix and a dot-segment alias are not this exact owned
+            // file. Neither earns the parent-directory role or byte admission.
+            Assert.NotEqual(Identity(secondRoot, second),
+                Identity(secondRoot, BoundaryContext(secondRoot, secondPath + "-unowned")));
+            Assert.NotEqual(Identity(secondRoot, second),
+                Identity(secondRoot, BoundaryContext(secondRoot, Path.Combine(secondRoot, ".", ".editorconfig"))));
+            var invalidMetadata = ItemMetadata(secondPath);
+            invalidMetadata["RelativeDir"] += "unowned" + Path.DirectorySeparatorChar;
+            var invalidBoundary = second with { Items = new Dictionary<string, IReadOnlyList<ResolvedGraphItem>> {
+                ["EditorConfigFiles"] = [new(secondPath, invalidMetadata)] } };
+            Assert.Throws<EvaluationContractException>(() => Identity(secondRoot, invalidBoundary));
+            var unrelated = Context(firstRoot, "physical", "compiler");
+            var properties = unrelated.Properties.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+            properties["CustomParentPath"] = firstRoot;
+            unrelated = unrelated with { Properties = properties };
+            Assert.NotEqual(Identity(firstRoot, unrelated), Identity(firstRoot, Context(firstRoot, "physical", "compiler")));
+            var retained = new ResolvedGraphFile(secondPath, "config", "root = true\n"u8.ToArray(), new string('1', 64));
+            string WithRetained(ResolvedGraphFile file)
+            {
+                using var inputs = new ResolvedGraphInputs(TimeSpan.FromSeconds(30), CancellationToken.None);
+                return new ResolvedGraphCanonicalContext(Path.Combine(secondRoot, "source"), Path.Combine(secondRoot, "packages"))
+                    .Identity(second, [file], inputs);
+            }
+            Assert.NotEqual(WithRetained(retained), WithRetained(retained with { Sha256 = new string('2', 64) }));
+            File.WriteAllBytes(secondPath, "root = trueX"u8.ToArray());
+            Assert.Throws<EvaluationContractException>(() => Identity(secondRoot, second));
+        }
+        finally { Directory.Delete(parent, recursive: true); }
+    }
+
+    private static ResolvedProjectCapture BoundaryContext(string root, string boundary)
+    {
+        var actual = Context(root, "physical", "external-compiler");
+        var items = actual.Items.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+        items["EditorConfigFiles"] = [new(boundary, ItemMetadata(boundary))];
+        return actual with { Items = items,
+            FirstCsc = actual.FirstCsc! with { Tokens = ["/define:ONE", "/analyzerconfig:" + boundary] } };
+    }
+
+    private static Dictionary<string, string> ItemMetadata(string path)
+    {
+        var directory = Path.GetDirectoryName(path)!;
+        var complete = Path.EndsInDirectorySeparator(directory) ? directory : directory + Path.DirectorySeparatorChar;
+        var root = Path.GetPathRoot(path)!;
+        return new(StringComparer.Ordinal) { ["Identity"] = path, ["FullPath"] = path, ["RootDir"] = root,
+            ["Directory"] = complete[root.Length..], ["RelativeDir"] = complete,
+            ["CustomSemanticDirectory"] = "unchanged" };
+    }
+
+    [Fact]
     public void Complete_large_context_hashes_the_suffix_beyond_identity_scalar_bounds()
     {
         var root = Path.Combine(Path.GetTempPath(), "graph-large-context");
