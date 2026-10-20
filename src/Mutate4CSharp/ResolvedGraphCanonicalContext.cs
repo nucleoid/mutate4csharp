@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Security.Cryptography;
 
 namespace Mutate4CSharp;
 
@@ -63,8 +64,11 @@ internal sealed class ResolvedGraphCanonicalContext
             inputs, ResolvedGraphCapture.MaxQueryBytes, 1_048_576);
         inputs.CheckWork();
         inputs.ReserveAllocation(4L * bytes.Length);
-        return MutationIdentity.ComputeDigest("resolved-canonical-context-v2",
-            [("complete-semantic-record", Encoding.UTF8.GetString(bytes))]);
+        // The complete bounded record can exceed the identity framing API's
+        // 16KiB scalar limit. Hash EVERY canonical byte, then frame its fixed
+        // digest under a new domain; never truncate or expand that global limit.
+        return MutationIdentity.ComputeDigest("resolved-canonical-context-v3",
+            [("complete-semantic-record-sha256", Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant())]);
     }
 
     private string InputIdentity(ResolvedGraphFile file)
@@ -79,8 +83,10 @@ internal sealed class ResolvedGraphCanonicalContext
             // analyzer config contains build_property.ProjectDir; only admitted
             // owned-root substrings become role values for semantic identity.
             // All custom fields and actual generated output bytes still bind.
+            inputs.ReserveAllocation(checked(4L * file.Bytes.LongLength + 256));
             var text = new UTF8Encoding(false, true).GetString(file.Bytes);
-            return MutationIdentity.ComputeDigest("generated-editorconfig-owned-role-v1", [("complete-text", Value(text))]);
+            return MutationIdentity.ComputeDigest("generated-editorconfig-owned-role-v2",
+                [("complete-text-sha256", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Value(text)))).ToLowerInvariant())]);
         }
         return file.Sha256;
     }

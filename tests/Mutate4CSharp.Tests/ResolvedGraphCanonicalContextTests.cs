@@ -7,6 +7,37 @@ namespace Mutate4CSharp.Tests;
 public sealed class ResolvedGraphCanonicalContextTests
 {
     [Fact]
+    public void Complete_large_context_hashes_the_suffix_beyond_identity_scalar_bounds()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "graph-large-context");
+        var actual = Context(root, "physical", "compiler");
+        var properties = actual.Properties.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+        properties["LargeActualProperty"] = new string('x', 40 * 1024) + "A";
+        var before = Identity(root, actual with { Properties = properties });
+        properties = properties.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+        properties["LargeActualProperty"] = new string('x', 40 * 1024) + "B";
+        Assert.Equal(64, before.Length);
+        Assert.NotEqual(before, Identity(root, actual with { Properties = properties }));
+    }
+
+    [Fact]
+    public void Complete_large_generated_config_keeps_last_byte_semantic_after_owned_root_mapping()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "graph-large-config");
+        var actual = Context(root, "physical", "compiler");
+        var source = Path.Combine(root, "source");
+        string Hash(string suffix)
+        {
+            using var inputs = new ResolvedGraphInputs(TimeSpan.FromSeconds(30), CancellationToken.None);
+            var bytes = Encoding.UTF8.GetBytes("build_property.ProjectDir=" + source + "\ncustom=" + new string('x', 32 * 1024) + suffix);
+            var file = new ResolvedGraphFile(Path.Combine(source, "obj", "App.GeneratedMSBuildEditorConfig.editorconfig"),
+                "config", bytes, new string('1', 64));
+            return new ResolvedGraphCanonicalContext(source, Path.Combine(root, "packages")).Identity(actual, [file], inputs);
+        }
+        Assert.NotEqual(Hash("A"), Hash("B"));
+    }
+
+    [Fact]
     public void Fresh_owned_roots_do_not_change_semantics_but_raw_evidence_and_external_inputs_remain_distinct()
     {
         var parent = Path.Combine(Path.GetTempPath(), "graph-canonical-" + Guid.NewGuid().ToString("N"));
