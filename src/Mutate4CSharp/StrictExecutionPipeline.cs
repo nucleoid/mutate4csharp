@@ -53,7 +53,7 @@ internal static class StrictExecutionPipeline
         {
             environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
                 dependencyPaths, DependencyPreparationOptions.Default with { Timeout = preparationTimeout },
-                cancellationToken);
+                cancellationToken, graphBudget);
         }
         catch (SnapshotCleanupException) { throw; }
         catch (SnapshotDivergedException) { throw; }

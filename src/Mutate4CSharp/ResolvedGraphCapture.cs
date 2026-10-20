@@ -59,7 +59,7 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
         try
         {
             budget.CheckWork();
-            clone = await SnapshotWorkspace.CreateCloneAsync(snapshot, "resolved-graph", cancellationToken);
+            clone = await SnapshotWorkspace.CreateCloneAsync(snapshot, "resolved-graph", cancellationToken, budget);
             budget.CheckWork();
             packages = await environment.CreateWorkerPackageCacheAsync("resolved-graph", cancellationToken);
             budget.CheckWork();
@@ -82,7 +82,7 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
                 try
                 {
                     await environment.RestoreWorkerAsync(clone, selection.Project, packages, remaining,
-                        cancellationToken, selection.Framework, selection.Configuration, restoreAuthoredFrameworkGraph: true);
+                        cancellationToken, selection.Framework, selection.Configuration, restoreAuthoredFrameworkGraph: true, originalBudget: budget);
                 }
                 catch (SnapshotCaptureException failure) when (failure.Data["FrozenWorkerRestore.ActualReturn"] is ProcessTreeResult)
                 {
@@ -240,11 +240,11 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
         var run = await ProcessTree.RunAsync(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet",
             arguments, Root, remaining < _budget.RemainingWork ? remaining : _budget.RemainingWork,
             cancellationToken, ExecutionEnvironment.ProcessEnvironment(_packages.Root),
-            MaxQueryBytes, requireLinuxSessionIsolation: true);
+            MaxQueryBytes, requireLinuxSessionIsolation: true, originalBudget: _budget);
         _actualProducerReturns.Add(run); // DATA; ProcessTree owns its actual process.
-        _budget.CheckWork();
         if (run.TimedOut || run.ExitCode != 0)
             throw CreateCompilerFailure(run, Root, _packages.Root, Path.GetDirectoryName(files.Root));
+        _budget.CheckWork();
         foreach (var image in images) _inputs.Recheck(image);
         _inputs.Recheck(taskDefinition);
         _inputs.Recheck(requestFile);

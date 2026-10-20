@@ -43,8 +43,7 @@ internal static class ResolvedGraphExecution
                 childGrant.IoBytes.ToString(CultureInfo.InvariantCulture), childGrant.Nonce };
             var actual = await ProcessTree.RunAsync(deployment.DotnetHost.Path, argv, capture.Root,
                 original.RemainingWork, token, ExecutionEnvironment.ProcessEnvironment(capture.PackageRoot),
-                1_048_576, requireLinuxSessionIsolation: true);
-            original.CheckWork();
+                1_048_576, requireLinuxSessionIsolation: true, originalBudget: original);
             if (actual.TimedOut || actual.ExitCode is not (0 or 1))
             {
                 var refused = new SnapshotCaptureException("Actual graph semantic worker failed: " +
@@ -52,6 +51,7 @@ internal static class ResolvedGraphExecution
                 refused.Data["ResolvedGraphWorker.ActualReturn"] = actual;
                 throw refused;
             }
+            original.CheckWork();
             var result = inputs.Read(resultPath, "config");
             ResolvedGraphProtocol.RequireUnique(result.Bytes);
             var output = JsonSerializer.Deserialize<GraphWorkerResult>(result.Bytes, ResolvedGraphProtocol.Options) ??

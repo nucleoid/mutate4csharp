@@ -14,9 +14,15 @@ namespace Mutate4CSharp;
 internal sealed class WindowsProcessTree
 {
     private static readonly ConcurrentBag<WindowsProcessTree> Unsettled = [];
-    private static readonly TimeSpan CleanupLimit = TimeSpan.FromSeconds(5);
-    private readonly long _started = Stopwatch.GetTimestamp();
+    private static readonly TimeSpan LegacyCleanupLimit = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan GraphCleanupLimit = TimeSpan.FromSeconds(60);
+    internal const int MaximumEnvironmentVariables = 4096;
+    internal const int MaximumEnvironmentVariableCharacters = 32767;
+    internal const int MaximumEnvironmentCharacters = 4 * 1024 * 1024;
+    private readonly long _started;
     private readonly TimeSpan _timeout;
+    private readonly TimeSpan _whole;
+    private readonly ResolvedGraphBudget? _originalBudget;
     private readonly CancellationToken _caller;
     private readonly List<CloseRow> _resources = [];
     private readonly List<string> _directories = [];
@@ -26,16 +32,13 @@ internal sealed class WindowsProcessTree
     private long? _cleanupStarted;
     private bool _created, _assigned, _settled;
 
-    private WindowsProcessTree(TimeSpan timeout, CancellationToken caller,
-        string directory, IReadOnlyDictionary<string, string?>? environment)
+    private WindowsProcessTree(long started, TimeSpan timeout, CancellationToken caller,
+        string directory, ResolvedGraphBudget? originalBudget)
     {
-        _timeout = timeout;
+        _started = started; _timeout = timeout; _whole = timeout + LegacyCleanupLimit;
+        _originalBudget = originalBudget;
         _caller = caller;
         _directories.Add(Path.GetFullPath(directory));
-        foreach (var item in environment ?? new Dictionary<string, string?>())
-            if (item.Key.Equals("NUGET_PACKAGES", StringComparison.OrdinalIgnoreCase) &&
-                !string.IsNullOrWhiteSpace(item.Value))
-                _directories.Add(Path.GetFullPath(item.Value));
         Own(_drainCancellation);
     }
 
@@ -54,19 +57,24 @@ internal sealed class WindowsProcessTree
 
     internal static async Task<ProcessTreeResult> RunAsync(string executable,
         IReadOnlyList<string> arguments, string directory, TimeSpan timeout,
-        CancellationToken caller, IReadOnlyDictionary<string, string?>? environment, long maxOutputBytes)
+        CancellationToken caller, IReadOnlyDictionary<string, string?>? environment, long maxOutputBytes,
+        ResolvedGraphBudget? originalBudget = null)
     {
+        var started = Stopwatch.GetTimestamp(); // Before environment/preflight/native acquisition.
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
-        if (timeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
+        if (timeout <= TimeSpan.Zero || timeout > TimeSpan.MaxValue - LegacyCleanupLimit) throw new ArgumentOutOfRangeException(nameof(timeout));
         if (maxOutputBytes < 1) throw new ArgumentOutOfRangeException(nameof(maxOutputBytes));
-        var owner = new WindowsProcessTree(timeout, caller, directory, environment);
+        var owner = new WindowsProcessTree(started, timeout, caller, directory, originalBudget);
         Exception? primary = null;
         var timedOut = false;
         var exitCode = -1;
         try
         {
             owner.CheckWork();
-            owner.Start(executable, arguments, directory, environment, maxOutputBytes);
+            var environmentBlock = EnvironmentBlock(environment, owner.CheckWork, out var packageRoot);
+            if (!string.IsNullOrWhiteSpace(packageRoot)) owner._directories.Add(Path.GetFullPath(packageRoot));
+            owner.CheckWork();
+            owner.Start(executable, arguments, directory, environmentBlock, maxOutputBytes);
             while (!owner.RootExited())
             {
                 owner.CheckWork();
@@ -74,6 +82,7 @@ internal sealed class WindowsProcessTree
                 if (owner._error!.IsFaulted || owner._error.IsCanceled) await owner._error;
                 await Task.Delay(TimeSpan.FromMilliseconds(10), caller);
             }
+            owner.CheckWork();
             if (!GetExitCodeProcess(owner._process!, out var actualExit)) throw Native("root-exit-code");
             exitCode = unchecked((int)actualExit);
         }
@@ -90,6 +99,7 @@ internal sealed class WindowsProcessTree
         }
         catch (Exception failure) { primary = failure; }
 
+        if (primary is not null) originalBudget?.BeginFailureCleanup();
         Exception? cleanupFailure = null;
         try { await owner.SettleAsync(); }
         catch (Exception failure) { cleanupFailure = failure; }
@@ -110,6 +120,7 @@ internal sealed class WindowsProcessTree
     private void CheckWork()
     {
         _caller.ThrowIfCancellationRequested();
+        _originalBudget?.CheckWork();
         if (Stopwatch.GetElapsedTime(_started) >= _timeout)
             throw new TimeoutException($"Process exceeded its {_timeout.TotalSeconds:g}-second timeout.");
     }
@@ -117,18 +128,26 @@ internal sealed class WindowsProcessTree
     private void CheckCleanup()
     {
         _cleanupStarted ??= Stopwatch.GetTimestamp();
-        if (Stopwatch.GetElapsedTime(_cleanupStarted.Value) >= CleanupLimit)
-            throw new TimeoutException("Original Windows process cleanup exceeded its 5-second deadline.");
+        var limit = _originalBudget is null ? LegacyCleanupLimit : GraphCleanupLimit;
+        if (Stopwatch.GetElapsedTime(_cleanupStarted.Value) >= limit ||
+            _originalBudget is null && Stopwatch.GetElapsedTime(_started) >= _whole)
+            throw new TimeoutException("Original Windows process cleanup endpoint expired; no deadline reset.");
+        _originalBudget?.CheckDisposition();
     }
 
     private TimeSpan CleanupRemaining()
     {
         CheckCleanup();
-        return CleanupLimit - Stopwatch.GetElapsedTime(_cleanupStarted!.Value);
+        var limit = _originalBudget is null ? LegacyCleanupLimit : GraphCleanupLimit;
+        var left = limit - Stopwatch.GetElapsedTime(_cleanupStarted!.Value);
+        var whole = _originalBudget?.RemainingDisposition ?? _whole - Stopwatch.GetElapsedTime(_started);
+        if (whole < left) left = whole;
+        if (left <= TimeSpan.Zero) throw new TimeoutException("SAME original Windows process disposition allowance expired.");
+        return left;
     }
 
     private void Start(string executable, IReadOnlyList<string> arguments, string directory,
-        IReadOnlyDictionary<string, string?>? environment, long maxOutputBytes)
+        string environmentBlock, long maxOutputBytes)
     {
         _job = Own(CreateJobObjectW(IntPtr.Zero, null));
         if (_job.IsInvalid) throw Native("create-private-job");
@@ -162,7 +181,7 @@ internal sealed class WindowsProcessTree
         CheckWork();
         // No target instruction can run before successful assignment to this Job.
         var created = CreateProcessW(null, command, IntPtr.Zero, IntPtr.Zero, true,
-            0x4 | 0x08000000 | 0x400 | 0x80000, EnvironmentBlock(environment),
+            0x4 | 0x08000000 | 0x400 | 0x80000, environmentBlock,
             Path.GetFullPath(directory), ref startup, out var actual);
         if (!created) throw Native("create-suspended");
         _created = true;
@@ -304,23 +323,52 @@ internal sealed class WindowsProcessTree
         }
         return value.Append('\\', slashes * 2).Append('"').ToString();
     }
-    private static string EnvironmentBlock(IReadOnlyDictionary<string, string?>? additions)
+    private static string EnvironmentBlock(IReadOnlyDictionary<string, string?>? additions, Action check, out string? packageRoot)
     {
-        var values = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (DictionaryEntry item in Environment.GetEnvironmentVariables()) values[(string)item.Key] = (string)item.Value!;
+        // Windows permits a block above32Ki characters. This explicit resource
+        // profile caps controlled copying at4Mi UTF16 characters (~8MiB), each
+        // row at32767, and4096 entries before any Job/pipe/process acquisition.
+        // The framework's inherited OS snapshot precedes this bounded copy.
+        check();
+        var overrides = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        long overrideCharacters = 1; var overrideRows = 0;
         foreach (var item in additions ?? new Dictionary<string, string?>())
         {
-            if (item.Key.Length == 0 || item.Key.Contains('=') || item.Key.Contains('\0') || item.Value?.Contains('\0') == true)
-                throw new ArgumentException("Invalid Windows environment entry.");
-            if (item.Value is null) values.Remove(item.Key); else values[item.Key] = item.Value;
+            check(); Validate(item.Key, item.Value);
+            if (++overrideRows > MaximumEnvironmentVariables ||
+                (overrideCharacters += item.Key.Length + (item.Value?.Length ?? 0) + 2) > MaximumEnvironmentCharacters)
+                throw new ArgumentException("Finite Windows environment override profile refused before native birth.");
+            overrides[item.Key] = item.Value;
         }
+        var values = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         long total = 1;
-        foreach (var item in values)
+        foreach (DictionaryEntry item in Environment.GetEnvironmentVariables())
         {
-            total = checked(total + item.Key.Length + item.Value.Length + 2);
-            if (total > 32767) throw new ArgumentException("Windows environment exceeds32767 characters.");
+            check(); var key = (string)item.Key;
+            if (!overrides.ContainsKey(key)) Add(key, (string)item.Value!);
         }
-        return string.Join('\0', values.Select(item => item.Key + "=" + item.Value)) + "\0\0";
+        foreach (var item in overrides)
+            if (item.Value is not null) Add(item.Key, item.Value);
+        values.TryGetValue("NUGET_PACKAGES", out packageRoot);
+        if (values.Count == 0) total = 2;
+        check(); var block = new StringBuilder(checked((int)total));
+        foreach (var item in values) { check(); block.Append(item.Key).Append('=').Append(item.Value).Append('\0'); }
+        if (values.Count == 0) block.Append('\0');
+        block.Append('\0'); check(); return block.ToString();
+
+        static void Validate(string key, string? value)
+        {
+            if (string.IsNullOrEmpty(key) || key.Contains('=') || key.Contains('\0') || value?.Contains('\0') == true ||
+                (long)key.Length + (value?.Length ?? 0) + 2 > MaximumEnvironmentVariableCharacters)
+                throw new ArgumentException("Finite Windows environment variable profile refused before native birth.");
+        }
+        void Add(string key, string value)
+        {
+            check(); Validate(key, value);
+            if (values.Count >= MaximumEnvironmentVariables || (long)key.Length + value.Length + 2 > MaximumEnvironmentCharacters - total)
+                throw new ArgumentException("Finite Windows environment block profile refused before native birth.");
+            total += key.Length + value.Length + 2; values.Add(key, value);
+        }
     }
     private static Win32Exception Native(string stage) => new(Marshal.GetLastWin32Error(), stage);
     private sealed class KernelHandle : SafeHandleZeroOrMinusOneIsInvalid

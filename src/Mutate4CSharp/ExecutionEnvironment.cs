@@ -33,18 +33,19 @@ internal static class ProcessTree
     public static Task<ProcessTreeResult> RunAsync(string executable, IReadOnlyList<string> arguments,
         string workingDirectory, TimeSpan timeout, CancellationToken cancellationToken,
         IReadOnlyDictionary<string, string?>? environment = null, long maxOutputBytes = DefaultMaxOutputBytes,
-        bool requireLinuxSessionIsolation = false) =>
+        bool requireLinuxSessionIsolation = false, ResolvedGraphBudget? originalBudget = null) =>
         RunAsync(ProcessPlatformCapabilities.Current, executable, arguments, workingDirectory, timeout,
-            cancellationToken, environment, maxOutputBytes, requireLinuxSessionIsolation);
+            cancellationToken, environment, maxOutputBytes, requireLinuxSessionIsolation, originalBudget);
 
     internal static async Task<ProcessTreeResult> RunAsync(ProcessPlatformCapabilities platform,
         string executable, IReadOnlyList<string> arguments, string workingDirectory, TimeSpan timeout,
         CancellationToken cancellationToken, IReadOnlyDictionary<string, string?>? environment = null,
-        long maxOutputBytes = DefaultMaxOutputBytes, bool requireLinuxSessionIsolation = false)
+        long maxOutputBytes = DefaultMaxOutputBytes, bool requireLinuxSessionIsolation = false,
+        ResolvedGraphBudget? originalBudget = null)
     {
         if (OperatingSystem.IsWindows())
             return await WindowsProcessTree.RunAsync(executable, arguments, workingDirectory, timeout,
-                cancellationToken, environment, maxOutputBytes);
+                cancellationToken, environment, maxOutputBytes, originalBudget);
         using var strictLaunch = platform.IsLinux && requireLinuxSessionIsolation
             ? LinuxStrictLaunch.Create()
             : null;
@@ -658,10 +659,12 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
 
     public async Task RestoreWorkerAsync(SnapshotClone worker, string projectPath, OwnedPackageCache packages,
         TimeSpan timeout, CancellationToken cancellationToken, string? framework = null,
-        string? configuration = null, bool restoreAuthoredFrameworkGraph = false)
+        string? configuration = null, bool restoreAuthoredFrameworkGraph = false, ResolvedGraphBudget? originalBudget = null)
     {
+        originalBudget?.CheckWork();
         foreach (var file in Directory.EnumerateFiles(GraphRoot, "packages.lock.json", SearchOption.AllDirectories))
         {
+            originalBudget?.CheckWork();
             var destination = Path.Combine(worker.Root, Path.GetRelativePath(GraphRoot, file));
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             if (File.Exists(destination) && !File.ReadAllBytes(destination).SequenceEqual(File.ReadAllBytes(file)))
@@ -688,11 +691,12 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
             arguments.Add("-p:Configuration=" + configuration);
         }
         var run = await ProcessTree.RunAsync(dotnet, arguments, worker.Root, timeout, cancellationToken,
-            ExecutionEnvironment.ProcessEnvironment(packages.Root), requireLinuxSessionIsolation: true);
+            ExecutionEnvironment.ProcessEnvironment(packages.Root), requireLinuxSessionIsolation: true, originalBudget: originalBudget);
         if (run.TimedOut)
             throw new TimeoutException($"Frozen worker restore exceeded its {timeout.TotalSeconds:g}-second timeout.");
         if (run.ExitCode != 0)
             throw CreateRestoreFailure(run, project, framework, configuration, worker.Root);
+        originalBudget?.CheckWork();
         ExecutionEnvironment.ValidateResolvedPackageRoots(worker.Root, packages.Root, config);
         if (!string.Equals(PackageFingerprint,
                 ExecutionEnvironment.FingerprintPackages(packages.Root, cancellationToken: cancellationToken),
@@ -819,16 +823,17 @@ internal static class ExecutionEnvironment
     ];
 
     internal static async Task CreateExecutionBoundaryAsync(string ownedRoot, string sdkWorkingDirectory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, ResolvedGraphBudget? originalBudget = null)
     {
         var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
         var sdk = await ProcessTree.RunAsync(dotnet, ["--version"], sdkWorkingDirectory,
-            TimeSpan.FromSeconds(30), cancellationToken, requireLinuxSessionIsolation: true);
+            TimeSpan.FromSeconds(30), cancellationToken, requireLinuxSessionIsolation: true, originalBudget: originalBudget);
         var version = sdk.StandardOutput.Trim();
         if (sdk.TimedOut || sdk.ExitCode != 0 || version.Length == 0 ||
             version.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not ('.' or '-' or '+')))
             throw new ExecutionEnvironmentUnavailableException(
                 "Could not pin the .NET SDK for the private execution boundary.");
+        originalBudget?.CheckWork();
         WriteBoundary(Path.Combine(ownedRoot, "Directory.Build.props"), "<Project />\n");
         WriteBoundary(Path.Combine(ownedRoot, "Directory.Build.targets"), "<Project />\n");
         WriteBoundary(Path.Combine(ownedRoot, "Directory.Packages.props"), "<Project />\n");
@@ -884,8 +889,10 @@ internal static class ExecutionEnvironment
     }
 
     public static async Task<FrozenExecutionEnvironment> PrepareDependenciesAsync(InputSnapshot snapshot,
-        IReadOnlyList<string> projectPaths, DependencyPreparationOptions options, CancellationToken cancellationToken)
+        IReadOnlyList<string> projectPaths, DependencyPreparationOptions options, CancellationToken cancellationToken,
+        ResolvedGraphBudget? originalBudget = null)
     {
+        originalBudget?.CheckWork();
         if (projectPaths.Count == 0) throw new ArgumentException("At least one project or solution is required.");
         if (options.Timeout <= TimeSpan.Zero || options.MaxFiles < 1 || options.MaxBytes < 1)
             throw new ArgumentOutOfRangeException(nameof(options));
@@ -900,7 +907,7 @@ internal static class ExecutionEnvironment
             Directory.CreateDirectory(packages);
             Directory.CreateDirectory(graphs);
             await using var preparation = await SnapshotWorkspace.CreateCloneAsync(snapshot,
-                "dependency-preparation", deadline.Token);
+                "dependency-preparation", deadline.Token, originalBudget);
             ValidateExecutionAncestors(preparation.Root);
             ValidateExecutionBoundary(preparation.Root);
             var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
@@ -909,6 +916,7 @@ internal static class ExecutionEnvironment
                 configRelativePath.Replace('/', Path.DirectorySeparatorChar));
             foreach (var projectPath in projectPaths.OrderBy(path => path, StringComparer.Ordinal))
             {
+                originalBudget?.CheckWork();
                 var relative = projectPath.Replace('\\', '/');
                 var project = Path.GetFullPath(relative.Replace('/', Path.DirectorySeparatorChar), preparation.Root);
                 EnsureWithin(preparation.Root, project);
@@ -921,10 +929,11 @@ internal static class ExecutionEnvironment
                 else arguments.Add("--use-lock-file");
                 var remaining = options.Timeout;
                 var run = await ProcessTree.RunAsync(dotnet, arguments, preparation.Root, remaining, deadline.Token,
-                    ProcessEnvironment(packages), requireLinuxSessionIsolation: true);
+                    ProcessEnvironment(packages), requireLinuxSessionIsolation: true, originalBudget: originalBudget);
                 if (run.TimedOut) throw new SnapshotCaptureException("Dependency preparation exceeded its deadline.");
                 if (run.ExitCode != 0)
                     throw new SnapshotCaptureException($"Dependency preparation failed: {Tail(run.StandardError, run.StandardOutput)}");
+                originalBudget?.CheckWork();
             }
             var assets = Directory.EnumerateFiles(preparation.Root, "project.assets.json", SearchOption.AllDirectories)
                 .Where(path => path.Split(Path.DirectorySeparatorChar).Contains("obj", StringComparer.OrdinalIgnoreCase))
@@ -945,10 +954,11 @@ internal static class ExecutionEnvironment
             var graphFingerprint = FingerprintTreeBounded(graphs, options.MaxFiles, options.MaxBytes,
                 deadline.Token);
             var sdk = await ProcessTree.RunAsync(dotnet, ["--version"], preparation.Root,
-                TimeSpan.FromSeconds(30), deadline.Token, requireLinuxSessionIsolation: true);
+                TimeSpan.FromSeconds(30), deadline.Token, requireLinuxSessionIsolation: true, originalBudget: originalBudget);
             if (sdk.ExitCode != 0 || sdk.TimedOut)
                 throw new ExecutionEnvironmentUnavailableException(
                     "Could not identify the resolved .NET SDK.");
+            originalBudget?.CheckWork();
             var identity = HashStrings("dependencies-v1", snapshot.Identity.CaptureId, sdk.StandardOutput.Trim(),
                 packageFingerprint, graphFingerprint);
             return new(owner, packages, graphs, identity, packageFingerprint,

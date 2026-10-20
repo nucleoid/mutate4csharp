@@ -212,18 +212,20 @@ internal sealed class OwnedDirectory : IAsyncDisposable
 internal static class SnapshotWorkspace
 {
     public static async Task<SnapshotClone> CreateCloneAsync(InputSnapshot snapshot, string purpose,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, ResolvedGraphBudget? originalBudget = null)
     {
+        cancellationToken.ThrowIfCancellationRequested(); originalBudget?.CheckWork();
         var parent = OwnedDirectory.PrivateParent("workspaces");
         var owner = OwnedDirectory.Create(parent, Sanitize(purpose));
         try
         {
             var root = Path.Combine(owner.Root, "root");
             Directory.CreateDirectory(root);
-            await ExecutionEnvironment.CreateExecutionBoundaryAsync(owner.Root, snapshot.OriginalRoot, cancellationToken);
+            await ExecutionEnvironment.CreateExecutionBoundaryAsync(owner.Root, snapshot.OriginalRoot, cancellationToken, originalBudget);
             foreach (var file in snapshot.Files.Where(file => file.Exists))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                originalBudget?.CheckWork();
                 var source = Path.Combine(snapshot.CaptureRoot, file.RelativePath.Replace('/', Path.DirectorySeparatorChar));
                 var destination = Path.Combine(root, file.RelativePath.Replace('/', Path.DirectorySeparatorChar));
                 Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
