@@ -43,7 +43,7 @@ internal static class ProcessTree
         long maxOutputBytes = DefaultMaxOutputBytes, bool requireLinuxSessionIsolation = false,
         ResolvedGraphBudget? originalBudget = null)
     {
-        if (OperatingSystem.IsWindows())
+        if (OperatingSystem.IsWindows() && originalBudget is not null)
             return await WindowsProcessTree.RunAsync(executable, arguments, workingDirectory, timeout,
                 cancellationToken, environment, maxOutputBytes, originalBudget);
         CheckWork();
@@ -82,8 +82,7 @@ internal static class ProcessTree
             ? timeout : originalBudget.RemainingWork;
         if (originalBudget is not null && workTimeout <= TimeSpan.Zero)
             throw new TimeoutException("Actual graph original work endpoint expired before process birth.");
-        if (!process.Start()) throw new InvalidOperationException($"Could not start {executable}.");
-        if (originalBudget is not null) strictLaunch?.RetainUnsettled();
+        if (!(originalProcess?.Start() ?? process.Start())) throw new InvalidOperationException($"Could not start {executable}.");
         var linuxIdentity = platform.IsLinux && TryReadLinuxIdentity(process.Id, out var launched)
             ? launched
             : (LinuxProcessIdentity?)null;
@@ -146,7 +145,7 @@ internal static class ProcessTree
         catch (Exception interruption) when (interruption is OperationCanceledException ||
             interruption is TimeoutException && originalBudget is not null)
         {
-            timedOut = interruption is TimeoutException ||
+            timedOut = interruption is TimeoutException || originalBudget?.WorkEndpointExpired == true ||
                 timeoutSource.IsCancellationRequested && !cancellationToken.IsCancellationRequested;
             Exception primaryFailure = timedOut
                 ? interruption is TimeoutException ? interruption : new TimeoutException(originalBudget is null
@@ -163,7 +162,12 @@ internal static class ProcessTree
                     : Task.CompletedTask);
             if (!timedOut)
             {
-                try { originalProcess?.CloseSettled(); }
+                try
+                {
+                    if (originalProcess is not null) await originalProcess.JoinObserversAsync();
+                    originalProcess?.CloseSettled();
+                    originalProcess?.PreserveObserverFailures(primaryFailure);
+                }
                 catch (Exception cleanup) { throw CreateCleanupFailure(primaryFailure, cleanup); }
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(interruption).Throw();
             }
@@ -177,6 +181,15 @@ internal static class ProcessTree
             try
             {
                 if (linuxBoundary.Isolated) await TerminateAndReapLinuxBoundaryAsync(linuxBoundary, originalBudget);
+                if (originalProcess is not null)
+                {
+                    // Cancellation requests are not task-completion observations.
+                    // A capture fault remains the primary failure, but terminal
+                    // faulted reads may be first-closed after native settlement.
+                    await originalProcess.JoinObserversAsync();
+                    originalProcess.CloseSettled();
+                    originalProcess.PreserveObserverFailures(primaryFailure);
+                }
             }
             catch (Exception cleanupFailure) { throw CreateCleanupFailure(primaryFailure, cleanupFailure); }
             throw;
@@ -185,16 +198,20 @@ internal static class ProcessTree
         {
             var strictOutput = await CompleteStrictSuccessAsync(process, linuxBoundary, outputTask, errorTask,
                 drainCancellation, originalBudget);
+            if (originalProcess is not null) await originalProcess.JoinObserversAsync();
             originalProcess?.CloseSettled();
+            originalProcess?.ThrowObserverFailures();
             strictLaunch!.MarkSettled();
             return new(strictExitCode ?? -1, timedOut, strictOutput.Output, strictOutput.Error, watch.Elapsed);
         }
         var (output, error) = await AwaitOutputsAsync(outputTask, errorTask, drainCancellation, originalBudget);
         var result = new ProcessTreeResult(process.HasExited ? process.ExitCode : -1, timedOut, output, error, watch.Elapsed);
+        if (originalProcess is not null) await originalProcess.JoinObserversAsync();
         originalProcess?.CloseSettled();
+        originalProcess?.ThrowObserverFailures();
         return result;
 
-        void CheckWork() { cancellationToken.ThrowIfCancellationRequested(); originalBudget?.CheckWork(); }
+        void CheckWork() { originalBudget?.CheckWork(); cancellationToken.ThrowIfCancellationRequested(); }
         async Task WaitForRootCleanup()
         {
             originalBudget?.CheckDisposition();
@@ -410,7 +427,7 @@ internal static class ProcessTree
         using var originalProbe = originalBudget is null ? null : new LinuxOriginalProcessFrame(new Process { StartInfo = info }, originalBudget);
         var probe = legacyProbe ?? originalProbe!.Process;
         token.ThrowIfCancellationRequested(); originalBudget?.CheckWork();
-        if (!probe.Start()) throw new InvalidOperationException($"Could not inspect {executable}.");
+        if (!(originalProbe?.Start() ?? probe.Start())) throw new InvalidOperationException($"Could not inspect {executable}.");
         var output = ReadBoundedAsync(probe.StandardOutput.BaseStream, 64 * 1024, CancellationToken.None);
         var error = ReadBoundedAsync(probe.StandardError.BaseStream, 64 * 1024, CancellationToken.None);
         originalProbe?.Track(output); originalProbe?.Track(error);
@@ -422,7 +439,7 @@ internal static class ProcessTree
                 .GetAwaiter().GetResult();
             token.ThrowIfCancellationRequested(); originalBudget?.CheckWork();
         }
-        catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+        catch (Exception ex)
         {
             originalBudget?.BeginFailureCleanup();
             try
@@ -434,17 +451,22 @@ internal static class ProcessTree
                 var cleanup = TimeSpan.FromSeconds(2);
                 if (originalBudget is not null && originalBudget.RemainingDisposition < cleanup)
                     cleanup = originalBudget.RemainingDisposition;
-                Task.WhenAll(exit, output, error).WaitAsync(cleanup).GetAwaiter().GetResult();
+                try { Task.WhenAll(exit, output, error).WaitAsync(cleanup).GetAwaiter().GetResult(); }
+                catch when (exit.IsCompletedSuccessfully && output.IsCompleted && error.IsCompleted) { }
                 originalBudget?.CheckDisposition();
+                originalProbe?.JoinObserversAsync().GetAwaiter().GetResult();
                 originalProbe?.CloseSettled();
+                originalProbe?.PreserveObserverFailures(ex);
             }
             catch (Exception cleanup) { throw CreateCleanupFailure(ex, cleanup); }
-            if (ex is OperationCanceledException) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex).Throw();
+            if (ex is not TimeoutException) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex).Throw();
             throw new InvalidOperationException(
                 $"Timed out inspecting {executable} for --wait support.", ex);
         }
         var result = (probe.ExitCode, output.GetAwaiter().GetResult(), error.GetAwaiter().GetResult());
+        originalProbe?.JoinObserversAsync().GetAwaiter().GetResult();
         originalProbe?.CloseSettled();
+        originalProbe?.ThrowObserverFailures();
         return result;
     }
 
@@ -685,8 +707,10 @@ internal static class ProcessTree
         private readonly ResolvedGraphBudget budget;
         private readonly List<IDisposable> resources = [];
         private readonly List<Task> observers = [];
+        private readonly List<string> directories = [];
+        private readonly Action? retain;
         private readonly Action? settled;
-        private bool closeRequested, closeReturned;
+        private bool birthEntered, birthReturned, born, closeRequested, closeReturned, retained;
         private Exception? closeFailure;
         internal Process Process { get; }
         internal object? Boundary { get; set; } // Retain observed identities only; never adopt or reconstruct them.
@@ -695,10 +719,58 @@ internal static class ProcessTree
         {
             original.Resources.AdmitFrame();
             Process = process; budget = original; resources.Add(process);
-            settled = settledStatus; retainStatus?.Invoke();
+            settled = settledStatus; retain = retainStatus;
+            var directory = Path.GetFullPath(string.IsNullOrWhiteSpace(process.StartInfo.WorkingDirectory)
+                ? Environment.CurrentDirectory : process.StartInfo.WorkingDirectory);
+            directories.Add(directory);
+            if (process.StartInfo.Environment.TryGetValue("NUGET_PACKAGES", out var packages) && !string.IsNullOrWhiteSpace(packages))
+                directories.Add(Path.GetFullPath(packages, directory));
+        }
+        internal bool Start()
+        {
+            if (birthEntered || closeRequested) throw new EvaluationContractException("Original process birth cannot retry or follow first-close.");
+            budget.CheckWork();
+            // Start throwing is not proof that no child was born. Retain the
+            // exact status owner on that path, but not before Start was entered.
+            birthEntered = true; retain?.Invoke();
+            born = Process.Start(); birthReturned = true;
+            return born;
+        }
+        internal static void AssertDirectoryMayBeRemoved(string directory)
+        {
+            var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+            foreach (var owner in Unsettled)
+                if (owner.birthEntered && (!owner.birthReturned || owner.born))
+                    foreach (var path in owner.directories)
+                        if (Overlaps(root, Path.TrimEndingDirectorySeparator(path)))
+                            throw new SnapshotCleanupException(new IOException(
+                                "An original native process boundary is unsettled; its exact working/package directories are retained."));
+
+            static bool Overlaps(string left, string right) => left == right ||
+                left.StartsWith(right + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+                right.StartsWith(left + Path.DirectorySeparatorChar, StringComparison.Ordinal);
         }
         internal T Own<T>(T resource) where T : IDisposable { resources.Add(resource); return resource; }
         internal void Track(Task observer) => observers.Add(observer);
+        internal async Task JoinObserversAsync()
+        {
+            if (closeRequested) throw new EvaluationContractException("Original observer join cannot follow first-close.");
+            budget.CheckDisposition();
+            try { await Task.WhenAll(observers).WaitAsync(budget.RemainingDisposition).ConfigureAwait(false); }
+            catch when (observers.All(task => task.IsCompleted)) { } // Faults remain on these SAME tasks.
+            budget.CheckDisposition();
+        }
+        private Exception[] ObserverFailures() => observers.Where(task => task.IsFaulted).Select(task => (Exception)task.Exception!).ToArray();
+        internal void PreserveObserverFailures(Exception primary)
+        {
+            var failures = ObserverFailures();
+            if (failures.Length != 0) primary.Data["ProcessTree.OriginalObserverFailures"] = failures;
+        }
+        internal void ThrowObserverFailures()
+        {
+            var failures = ObserverFailures();
+            if (failures.Length != 0) throw new AggregateException("Actual original process observers faulted despite known physical settlement.", failures);
+        }
         internal void CloseSettled()
         {
             if (closeRequested) throw new EvaluationContractException("Original Linux process first-close cannot retry.");
@@ -706,7 +778,7 @@ internal static class ProcessTree
             try
             {
                 budget.CheckDisposition();
-                if (observers.Any(task => !task.IsCompleted) || !Process.HasExited)
+                if (birthEntered && !birthReturned || observers.Any(task => !task.IsCompleted) || born && !Process.HasExited)
                     throw new IOException("Actual Linux process/observers remain unsettled; retain original handles.");
                 foreach (var resource in resources.AsEnumerable().Reverse())
                 {
@@ -720,14 +792,19 @@ internal static class ProcessTree
             catch (Exception failure)
             {
                 closeFailure = failure;
+                Retain();
                 throw new SnapshotCleanupException(failure);
             }
         }
         public void Dispose()
         {
+            // A constructor/pre-birth refusal or a returned false Start has no
+            // native child. Dispose its controls once under the same allowance.
+            if (!closeRequested && (!birthEntered || birthReturned && !born)) CloseSettled();
             // No late close, retry or Task replacement after unknown disposition.
-            if (!closeReturned || closeFailure is not null) Unsettled.Add(this);
+            if (!closeReturned || closeFailure is not null) Retain();
         }
+        private void Retain() { if (!retained) { retained = true; Unsettled.Add(this); } }
     }
 
     private sealed class LinuxStrictLaunch : IDisposable

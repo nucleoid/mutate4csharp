@@ -524,6 +524,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             "The immutable capture could not be cleaned up safely."),
         SnapshotEnvironmentException => new("SNAPSHOT_ENVIRONMENT",
             "Immutable capture could not create or write its private staging environment."),
+        ExecutionEnvironmentUnavailableException => new("EXECUTION_ENVIRONMENT_UNAVAILABLE",
+            "The configured native execution environment could not be admitted."),
         ExecutionBoundaryIntegrityException => new("EXECUTION_BOUNDARY_INTEGRITY",
             "Execution escaped or changed a frozen private workspace or dependency boundary."),
         SnapshotDivergedException => new("SNAPSHOT_DIVERGED", "Inputs diverged during or after immutable capture."),

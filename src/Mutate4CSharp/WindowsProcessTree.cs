@@ -72,7 +72,7 @@ internal sealed class WindowsProcessTree
         {
             owner.CheckWork();
             var environmentBlock = EnvironmentBlock(environment, owner.CheckWork, out var packageRoot);
-            if (!string.IsNullOrWhiteSpace(packageRoot)) owner._directories.Add(Path.GetFullPath(packageRoot));
+            if (!string.IsNullOrWhiteSpace(packageRoot)) owner._directories.Add(Path.GetFullPath(packageRoot, Path.GetFullPath(directory)));
             owner.CheckWork();
             owner.Start(executable, arguments, directory, environmentBlock, maxOutputBytes);
             while (!owner.RootExited())
@@ -88,13 +88,14 @@ internal sealed class WindowsProcessTree
         }
         catch (OperationCanceledException failure)
         {
-            // A caller cancellation remains cancellation. Only our original work
-            // deadline is translated to the existing ProcessTree timed-out result.
-            primary = failure;
+            // A linked graph work timer must not masquerade as user cancellation.
+            // This observation never supplies more work or cleanup authority.
+            timedOut = originalBudget?.WorkEndpointExpired == true;
+            primary = timedOut ? new TimeoutException("Actual graph original work endpoint expired.", failure) : failure;
         }
         catch (TimeoutException failure)
         {
-            timedOut = !caller.IsCancellationRequested;
+            timedOut = originalBudget?.WorkEndpointExpired == true || !caller.IsCancellationRequested;
             primary = timedOut ? failure : new OperationCanceledException(caller);
         }
         catch (Exception failure) { primary = failure; }
@@ -119,8 +120,8 @@ internal sealed class WindowsProcessTree
 
     private void CheckWork()
     {
-        _caller.ThrowIfCancellationRequested();
         _originalBudget?.CheckWork();
+        _caller.ThrowIfCancellationRequested();
         if (Stopwatch.GetElapsedTime(_started) >= _timeout)
             throw new TimeoutException($"Process exceeded its {_timeout.TotalSeconds:g}-second timeout.");
     }
@@ -327,7 +328,7 @@ internal sealed class WindowsProcessTree
     {
         // Windows permits a block above32Ki characters. This explicit resource
         // profile caps controlled copying at4Mi UTF16 characters (~8MiB), each
-        // row at32767, and4096 entries before any Job/pipe/process acquisition.
+        // key/value at32767, and4096 entries before Job/pipe/process acquisition.
         // The framework's inherited OS snapshot precedes this bounded copy.
         check();
         var overrides = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
@@ -337,7 +338,7 @@ internal sealed class WindowsProcessTree
             check(); Validate(item.Key, item.Value);
             if (++overrideRows > MaximumEnvironmentVariables ||
                 (overrideCharacters += item.Key.Length + (item.Value?.Length ?? 0) + 2) > MaximumEnvironmentCharacters)
-                throw new ArgumentException("Finite Windows environment override profile refused before native birth.");
+                throw new ExecutionEnvironmentUnavailableException("Finite Windows environment override profile refused before native birth.");
             overrides[item.Key] = item.Value;
         }
         var values = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -359,14 +360,14 @@ internal sealed class WindowsProcessTree
         static void Validate(string key, string? value)
         {
             if (string.IsNullOrEmpty(key) || key.Contains('=') || key.Contains('\0') || value?.Contains('\0') == true ||
-                (long)key.Length + (value?.Length ?? 0) + 2 > MaximumEnvironmentVariableCharacters)
-                throw new ArgumentException("Finite Windows environment variable profile refused before native birth.");
+                key.Length > MaximumEnvironmentVariableCharacters || (value?.Length ?? 0) > MaximumEnvironmentVariableCharacters)
+                throw new ExecutionEnvironmentUnavailableException("Finite Windows environment variable profile refused before native birth.");
         }
         void Add(string key, string value)
         {
             check(); Validate(key, value);
             if (values.Count >= MaximumEnvironmentVariables || (long)key.Length + value.Length + 2 > MaximumEnvironmentCharacters - total)
-                throw new ArgumentException("Finite Windows environment block profile refused before native birth.");
+                throw new ExecutionEnvironmentUnavailableException("Finite Windows environment block profile refused before native birth.");
             total += key.Length + value.Length + 2; values.Add(key, value);
         }
     }

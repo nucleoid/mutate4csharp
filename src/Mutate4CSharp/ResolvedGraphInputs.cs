@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 
 namespace Mutate4CSharp;
@@ -6,6 +7,8 @@ namespace Mutate4CSharp;
 // or digest returned here is itself an accepted compiler/task provenance proof.
 internal sealed class ResolvedGraphInputs : IDisposable
 {
+    private static readonly ConcurrentBag<ResolvedGraphInputs> Unsettled = [];
+    private bool _retained;
     internal const long MaximumBytes = 512L * 1024 * 1024;
     internal const int MaximumFiles = 32_768;
     internal const int MaximumFileBytes = 32 * 1024 * 1024;
@@ -99,7 +102,7 @@ internal sealed class ResolvedGraphInputs : IDisposable
             completeBytes.LongLength > MaximumFileBytes)
             throw new SnapshotLimitException("Complete worker result admission exceeded.");
         path = Path.GetFullPath(path);
-        var frame = new Frame { Bytes = completeBytes };
+        var frame = new Frame { Path = path, Bytes = completeBytes };
         _budget.Resources.AdmitFrame();
         _frames.Add(frame);
         _budget.Resources.AdmitSemantic(completeBytes.LongLength);
@@ -140,7 +143,7 @@ internal sealed class ResolvedGraphInputs : IDisposable
             expected.Bytes.LongLength + suffix.LongLength > maximumBytes ||
             !_frames.Any(f => f.Path == expected.Path && f.Role == expected.Role && ReferenceEquals(f.Bytes, expected.Bytes)))
             throw new EvaluationContractException("Exact original bounded collector artifact required before append.");
-        var frame = new Frame(); _budget.Resources.AdmitFrame(); _frames.Add(frame);
+        var frame = new Frame { Path = expected.Path, Role = expected.Role }; _budget.Resources.AdmitFrame(); _frames.Add(frame);
         _budget.Resources.AdmitSemantic(expected.Bytes.LongLength);
         _budget.Resources.AdmitIo(expected.Bytes.LongLength + 1 + suffix.LongLength);
         try
@@ -208,7 +211,7 @@ internal sealed class ResolvedGraphInputs : IDisposable
         Check();
         if (!Path.IsPathFullyQualified(path) || path.Length > 4096 || _frames.Count + _directories.Count >= MaximumFiles)
             throw new SnapshotLimitException("Generated directory admission limit.");
-        var frame = new DirectoryFrame(); _budget.Resources.AdmitFrame(); _directories.Add(frame);
+        var frame = new DirectoryFrame { Path = Path.GetFullPath(path) }; _budget.Resources.AdmitFrame(); _directories.Add(frame);
         var output = new List<ResolvedGraphEntry>();
         try
         {
@@ -247,8 +250,9 @@ internal sealed class ResolvedGraphInputs : IDisposable
         catch (Exception failure) { frame.ClosePost = failure; _failure ??= failure; _budget.BeginFailureCleanup(); }
     }
 
-    private static void RequireDirectory(DirectoryFrame frame)
+    private void RequireDirectory(DirectoryFrame frame)
     {
+        if (Unknown(frame)) Retain();
         var failures = new[] { frame.Primary, frame.Post, frame.CloseFailure, frame.ClosePost }.OfType<Exception>().ToArray();
         if (failures.Length > 0) throw new AggregateException("Original generated enumerator primary/post/first-close retained.", failures);
         if (!frame.FactoryEntered || !frame.FactoryReturned || !frame.AcquireEntered || !frame.AcquireReturned ||
@@ -288,7 +292,7 @@ internal sealed class ResolvedGraphInputs : IDisposable
         if (role is not ("compiler" or "import") || !Path.IsPathFullyQualified(path) || path.Length > 4096)
             throw new EvaluationContractException("Exact closed hash-only image role/path required.");
         path = Path.GetFullPath(path);
-        var frame = new Frame(); _budget.Resources.AdmitFrame(); _frames.Add(frame);
+        var frame = new Frame { Path = path, Role = role }; _budget.Resources.AdmitFrame(); _frames.Add(frame);
         long length = -1;
         try
         {
@@ -378,8 +382,9 @@ internal sealed class ResolvedGraphInputs : IDisposable
         try { CheckEndpoint(); }
         catch (Exception post) { frame.ClosePost = post; _failure ??= post; _budget.BeginFailureCleanup(); }
     }
-    private static void ThrowFrame(Frame frame)
+    private void ThrowFrame(Frame frame)
     {
+        if (Unknown(frame)) Retain();
         var failures = new[] { frame.Primary, frame.Post, frame.HashCloseFailure, frame.HashClosePost, frame.CloseFailure, frame.ClosePost }
             .OfType<Exception>().ToArray();
         if (failures.Length > 0) throw new AggregateException("Actual graph input and independent first-close outcomes retained.", failures);
@@ -389,6 +394,28 @@ internal sealed class ResolvedGraphInputs : IDisposable
             throw new EvaluationContractException("Actual original graph input acquisition/disposition remains unknown.");
         if (frame.HashAcquireEntered && (!frame.HashAcquireReturned || !frame.HashCloseEntered || !frame.HashCloseReturned))
             throw new EvaluationContractException("Actual original image hash acquisition/disposition remains unknown.");
+    }
+    private void Retain() { if (!_retained) { _retained = true; Unsettled.Add(this); } }
+    private static bool Unknown(Frame frame) =>
+        frame.AcquireEntered && (!frame.AcquireReturned || !frame.CloseReturned || frame.CloseFailure is not null || frame.ClosePost is not null) ||
+        frame.HashAcquireEntered && (!frame.HashAcquireReturned || !frame.HashCloseReturned || frame.HashCloseFailure is not null || frame.HashClosePost is not null);
+    private static bool Unknown(DirectoryFrame frame) =>
+        frame.FactoryEntered && !frame.FactoryReturned || frame.AcquireEntered &&
+        (!frame.AcquireReturned || !frame.CloseReturned || frame.CloseFailure is not null || frame.ClosePost is not null);
+    internal static void AssertDirectoryMayBeRemoved(string directory)
+    {
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        foreach (var owner in Unsettled)
+        {
+            foreach (var frame in owner._frames)
+                if (Unknown(frame) && frame.Path is { } path && Within(path)) Refuse();
+            foreach (var frame in owner._directories)
+                if (Unknown(frame) && frame.Path is { } path && Within(path)) Refuse();
+        }
+        bool Within(string path) => path.Equals(root, comparison) || path.StartsWith(root + Path.DirectorySeparatorChar, comparison);
+        static void Refuse() => throw new SnapshotCleanupException(new IOException(
+            "An actual graph input first-disposition is unsettled; its original namespace is retained."));
     }
     public void Dispose()
     {
@@ -422,6 +449,7 @@ internal sealed class ResolvedGraphInputs : IDisposable
     }
     private sealed class DirectoryFrame
     {
+        internal string? Path;
         internal IEnumerable<string>? Enumerable;
         internal IEnumerator<string>? Enumerator;
         internal bool FactoryEntered, FactoryReturned, AcquireEntered, AcquireReturned;

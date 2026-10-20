@@ -50,6 +50,7 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
         budget.CheckWork();
         if (logger is null || environment.SdkVersion != logger.SdkVersion)
             throw new EvaluationContractException("Actual selected graph logger and restored SDK profile must match before graph effects.");
+        var callerCancellation = cancellationToken;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout);
         cancellationToken = deadline.Token;
@@ -102,9 +103,12 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
         }
         catch (Exception primary)
         {
+            var failure = primary is OperationCanceledException && !callerCancellation.IsCancellationRequested && deadline.IsCancellationRequested
+                ? new TimeoutException("Resolved graph capture exhausted its existing work allowance.", primary) : primary;
             budget.BeginFailureCleanup();
             try { if (capture is not null) await capture.DisposeAsync(); else await AsyncDisposal.DisposeAllAsync([packages, clone]); }
-            catch (Exception close) { throw new SnapshotCleanupException(primary, close); }
+            catch (Exception close) { throw new SnapshotCleanupException(failure, close); }
+            if (!ReferenceEquals(failure, primary)) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
             throw;
         }
     }

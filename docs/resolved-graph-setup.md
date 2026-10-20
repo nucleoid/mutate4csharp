@@ -173,8 +173,21 @@ Linux graph calls pass that same original through target and cold setsid-probe
 admission. Existing process, output and reaping waits shrink to its work or
 disposition endpoint; terminal cleanup cannot grant another process birth.
 Unsettled graph calls retain their strict-wrapper status directory as evidence.
+They also retain the same process/observer controls and the exact effective
+working/package directories; owned cleanup refuses to delete those namespaces.
+Pre-birth refusals and returned false starts do not invent a native child. A
+throwing start remains unknown until its original owner has settlement proof.
+Unknown input first-dispositions retain their actual streams/hashes/enumerators
+independently of exception reachability, without a later close or retry.
 These cooperative checks retain the existing Linux containment limitations and
 do not issue native ownership or certify a completed execution.
+
+The suspended Windows Job launcher is selected only for calls carrying the actual
+resolved-graph original. Version1 keeps the prior Process launch/cleanup behavior.
+The graph Windows environment profile is finite: 4096 variables, at most32767
+UTF16 characters in each key and each value, and4Mi UTF16 characters in the full
+block. Refusal precedes native birth and reports execution-environment unavailable.
+The inherited OS snapshot itself remains outside the controlled-copy admission.
 
 Explicit compiler source encodings are limited to UTF8. The same source profile is
 checked at the original compiler callback and the semantic worker. Default BOM
