@@ -328,6 +328,103 @@ public sealed class ResolvedGraphInheritedCompilerFixtureTests : IDisposable
     }
 
     [Fact]
+    public async Task Actual_fresh_owned_graphs_keep_query_and_task_canonical_records_before_disposal()
+    {
+        WriteFixture();
+        _repository.Git("add", "."); _repository.Git("commit", "-m", "actual query task canonical comparison");
+        var token = TestContext.Current.CancellationToken;
+        var original = new ResolvedGraphBudget(TimeSpan.FromSeconds(1100), token);
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [], SnapshotCaptureOptions.Default, token);
+        using var inputs = new ResolvedGraphInputs(original);
+        var deployment = ResolvedGraphDeployment.Load(inputs);
+        var configuration = CheckConfiguration.Load(_repository.Root, _repository.Read(".mutate4csharp.json"));
+        await using var environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
+            ["src/App/App.csproj", "tests/CompilerSuite/CompilerSuite.csproj"],
+            DependencyPreparationOptions.Default with { Timeout = original.RemainingWork }, token);
+        var first = await CaptureCanonicalRecords();
+        var second = await CaptureCanonicalRecords();
+        Assert.Equal(first.Keys.Order(StringComparer.Ordinal), second.Keys.Order(StringComparer.Ordinal));
+        TestContext.Current.TestOutputHelper?.WriteLine(
+            "Actual query/task canonical comparison only: both complete owned compiler graphs were captured; retained input-byte identities are not included in this diagnostic case.");
+        foreach (var key in first.Keys.Order(StringComparer.Ordinal))
+        {
+            original.CheckWork();
+            var left = first[key]; var right = second[key];
+            inputs.ReserveAllocation(4L * (left.Length + right.Length));
+            using var a = JsonDocument.Parse(left, new JsonDocumentOptions { MaxDepth = 32 });
+            using var b = JsonDocument.Parse(right, new JsonDocumentOptions { MaxDepth = 32 });
+            var differences = new List<string>();
+            Compare(a.RootElement, b.RootElement, "$", 0);
+            TestContext.Current.TestOutputHelper?.WriteLine(
+                $"Query/task canonical record {key}: firstBytes={left.Length}; secondBytes={right.Length}; firstDifferences={differences.Count}\n" +
+                string.Join('\n', differences));
+            Assert.Equal(left, right);
+
+            void Compare(JsonElement av, JsonElement bv, string path, int depth)
+            {
+                original.CheckWork();
+                if (differences.Count == 8) return;
+                if (depth > 32) throw new SnapshotLimitException("Canonical comparison diagnostic depth.");
+                if (av.ValueKind != bv.ValueKind) { Difference(path, av, bv); return; }
+                if (av.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var property in av.EnumerateObject())
+                    {
+                        if (differences.Count == 8) return;
+                        var child = path + "/" + property.Name.Replace("~", "~0", StringComparison.Ordinal).Replace("/", "~1", StringComparison.Ordinal);
+                        if (bv.TryGetProperty(property.Name, out var other)) Compare(property.Value, other, child, depth + 1);
+                        else Difference(child, property.Value, default);
+                    }
+                    foreach (var property in bv.EnumerateObject())
+                    {
+                        if (differences.Count == 8) return;
+                        if (!av.TryGetProperty(property.Name, out _))
+                            Difference(path + "/" + property.Name, default, property.Value);
+                    }
+                }
+                else if (av.ValueKind == JsonValueKind.Array)
+                {
+                    var count = Math.Min(av.GetArrayLength(), bv.GetArrayLength());
+                    if (av.GetArrayLength() != bv.GetArrayLength())
+                        differences.Add(EvaluationTextBounds.Prefix($"{path}: array lengths {av.GetArrayLength()} != {bv.GetArrayLength()}", 1024));
+                    for (var index = 0; index < count && differences.Count < 8; ++index)
+                        Compare(av[index], bv[index], path + "/" + index, depth + 1);
+                }
+                else if (av.GetRawText() != bv.GetRawText()) Difference(path, av, bv);
+            }
+            void Difference(string path, JsonElement av, JsonElement bv)
+            {
+                string Text(JsonElement value) => value.ValueKind == JsonValueKind.Undefined ? "<missing>" :
+                    EvaluationTextBounds.Prefix(value.GetRawText(), 256);
+                differences.Add(EvaluationTextBounds.Prefix(path, 512) + ": first=" + Text(av) + "; second=" + Text(bv));
+            }
+        }
+        Assert.Null(original.Observe().Cleanup);
+
+        async Task<Dictionary<string, byte[]>> CaptureCanonicalRecords()
+        {
+            await using var capture = await CaptureWithFailureTranscriptAsync(() => ResolvedGraphCapture.CreateAsync(snapshot,
+                configuration, environment, original.RemainingWork, token, deployment.Logger, original));
+            Assert.Equal(3, capture.Projects.Count);
+            var canonical = new ResolvedGraphCanonicalContext(capture.Root, capture.PackageRoot);
+            var records = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+            foreach (var project in capture.Projects)
+            {
+                original.CheckWork();
+                var selection = project.Selection;
+                records.Add(selection.Project + "|" + selection.Framework + "|" + selection.Configuration,
+                    canonical.CanonicalBytes(project, [], inputs));
+            }
+            capture.ValidateAuthoredInputs();
+            await snapshot.ValidateOriginalAsync(token);
+            original.CheckWork();
+            // Only bounded immutable DATA leaves this scope, before disposing
+            // the actual compiler clone. This is not full semantic acceptance.
+            return records;
+        }
+    }
+
+    [Fact]
     public async Task Actual_compiler_generated_checksum_positive_precedes_after_compile_source_replacement_refusal()
     {
         WriteFixture(); _repository.Git("add", "."); _repository.Git("commit", "-m", "actual PDB source correspondence");

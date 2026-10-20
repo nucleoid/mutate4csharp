@@ -45,6 +45,16 @@ internal sealed class ResolvedGraphCanonicalContext
 
     internal string Identity(ResolvedProjectCapture actual, IReadOnlyList<ResolvedGraphFile> retained, ResolvedGraphInputs inputs)
     {
+        var bytes = CanonicalBytes(actual, retained, inputs);
+        // The complete bounded record can exceed the identity framing API's
+        // 16KiB scalar limit. Hash EVERY canonical byte, then frame its fixed
+        // digest under a new domain; never truncate or expand that global limit.
+        return MutationIdentity.ComputeDigest("resolved-canonical-context-v3",
+            [("complete-semantic-record-sha256", Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant())]);
+    }
+
+    internal byte[] CanonicalBytes(ResolvedProjectCapture actual, IReadOnlyList<ResolvedGraphFile> retained, ResolvedGraphInputs inputs)
+    {
         var first = actual.FirstCsc ?? throw new EvaluationContractException("Original Csc context required.");
         // Do not include process/event numeric IDs or complete raw-query SHA in
         // semantic identity: they are physical joins, retained on the original.
@@ -64,11 +74,7 @@ internal sealed class ResolvedGraphCanonicalContext
             inputs, ResolvedGraphCapture.MaxQueryBytes, 1_048_576);
         inputs.CheckWork();
         inputs.ReserveAllocation(4L * bytes.Length);
-        // The complete bounded record can exceed the identity framing API's
-        // 16KiB scalar limit. Hash EVERY canonical byte, then frame its fixed
-        // digest under a new domain; never truncate or expand that global limit.
-        return MutationIdentity.ComputeDigest("resolved-canonical-context-v3",
-            [("complete-semantic-record-sha256", Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant())]);
+        return bytes;
     }
 
     private string InputIdentity(ResolvedGraphFile file, ResolvedGraphInputs inputs)

@@ -42,9 +42,28 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $revision -cnotmatch '^[0-9a-f]{40}$') { throw 'Actual clean source revision required' }
           $selectedSdk = (& dotnet --version)
           if ($LASTEXITCODE -ne 0 -or $selectedSdk -cne '10.0.103') { throw "Ordinary source must select SDK103; observed '$selectedSdk'" }
-          & dotnet restore mutate4csharp.slnx --locked-mode -m:1 -nodeReuse:false -p:UseSharedCompilation=false
+          $hostCommand = Get-Command dotnet -CommandType Application | Select-Object -First 1
+          $hostFile = Get-Item -LiteralPath $hostCommand.Source
+          if ($hostFile.LinkType) { $hostFile = $hostFile.ResolveLinkTarget($true) }
+          $hostPath = $hostFile.FullName
+          # setup-dotnet can install a newer standalone runtime than either SDK.
+          # Bind these runtime-fallback tests to SDK103's exact bundled runtime
+          # and reference pack instead of changing production reference selection.
+          $bundledPath = Join-Path $hostFile.DirectoryName 'sdk/10.0.103/Microsoft.NETCoreSdk.BundledVersions.props'
+          [xml]$bundled = Get-Content -LiteralPath $bundledPath -Raw
+          $declaredSdk = @($bundled.SelectNodes("//*[local-name()='NETCoreSdkVersion']"))
+          $runtime = @($bundled.SelectNodes("//*[local-name()='BundledNETCoreAppPackageVersion']"))
+          if ($declaredSdk.Count -ne 1 -or $declaredSdk[0].InnerText.Trim() -cne '10.0.103' -or $runtime.Count -ne 1) { throw 'Exact SDK103 bundled runtime manifest required' }
+          $runtimeVersion = $runtime[0].InnerText.Trim()
+          if ($runtimeVersion -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Exact stable bundled runtime version required' }
+          $runtimeDirectory = Join-Path $hostFile.DirectoryName "shared/Microsoft.NETCore.App/$runtimeVersion"
+          $referenceDirectory = Join-Path $hostFile.DirectoryName "packs/Microsoft.NETCore.App.Ref/$runtimeVersion/ref/net10.0"
+          if (-not (Test-Path -LiteralPath $runtimeDirectory -PathType Container) -or -not (Test-Path -LiteralPath $referenceDirectory -PathType Container)) { throw 'SDK103 exact bundled runtime and reference pack must both be installed' }
+          $runtimeProfile = @("-p:RuntimeFrameworkVersion=$runtimeVersion", '-p:RollForward=Disable')
+          Write-Host "Ordinary SDK103 test runtime and reference pack: $runtimeVersion (roll-forward disabled)"
+          & $hostPath restore mutate4csharp.slnx --locked-mode -m:1 -nodeReuse:false -p:UseSharedCompilation=false @runtimeProfile
           if ($LASTEXITCODE -ne 0) { throw 'Ordinary locked restore failed' }
-          & dotnet build mutate4csharp.slnx -m:1 --no-restore -nodeReuse:false -p:UseSharedCompilation=false "-p:SourceRevisionId=$revision"
+          & $hostPath build mutate4csharp.slnx -m:1 --no-restore -nodeReuse:false -p:UseSharedCompilation=false "-p:SourceRevisionId=$revision" @runtimeProfile
           if ($LASTEXITCODE -ne 0) { throw 'Ordinary SDK103 build failed' }
       - name: same-source-sdk401-graph-deployment
         shell: pwsh

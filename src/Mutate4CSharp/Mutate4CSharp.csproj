@@ -39,12 +39,14 @@
     <None Include="../../docs/check-configuration.md" Pack="true" PackagePath="docs/" />
     <None Include="../../docs/evaluation-contract.md" Pack="true" PackagePath="docs/" />
     <None Include="../../docs/reproducibility.md" Pack="true" PackagePath="docs/" />
+    <None Include="../../docs/resolved-graph-setup.md" Pack="true" PackagePath="docs/" />
     <None Include="../../docs/sidecar-state.md" Pack="true" PackagePath="docs/" />
     <None Include="../../docs/delivery-forge-contract-v1.md" Pack="true" PackagePath="docs/" />
     <None Include="../../docs/snapshot-inputs.md" Pack="true" PackagePath="docs/" />
     <None Include="../../docs/supported-matrix.md" Pack="true" PackagePath="docs/" />
     <None Include="../../scripts/agent-gate.sh" Pack="true" PackagePath="scripts/" />
     <None Include="../../scripts/source-state.py" Pack="true" PackagePath="scripts/" />
+    <None Include="../../scripts/create-graph-deployment.py" Pack="true" PackagePath="scripts/" />
     <None Include="../../docs/contracts/check-config-v1.schema.json" Pack="true" PackagePath="docs/contracts/" />
     <None Include="../../docs/contracts/check-config-v2.schema.json" Pack="true" PackagePath="docs/contracts/" />
     <None Include="../../docs/contracts/discovery-state-v1.schema.json" Pack="true" PackagePath="docs/contracts/" />
