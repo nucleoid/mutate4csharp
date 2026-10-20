@@ -291,6 +291,7 @@ public sealed class ResolvedGraphInheritedCompilerFixtureTests : IDisposable
         await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [],
             SnapshotCaptureOptions.Default, token);
         var explicitScope = await ScopePlanner.PlanExplicitAsync(["src/App/App.cs"], snapshot.CaptureRoot, token);
+        Assert.True(explicitScope.Plan.IsComplete, JsonSerializer.Serialize(explicitScope.Plan.Reasons));
         var configuration = CheckConfiguration.Load(snapshot.CaptureRoot, explicitScope.ConfigurationBytes!);
         var result = await StrictExecutionPipeline.RunAsync(snapshot, snapshot.Identity.CaptureId,
             "public-graph-regression", explicitScope.Plan, configuration, [], null, token);
@@ -312,13 +313,15 @@ public sealed class ResolvedGraphInheritedCompilerFixtureTests : IDisposable
         using var inputs = new ResolvedGraphInputs(original);
         var deployment = ResolvedGraphDeployment.Load(inputs);
         var scope = await ScopePlanner.PlanExplicitAsync(["src/App/App.cs"], snapshot.CaptureRoot, token);
+        Assert.True(scope.Plan.IsComplete, JsonSerializer.Serialize(scope.Plan.Reasons));
         var configuration = CheckConfiguration.Load(snapshot.CaptureRoot, scope.ConfigurationBytes!);
         await using var environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
             ["src/App/App.csproj", "tests/CompilerSuite/CompilerSuite.csproj"],
             DependencyPreparationOptions.Default with { Timeout = original.RemainingWork }, token);
         var first = await ResolvedGraphExecution.EnumerateAsync(snapshot, configuration, scope.Plan, environment, deployment, original, token);
         var second = await ResolvedGraphExecution.EnumerateAsync(snapshot, configuration, scope.Plan, environment, deployment, original, token);
-        Assert.True(first.IsComplete); Assert.True(second.IsComplete); Assert.NotEmpty(first.Candidates);
+        Assert.True(first.IsComplete, JsonSerializer.Serialize(first.Reasons));
+        Assert.True(second.IsComplete, JsonSerializer.Serialize(second.Reasons)); Assert.NotEmpty(first.Candidates);
         Assert.Equal(first.SemanticContextIdentity, second.SemanticContextIdentity);
         Assert.Equal(first.Candidates.Select(c => c.EvaluationUnitId), second.Candidates.Select(c => c.EvaluationUnitId));
         Assert.Null(original.Observe().Cleanup);

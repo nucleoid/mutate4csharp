@@ -11,7 +11,8 @@ internal sealed record ScopeConfiguration(
     bool IncludeGenerated,
     bool IncludeTests,
     IReadOnlyList<ConfiguredProject> Projects,
-    IReadOnlyList<ConfiguredExclusion> Exclusions)
+    IReadOnlyList<ConfiguredExclusion> Exclusions,
+    bool IsResolvedGraph = false)
 {
     private sealed record Document(int Version = 0, bool IncludeGenerated = false,
         bool IncludeTests = false, List<ProjectDocument>? Projects = null,
@@ -44,7 +45,7 @@ internal sealed record ScopeConfiguration(
                         .Distinct(StringComparer.Ordinal).OrderBy(value => value,
                             StringComparer.Ordinal).ToArray(), project.Sources, project.SharedSources)).OrderBy(item => item.Project,
                             StringComparer.Ordinal).ToArray(), strict.Exclusions.Select(item =>
-                                new ConfiguredExclusion(item.Path, item.Reason)).ToArray());
+                                new ConfiguredExclusion(item.Path, item.Reason)).ToArray(), strict.IsResolvedGraph);
             }
         }
         catch (Exception ex) when (ex is ArgumentException or JsonException or NullReferenceException)

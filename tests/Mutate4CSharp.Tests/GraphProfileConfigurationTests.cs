@@ -100,6 +100,45 @@ public sealed class GraphProfileConfigurationTests : IDisposable
     }
 
     private CheckConfiguration Load(string json) => CheckConfiguration.Load(_root, Encoding.UTF8.GetBytes(json));
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Only_explicit_graph_scope_defers_inherited_syntax_to_the_actual_compiler(bool graphProfile)
+    {
+        Directory.CreateDirectory(Path.Combine(_root, "src/App"));
+        Directory.CreateDirectory(Path.Combine(_root, "tests/App.Tests"));
+        await File.WriteAllTextAsync(Path.Combine(_root, "src/App/App.csproj"), "<Project/>");
+        await File.WriteAllTextAsync(Path.Combine(_root, "tests/App.Tests/App.Tests.csproj"), "<Project/>");
+        await File.WriteAllTextAsync(Path.Combine(_root, "src/App/App.cs"), """
+            #if !INHERITED_FIXTURE
+            #error requires actual inherited compiler defines
+            #endif
+            public static class App { public static int Value() => 1; }
+            """);
+        var configuration = JsonNode.Parse(Valid)!.AsObject();
+        if (!graphProfile)
+        {
+            configuration["version"] = 1;
+            configuration.Remove("semanticProfile");
+            configuration["projects"]![0]!.AsObject().Remove("configuration");
+        }
+        await File.WriteAllTextAsync(Path.Combine(_root, "mutate4csharp.json"), configuration.ToJsonString());
+        var scope = await ScopePlanner.PlanExplicitAsync(["src/App/App.cs"], _root,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(graphProfile, scope.Plan.IsComplete);
+        Assert.Equal("FULL_PROJECT", Assert.Single(scope.Plan.ProjectUnits).Expansion);
+        Assert.Equal(graphProfile, ScopeConfiguration.Load(_root).IsResolvedGraph);
+        if (graphProfile)
+        {
+            Assert.Empty(Assert.Single(scope.Plan.Files).Declarations);
+            Assert.Contains(Assert.Single(scope.Plan.Files).Reasons,
+                reason => reason.Code == "RESOLVED_GRAPH_SCOPE_EXPANSION");
+            Assert.DoesNotContain(scope.Plan.Reasons, reason => reason.Code == "UNSUPPORTED_SYNTAX");
+        }
+        else Assert.Contains(scope.Plan.Reasons, reason => reason.Code == "UNSUPPORTED_SYNTAX");
+        // Planning DATA only: this test does not claim successful compilation.
+    }
+
     private const string Valid = """
         {
           "version":2,"semanticProfile":"resolved-project-graph-v1",
