@@ -43,6 +43,22 @@ python scripts/create-graph-deployment.py --host <absolute-dotnet-host> \
   --source-revision <actual-commit> --output <fresh-absolute-deployment.json>
 ```
 
+For a package, `deployment.json`, `logger/` and `worker/` must share one parent.
+The script refuses other layouts unless `--external-manifest` is explicitly
+selected. Package creation requires Python3 (override `GraphDeploymentPython`
+only to select its actual executable). Before packing, the same bounded script
+checks the manifest's exact `SourceRevisionId`, complete relative helper roles
+and actual packaged helper bytes. It never accepts an external-selection
+manifest as a package manifest.
+
+The helper projects deliberately have no NuGet `PackageReference`; they use only
+the exact SDK401 reference/compiler files and installed framework packs. Their
+isolated SDK restore creates assets without a synthetic package lock, so the
+preparation passes `RestoreLockedMode=false` for these two helpers only. A build
+guard refuses any added PackageReference until that profile is reviewed and
+locked restoration is supplied. Ancestor package imports remain disabled. The
+ordinary tool and consumer package restores still use their genuine lockfiles.
+
 The script prints the complete manifest SHA256; it does not issue a capability or
 execute any payload. Set `DOTNET_HOST_PATH` to the same absolute host and set
 `MUTATE4CSHARP_GRAPH_CAPTURE_MANIFEST` and
@@ -53,12 +69,52 @@ ordinary SDK103 suite with these values; its graph fixture creates an isolated
 SDK401 consumer root and exercises actual capture and public dispatch. A host
 without SDK401/deployment is not a supported full-suite validation environment.
 
-For installation, package this exact deployment with the tool using the explicit
+For installation, package this exact deployment with the explicit
 GraphDeploymentDirectory pack input. Its default installed location is
-`graph/sdk401/deployment.json`. Absolute selected image paths in an externally
-prepared manifest must be regenerated for the actual installation; copying a
-manifest to another location does not transfer file or source authority.
-Installed packaging and both platform runs remain required acceptance work.
+`graph/sdk401/deployment.json`. Logger and worker roles relocate with the tool.
+The dotnet host, Csc task/definition and complete compiler closure remain exact
+absolute path/length/SHA256 pins. This is intentionally an installation profile:
+moving or updating the SDK/host requires a fresh selection; there is no runtime
+SDK discovery, new-SDK fallback or automatic timestamp/digest renewal.
+
+To select an already installed package against a different admitted host path,
+keep that package unchanged. Under the existing resource owner, observe the
+actual installed helper directories and exact SDK401 task, then use the shipped
+script to create a **fresh external** selection:
+
+```text
+python3 -I <installed-package>/scripts/create-graph-deployment.py --external-manifest \
+  --host <actual-absolute-dotnet-host> \
+  --logger-dir <installed-package>/tools/net10.0/any/graph/sdk401/logger \
+  --worker-dir <installed-package>/tools/net10.0/any/graph/sdk401/worker \
+  --task <same-host-root>/sdk/10.0.401/Roslyn/Microsoft.Build.Tasks.CodeAnalysis.dll \
+  --source-revision <actual-installed-tool-commit> --output <fresh-absolute-deployment.json>
+```
+
+Use the actual NuGet tool-store package root, not its command shim directory.
+Check the printed SHA256 against the complete resulting file, then select its
+exact path/digest through the two explicit manifest environment variables above
+and set DOTNET_HOST_PATH to the same host. These values are installation-owned
+inputs, never untrusted caller overrides. The generator refuses a helper/SDK
+Roslyn byte mismatch. In that case rebuild the same official source under the
+admitted exact401 profile and install its newly validated package; do not bless
+another SDK or alter the copied pins. The runtime still checks source/SDK stamps,
+all complete bytes and original ownership at every use. A missing deployment or
+explicit host yields GRAPH_DEPLOYMENT_UNAVAILABLE; mismatched identity/bytes or
+host selection yields GRAPH_DEPLOYMENT_STALE, both INCOMPLETE.
+
+CI's separate Linux `installed-graph` lane uses existing `prepare ... graph-sdk401`
+and the existing installed-tool test helpers. Its one installed-v2 method must
+observe real enumeration/execution and the deliberate survivor from a weak suite
+using both packaged and freshly regenerated selection, plus a precise wrong-host
+refusal. Reports and logs are uploaded even on failure. To run that method locally,
+set MUTATE4CSHARP_INSTALLED_GRAPH_FEED and MUTATE4CSHARP_INSTALLED_GRAPH_HOST to
+the actual prepared feed/host; optionally choose an external certification
+directory. The complete test environment needs this profile as well as the
+earlier source graph deployment. Source changes alone are not a passed run.
+Relocation to a genuinely different installed host path, Windows installation,
+both platform runs and the complete Forge graph remain acceptance work until
+their actual results are retained.
 
 All native calls reuse the existing ProcessTree owner. The enclosing original
 deadline shrinks across capture and worker; no new per-worker interval, parallel

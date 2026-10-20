@@ -29,6 +29,7 @@
     </Reference>
   </ItemGroup>
   <Target Name="RequireSelectedCompilerDeployment" BeforeTargets="CoreCompile">
+    <Error Condition="'@(PackageReference)' != ''" Text="Graph helper profile has no NuGet package dependencies; review locked restoration before adding one." />
     <Error Condition="'$(GraphSelectedSdkVersion)' == '' Or '$(NETCoreSdkVersion)' != '$(GraphSelectedSdkVersion)'"
            Text="Owned graph worker requires the exact actually selected SDK version; no compiler-package fallback." />
   </Target>

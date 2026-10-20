@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -15,7 +16,44 @@ internal sealed record ResolvedGraphDeployment(int Version, string SourceRevisio
     private static readonly string[] WorkerNames = ["Mutate4CSharp.GraphWorker.dll", "Mutate4CSharp.GraphWorker.pdb",
         "Mutate4CSharp.GraphWorker.deps.json", "Mutate4CSharp.GraphWorker.runtimeconfig.json",
         "Microsoft.CodeAnalysis.dll", "Microsoft.CodeAnalysis.CSharp.dll"];
-    internal static ResolvedGraphDeployment Load(ResolvedGraphInputs inputs)
+    internal static ResolvedGraphDeployment LoadForExecution(ResolvedGraphBudget budget)
+    {
+        var inputs = new ResolvedGraphInputs(budget);
+        ResolvedGraphDeployment? result = null;
+        Exception? primary = null, disposition = null;
+        try { result = Load(inputs, requireSelectedHost: true); }
+        catch (Exception error) { primary = error; budget.BeginFailureCleanup(); }
+        // Dispose exactly once before classifying. A using-finally here could
+        // replace the graph-specific refusal with a retained input error.
+        try { inputs.Dispose(); }
+        catch (Exception error) { disposition = error; }
+        if (primary is null && disposition is null) return result!;
+        var failures = new[] { primary, disposition }.OfType<Exception>().ToArray();
+        var retained = new GraphDeploymentLoadFailureException(inputs, failures);
+        var leaves = failures.SelectMany(Leaves).Distinct(ReferenceEqualityComparer.Instance).Cast<Exception>().ToArray();
+        var control = leaves.FirstOrDefault(e => e is OperationCanceledException or TimeoutException or
+            SnapshotLimitException or ExecutionBoundaryIntegrityException or SnapshotCleanupException);
+        if (control is not null)
+        {
+            if (disposition is not null || leaves.Length > 1) throw new SnapshotCleanupException(primary ?? control, retained);
+            ExceptionDispatchInfo.Capture(control).Throw();
+        }
+        var unavailable = leaves.Any(e => e is FileNotFoundException or DirectoryNotFoundException or
+            UnauthorizedAccessException or GraphHostUnavailableException);
+        var code = unavailable ? "GRAPH_DEPLOYMENT_UNAVAILABLE" : "GRAPH_DEPLOYMENT_STALE";
+        throw new StrictExecutionRefusalException(new(code, unavailable
+            ? "The exact selected graph deployment is unavailable."
+            : "The selected graph deployment does not match this tool and SDK profile."),
+            leaves.Select(e => new EvaluationReason(code, $"{e.GetType().Name}: {e.Message}")).ToArray(),
+            retained);
+
+        static IEnumerable<Exception> Leaves(Exception error) => error is AggregateException aggregate
+            ? aggregate.InnerExceptions.SelectMany(Leaves) : [error];
+    }
+
+    internal static ResolvedGraphDeployment Load(ResolvedGraphInputs inputs) => Load(inputs, requireSelectedHost: false);
+
+    private static ResolvedGraphDeployment Load(ResolvedGraphInputs inputs, bool requireSelectedHost)
     {
         var path = Environment.GetEnvironmentVariable("MUTATE4CSHARP_GRAPH_CAPTURE_MANIFEST") ??
             Path.Combine(AppContext.BaseDirectory, "graph", "sdk401", "deployment.json");
@@ -37,6 +75,14 @@ internal sealed record ResolvedGraphDeployment(int Version, string SourceRevisio
             Logger = result.Logger with { LoggerClosure = result.Logger.LoggerClosure.Select(i => Resolve(i, "logger")).ToArray() },
             WorkerClosure = result.WorkerClosure.Select(i => Resolve(i, "worker")).ToArray()
         };
+        if (requireSelectedHost)
+        {
+            var host = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ??
+                throw new GraphHostUnavailableException("Supported graph setup requires explicit selected DOTNET_HOST_PATH.");
+            if (!Path.IsPathFullyQualified(host) || !Path.GetFullPath(host).Equals(result.DotnetHost.Path,
+                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                throw new EvaluationContractException("Dependency and compiler/worker host selections must be identical.");
+        }
         result.ReadActual(inputs);
         inputs.Recheck(input, 1_048_576);
         return result;
@@ -50,6 +96,15 @@ internal sealed record ResolvedGraphDeployment(int Version, string SourceRevisio
                 throw new EvaluationContractException("Closed package graph image role required.");
             return image with { Path = Path.GetFullPath(image.Path, folder) };
         }
+    }
+
+    private sealed class GraphHostUnavailableException(string message) : IOException(message);
+    private sealed class GraphDeploymentLoadFailureException(ResolvedGraphInputs inputs, IEnumerable<Exception> failures)
+        : AggregateException("Graph deployment loading and first disposition outcomes retained.", failures)
+    {
+        // Failed/unknown first disposition must retain its actual original,
+        // including streams/frames; exception metadata never certifies closure.
+        internal ResolvedGraphInputs RetainedInputs { get; } = inputs;
     }
 
     internal IReadOnlyList<ResolvedGraphImagePin> ReadActual(ResolvedGraphInputs inputs)

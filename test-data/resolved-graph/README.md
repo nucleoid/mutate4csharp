@@ -1,4 +1,11 @@
-# Real resolved graph fixture inputs — UNEXECUTED
+# Resolved graph consumer template — UNACCEPTED / UNEXECUTED
+
+This directory is preparation DATA for Root's actual consumer, not an automated
+test or acceptance result. No test or CI job currently materializes this template.
+The inline inherited-compiler tests and installed example are separate fixtures;
+their results cannot satisfy the requirements below. There are deliberately no
+fabricated lockfiles here. Preserve this template and any genuine preparation,
+RED reports or failure evidence; do not infer coverage from this list.
 
 This fixture must be materialized as a COMPLETE fresh owned repository, including its props, targets, CPM, editorconfig, global SDK selection, project edges and shared source. It is not a simpler substitute for Forge. Required actual first positive: exact SDK401 selected compiler; Release conditional Compile; actual generated source; extern-alias dependency; inherited define/nullable options; all six suite cases and complete true line/coverage provenance. Capture and compare every current authored/import/compiler/reference/package/generated input before mutation. Generate genuine initial lock files only in that fresh owned preparation, then repeat locked restore and bind its exact actual graph; no fabricated lock or cached-result acceptance.
 

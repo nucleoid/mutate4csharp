@@ -50,18 +50,92 @@ def image(value):
     return {"Path": str(path), "Bytes": count, "Sha256": digest.hexdigest()}
 
 
+def revision(value):
+    if len(value) != 40 or any(c not in "0123456789abcdef" for c in value):
+        raise ValueError("actual full source revision required; no fixture revision alias")
+
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate deployment property")
+        result[key] = value
+    return result
+
+
+def keys(value, expected):
+    if not isinstance(value, dict) or set(value) != set(expected):
+        raise ValueError("closed complete deployment object required")
+
+
+def validate_package(path, source_revision):
+    """Pack barrier: exact current source and complete relative package roles.
+
+    This does not grant execution or replace runtime helper/SDK stamp checks.
+    External host/compiler paths deliberately remain exact installation pins.
+    """
+    global reserved
+    revision(source_revision)
+    path = Path(path)
+    pin = image(path)
+    if pin["Bytes"] > 1048576:
+        raise ValueError("finite deployment manifest bound")
+    if pin["Bytes"] + 1 > MAXIMUM_TOTAL - reserved:
+        raise ValueError("deployment validation readback admission exceeded")
+    reserved += pin["Bytes"] + 1
+    with path.open("rb") as stream:
+        encoded = stream.read(1048577)
+    if len(encoded) != pin["Bytes"] or hashlib.sha256(encoded).hexdigest() != pin["Sha256"]:
+        raise ValueError("deployment changed during validation")
+    document = json.loads(encoded, object_pairs_hook=unique)
+    keys(document, ("Version", "SourceRevision", "Logger", "DotnetHost", "WorkerClosure", "CompilerClosure"))
+    if type(document["Version"]) is not int or document["Version"] != 1 or document["SourceRevision"] != source_revision:
+        raise ValueError("package deployment must match exact packed SourceRevisionId")
+    logger = document["Logger"]
+    keys(logger, ("SdkVersion", "LoggerClosure", "CscTask", "CscDefinition"))
+    if logger["SdkVersion"] != "10.0.401":
+        raise ValueError("exact selected401 package profile required")
+    for role, rows, expected in (("logger", logger["LoggerClosure"], LOGGER),
+                                 ("worker", document["WorkerClosure"], WORKER)):
+        if not isinstance(rows, list) or len(rows) != len(expected):
+            raise ValueError("complete package image roles required")
+        seen = set()
+        for row in rows:
+            keys(row, ("Path", "Bytes", "Sha256"))
+            relative = row["Path"]
+            if not isinstance(relative, str) or relative not in {role + "/" + name for name in expected} or relative in seen:
+                raise ValueError("exact nonaliased relative logger/worker package roles required")
+            seen.add(relative)
+        for row in rows:
+            relative = row["Path"]
+            actual = image(path.parent / relative)
+            if type(row["Bytes"]) is not int or row["Bytes"] != actual["Bytes"] or row["Sha256"] != actual["Sha256"]:
+                raise ValueError("package image differs from deployment pin")
+    return pin["Sha256"]
+
+
 def main():
     global reserved
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", required=True)
-    parser.add_argument("--logger-dir", required=True)
-    parser.add_argument("--worker-dir", required=True)
-    parser.add_argument("--task", required=True)
+    parser.add_argument("--host")
+    parser.add_argument("--logger-dir")
+    parser.add_argument("--worker-dir")
+    parser.add_argument("--task")
     parser.add_argument("--source-revision", required=True)
-    parser.add_argument("--output", required=True)
+    parser.add_argument("--output")
+    parser.add_argument("--external-manifest", action="store_true",
+                        help="explicit installation selection; retain absolute installed helper paths, never package this manifest")
+    parser.add_argument("--validate-package", metavar="DEPLOYMENT_JSON")
     args = parser.parse_args()
-    if len(args.source_revision) != 40 or any(c not in "0123456789abcdef" for c in args.source_revision):
-        raise ValueError("actual full source revision required; no fixture revision alias")
+    revision(args.source_revision)
+    if args.validate_package:
+        if any((args.host, args.logger_dir, args.worker_dir, args.task, args.output, args.external_manifest)):
+            raise ValueError("package validation and creation arguments cannot be combined")
+        print(validate_package(args.validate_package, args.source_revision))
+        return
+    if not all((args.host, args.logger_dir, args.worker_dir, args.task, args.output)):
+        parser.error("creation requires --host, --logger-dir, --worker-dir, --task and --output")
     output = Path(args.output)
     if not output.is_absolute() or output.name != "deployment.json" or output.exists():
         raise ValueError("fresh absolute deployment.json required")
@@ -76,7 +150,9 @@ def main():
     # If outputs have already been staged into the fixed package layout, record
     # only closed relative image roles. External SDK host/task stay exact pins.
     for role, rows in (("logger", logger), ("worker", worker)):
-        if all(Path(row["Path"]).parent == output.parent / role for row in rows):
+        if not args.external_manifest:
+            if not all(Path(row["Path"]).parent == output.parent / role for row in rows):
+                raise ValueError("package deployment requires colocated logger/ and worker/; use explicit --external-manifest for installed selection")
             for row in rows:
                 row["Path"] = role + "/" + Path(row["Path"]).name
     document = {"Version": 1, "SourceRevision": args.source_revision,
@@ -85,6 +161,10 @@ def main():
                 "DotnetHost": image(args.host), "WorkerClosure": worker,
                 "CompilerClosure": [image(Path(args.task).parent / "bincore" / name) for name in
                                     ("csc.dll", "csc.deps.json", "csc.runtimeconfig.json", "Microsoft.CodeAnalysis.dll", "Microsoft.CodeAnalysis.CSharp.dll")]}
+    for name in ("Microsoft.CodeAnalysis.dll", "Microsoft.CodeAnalysis.CSharp.dll"):
+        if next(r["Sha256"] for r in logger if Path(r["Path"]).name == name) != next(
+                r["Sha256"] for r in document["CompilerClosure"] if Path(r["Path"]).name == name):
+            raise ValueError("selected SDK compiler bytes differ from installed helper closure; rebuild same-source helpers under exact401 profile")
     encoded = (json.dumps(document, indent=2) + "\n").encode("utf-8")
     if len(encoded) > 1048576:
         raise ValueError("finite deployment manifest bound")

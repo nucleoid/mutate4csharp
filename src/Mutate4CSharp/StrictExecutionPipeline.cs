@@ -42,12 +42,7 @@ internal static class StrictExecutionPipeline
             preparationTimeout = DependencyPreparationOptions.Default.Timeout;
 
         var graphBudget = configuration.IsResolvedGraph ? new ResolvedGraphBudget(Remaining(deadline), cancellationToken) : null;
-        using var graphInputs = graphBudget is null ? null : new ResolvedGraphInputs(graphBudget);
-        var graphDeployment = graphInputs is null ? null : ResolvedGraphDeployment.Load(graphInputs);
-        if (graphDeployment is not null && !Path.GetFullPath(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ??
-                throw new EvaluationContractException("Supported graph setup requires explicit selected DOTNET_HOST_PATH."))
-                .Equals(graphDeployment.DotnetHost.Path, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-            throw new EvaluationContractException("Dependency and compiler/worker host selections must be identical.");
+        var graphDeployment = graphBudget is null ? null : ResolvedGraphDeployment.LoadForExecution(graphBudget);
         FrozenExecutionEnvironment environment;
         try
         {
@@ -441,7 +436,7 @@ internal static class StrictExecutionPipeline
 }
 
 internal sealed class StrictExecutionRefusalException(EvaluationReason reason,
-    IReadOnlyList<EvaluationReason> reasons) : Exception(reason.Message)
+    IReadOnlyList<EvaluationReason> reasons, Exception? inner = null) : Exception(reason.Message, inner)
 {
     public EvaluationReason Reason { get; } = reason;
     public IReadOnlyList<EvaluationReason> Reasons { get; } = reasons.Count == 0 ? [reason] : reasons;

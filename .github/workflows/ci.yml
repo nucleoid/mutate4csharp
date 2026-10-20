@@ -23,6 +23,8 @@ jobs:
             scope: graph
           - os: ubuntu-latest
             scope: installed
+          - os: ubuntu-latest
+            scope: installed-graph
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env:
@@ -149,7 +151,35 @@ jobs:
         if: runner.os == 'Linux' && matrix.scope == 'installed'
         env:
           MUTATE4CSHARP_CERTIFICATION_DIRECTORY: ${{ runner.temp }}/mutate4csharp-installed-certification
-        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~ToolPackagingIntegrationTests" -- xUnit.MaxParallelThreads=1
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~ToolPackagingIntegrationTests&FullyQualifiedName!~InstalledResolvedGraphUsesPackagedHelpersAndExplicitRegeneration" -- xUnit.MaxParallelThreads=1
+      - name: isolated-installed-v2-package
+        if: runner.os == 'Linux' && matrix.scope == 'installed-graph'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I scripts/test-create-graph-deployment.py
+          WORKSPACE="${RUNNER_TEMP}/mutate4csharp-installed-graph-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          RECEIPT="${WORKSPACE}.receipt.tsv"
+          scripts/agent-gate.sh prepare "$GITHUB_WORKSPACE" "$WORKSPACE" "$RECEIPT" graph-sdk401 | tee "${WORKSPACE}.prepare.txt"
+          HOST=$(awk -F= '$1 == "DOTNET_HOST" { print substr($0, index($0,"=")+1) }' "${WORKSPACE}.prepare.txt")
+          test -n "$HOST"
+          echo "MUTATE4CSHARP_INSTALLED_GRAPH_FEED=${WORKSPACE}/feed" >> "$GITHUB_ENV"
+          echo "MUTATE4CSHARP_INSTALLED_GRAPH_HOST=${HOST}" >> "$GITHUB_ENV"
+      - name: installed-v2-real-mutation-and-refusal
+        id: installed_graph_contract
+        if: runner.os == 'Linux' && matrix.scope == 'installed-graph'
+        env:
+          MUTATE4CSHARP_CERTIFICATION_DIRECTORY: ${{ runner.temp }}/mutate4csharp-installed-graph-certification
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~InstalledResolvedGraphUsesPackagedHelpersAndExplicitRegeneration" -- xUnit.MaxParallelThreads=1
+      - name: installed-v2-artifacts
+        if: runner.os == 'Linux' && matrix.scope == 'installed-graph' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-graph-certification-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/mutate4csharp-installed-graph-certification
+            ${{ runner.temp }}/mutate4csharp-installed-graph-*.prepare.txt
+          if-no-files-found: ${{ steps.installed_graph_contract.outcome == 'success' && 'error' || 'warn' }}
       - name: installed-certification-artifacts
         if: runner.os == 'Linux' && matrix.scope == 'installed' && always()
         uses: actions/upload-artifact@v4

@@ -28,6 +28,7 @@
     </Reference>
   </ItemGroup>
   <Target Name="RequireSelectedGraphEventContract" BeforeTargets="CoreCompile">
+    <Error Condition="'@(PackageReference)' != ''" Text="Graph helper profile has no NuGet package dependencies; review locked restoration before adding one." />
     <Error Condition="'$(GraphSelectedSdkVersion)' == '' Or '$(NETCoreSdkVersion)' != '$(GraphSelectedSdkVersion)'"
       Text="Graph logger requires the exact original selected SDK/MSBuild event contract." />
   </Target>
