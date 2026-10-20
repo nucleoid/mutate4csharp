@@ -29,12 +29,13 @@ internal static class ResolvedGraphCompiledSources
             if (Path.IsPathRooted(relative) || relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
                 throw new SnapshotCaptureException("Compiler generated source escapes the actual owned graph clone.");
         }
-        var pePath = Path.GetFullPath(Path.Combine(parsed.OutputDirectory, parsed.OutputFileName));
-        var pdbPath = parsed.PdbPath is null ? Path.ChangeExtension(pePath, ".pdb") : Path.GetFullPath(parsed.PdbPath, directory);
+        var (pePath, pdbPath) = RequireOutputPaths(parsed, directory, sourceRoot);
+        var sourcePaths = parsed.SourceFiles.Select(source => Path.GetFullPath(source.Path, directory)).ToArray();
+        foreach (var path in sourcePaths) { inputs.CheckWork(); RequireSourceWithin(path, sourceRoot, packageRoot); }
         var pe = inputs.Read(pePath, "reference"); retained.Add(pe);
         var pdb = inputs.Read(pdbPath, "reference"); retained.Add(pdb);
         var files = new Dictionary<string, ResolvedGraphFile>(StringComparer.Ordinal);
-        foreach (var source in parsed.SourceFiles) Add(Path.GetFullPath(source.Path, directory), "source");
+        foreach (var path in sourcePaths) Add(path, "source");
         // Generated compiler trees are emitted by the SAME Csc invocation. No
         // guessing virtual filenames, arbitrary PDB-directed disk reads or prefix
         // acceptance: all generated directory entries pass the existing owner.
@@ -68,10 +69,42 @@ internal static class ResolvedGraphCompiledSources
         {
             inputs.CheckWork();
             path = Path.GetFullPath(path);
+            RequireSourceWithin(path, sourceRoot, packageRoot);
             if (files.ContainsKey(path)) throw new EvaluationContractException("Duplicate original compiled source.");
             var file = inputs.Read(path, role); retained.Add(file); files.Add(path, file);
-            ResolvedGraphTokenPreflight.RequireSupportedSourceBom(file.Bytes);
+            ResolvedGraphTokenPreflight.RequireSupportedSourceBytes(file.Bytes);
+            inputs.CheckWork();
         }
+    }
+
+    internal static void RequireParsedOutputCorrespondence(CSharpCommandLineArguments parsed, string directory,
+        string sourceRoot, GraphCompiledSnapshot expected)
+    {
+        var (pe, pdb) = RequireOutputPaths(parsed, directory, sourceRoot);
+        var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        if (!comparer.Equals(pe, expected.PePath) || !comparer.Equals(pdb, expected.PdbPath))
+            throw new EvaluationContractException("Compiled PE/PDB locations differ from the worker's actual parsed Csc output options.");
+    }
+
+    private static (string Pe, string Pdb) RequireOutputPaths(CSharpCommandLineArguments parsed, string directory, string sourceRoot)
+    {
+        if (parsed.OutputDirectory is null || parsed.OutputFileName is null || !parsed.EmitPdb)
+            throw new EvaluationContractException("Complete parsed compiler PE/PDB output locations required.");
+        var pe = Path.GetFullPath(Path.Combine(parsed.OutputDirectory, parsed.OutputFileName), directory);
+        var pdb = parsed.PdbPath is null ? Path.ChangeExtension(pe, ".pdb") : Path.GetFullPath(parsed.PdbPath, directory);
+        if (!IsWithin(sourceRoot, pe) || !IsWithin(sourceRoot, pdb))
+            throw new SnapshotCaptureException("Compiler PE/PDB output escapes the actual owned graph clone.");
+        return (pe, pdb);
+    }
+    private static void RequireSourceWithin(string path, string sourceRoot, string packageRoot)
+    {
+        if (!IsWithin(sourceRoot, path) && !IsWithin(packageRoot, path))
+            throw new SnapshotCaptureException("Compiler source is outside the actual owned source/package roots.");
+    }
+    private static bool IsWithin(string root, string path)
+    {
+        var relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(path));
+        return !Path.IsPathRooted(relative) && relative != ".." && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal);
     }
 
     internal static ResolvedGraphOutputData Verify(GraphCompiledSnapshot expected,

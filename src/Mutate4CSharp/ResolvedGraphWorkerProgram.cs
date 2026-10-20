@@ -116,6 +116,8 @@ internal static class ResolvedGraphWorkerProgram
             throw new EvaluationContractException("Evaluated compiler options violate explicit configured assertions.");
         var pathMap = ResolvedGraphPathProfile.Require(parsed.PathMap, root, packageRoot);
         if (!parsed.CompilationOptions.Deterministic) throw new EvaluationContractException("Actual graph compiler must use deterministic outputs.");
+        var compiled = originalTask.Compiled ?? throw new EvaluationContractException("Actual Csc source/output correspondence is required.");
+        ResolvedGraphCompiledSources.RequireParsedOutputCorrespondence(parsed, directory, root, compiled);
         var sourceRows = actual.Items["Compile"];
         var compilerPaths = parsed.SourceFiles.Select(s => Path.GetFullPath(s.Path, directory)).ToArray();
         var compilePaths = sourceRows.Select(item => Path.GetFullPath(item.Identity, directory)).ToArray();
@@ -167,7 +169,6 @@ internal static class ResolvedGraphWorkerProgram
             var file = inputs.Read(Path.GetFullPath(embedded.Identity, directory), "source");
             retained.Add(file);
         }
-        var compiled = originalTask.Compiled ?? throw new EvaluationContractException("Actual Csc source/output correspondence is required.");
         if (compiled.PathMap.Count != pathMap.Count || pathMap.Any(p => !compiled.PathMap.TryGetValue(p.Key, out var value) || value != p.Value))
             throw new EvaluationContractException("Compiler source snapshot path mapping differs from actual parsed options.");
         ResolvedGraphCompiledSources.Verify(compiled, compiledSources, inputs, original);
@@ -242,7 +243,8 @@ internal static class ResolvedGraphWorkerProgram
             var relative = inSource ? Path.GetRelativePath(root, path).Replace('\\', '/') : "$packages/" + Path.GetRelativePath(packageRoot, path).Replace('\\', '/');
             if (trees.ContainsKey(relative)) throw new EvaluationContractException("Duplicate actual compiler/generated source.");
             var file = inputs.Read(path, generatedSource ? "generated-source" : "source"); retained.Add(file);
-            ResolvedGraphTokenPreflight.RequireSupportedSourceBom(file.Bytes);
+            ResolvedGraphTokenPreflight.RequireSupportedSourceBytes(file.Bytes);
+            inputs.CheckWork();
             compiledSources.Add(path, file.Bytes);
             using var bytes = new MemoryStream(file.Bytes, writable: false);
             inputs.CheckWork();

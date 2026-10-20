@@ -36,6 +36,8 @@ public sealed class ResolvedGraphEncodingProfileTests
         var parsed = Parse(explicitUtf8 ? "65001" : null);
         Assert.DoesNotContain(parsed.Errors, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
         ResolvedGraphTokenPreflight.RequireSupportedSourceEncoding(parsed.Encoding);
+        ResolvedGraphTokenPreflight.RequireSupportedSourceBytes(Encoding.UTF8.GetBytes(Source));
+        Assert.Equal(Source, ResolvedGraphTokenPreflight.DecodeSupportedSource(Encoding.UTF8.GetBytes(Source)));
         using var bytes = new MemoryStream(Encoding.UTF8.GetBytes(Source), writable: false);
         var text = SourceText.From(bytes, parsed.Encoding, parsed.ChecksumAlgorithm);
         Assert.Equal(Source, text.ToString());
@@ -53,7 +55,8 @@ public sealed class ResolvedGraphEncodingProfileTests
         ResolvedGraphTokenPreflight.RequireSupportedSourceEncoding(parsed.Encoding);
         var encoding = new UnicodeEncoding(bigEndian, byteOrderMark: true, throwOnInvalidBytes: true);
         var complete = encoding.GetPreamble().Concat(encoding.GetBytes(Source)).ToArray();
-        ResolvedGraphTokenPreflight.RequireSupportedSourceBom(complete);
+        ResolvedGraphTokenPreflight.RequireSupportedSourceBytes(complete);
+        Assert.Equal(Source, ResolvedGraphTokenPreflight.DecodeSupportedSource(complete));
         using var bytes = new MemoryStream(complete, writable: false);
         var actual = SourceText.From(bytes, parsed.Encoding, parsed.ChecksumAlgorithm);
         Assert.Equal(Source, actual.ToString());
@@ -78,7 +81,36 @@ public sealed class ResolvedGraphEncodingProfileTests
         using var reader = new StreamReader(bytes, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
         Assert.Equal(Source, reader.ReadToEnd());
         Assert.Throws<EvaluationContractException>(() =>
-            ResolvedGraphTokenPreflight.RequireSupportedSourceBom(complete));
+            ResolvedGraphTokenPreflight.RequireSupportedSourceBytes(complete));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Invalid_utf8_is_refused_by_both_byte_admission_and_parent_decoder(bool bom)
+    {
+        var valid = Encoding.UTF8.GetBytes(Source);
+        if (bom) valid = Encoding.UTF8.GetPreamble().Concat(valid).ToArray();
+        ResolvedGraphTokenPreflight.RequireSupportedSourceBytes(valid);
+        Assert.Equal(Source, ResolvedGraphTokenPreflight.DecodeSupportedSource(valid));
+        // Valid multibyte UTF8 followed by an isolated legacy-codepage byte:
+        // neither replacement text nor an implicit fallback is writer-compatible.
+        var malformed = valid.Concat(new byte[] { 0xe9 }).ToArray();
+        Assert.Throws<EvaluationContractException>(() => ResolvedGraphTokenPreflight.RequireSupportedSourceBytes(malformed));
+        Assert.Throws<EvaluationContractException>(() => ResolvedGraphTokenPreflight.DecodeSupportedSource(malformed));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Malformed_utf16_is_refused_by_both_byte_admission_and_parent_decoder(bool bigEndian)
+    {
+        var encoding = new UnicodeEncoding(bigEndian, true, true);
+        var valid = encoding.GetPreamble().Concat(encoding.GetBytes(Source)).ToArray();
+        Assert.Equal(Source, ResolvedGraphTokenPreflight.DecodeSupportedSource(valid));
+        var malformed = valid.Concat(new byte[] { 0x61 }).ToArray();
+        Assert.Throws<EvaluationContractException>(() => ResolvedGraphTokenPreflight.RequireSupportedSourceBytes(malformed));
+        Assert.Throws<EvaluationContractException>(() => ResolvedGraphTokenPreflight.DecodeSupportedSource(malformed));
     }
 
     private static CSharpCommandLineArguments Parse(string? codePage)

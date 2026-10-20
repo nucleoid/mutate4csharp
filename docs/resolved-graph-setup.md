@@ -145,6 +145,18 @@ preserve. Other explicit code pages can shift character offsets even when the
 original text matches at the wrong token, so those contexts return INCOMPLETE.
 UTF32 BOMs are refused at both source boundaries because their decoded offsets
 cannot be safely written by the existing UTF8/UTF16 snapshot writer.
+Source bytes must also satisfy that writer's throwing decoder: BOM-less and
+UTF8-BOM payloads must be valid UTF8, and UTF16-BOM payloads must be valid UTF16.
+Malformed sequences are refused before semantic enumeration; parent admission
+uses the same strict decoder rather than replacement text or an assumed compiler
+fallback. This does not assert a particular compiler's legacy fallback behavior.
+
+The original logger rejects ordinary compiler sources outside the owned source
+and package roots, and PE/PDB outputs outside the owned source root, before any
+source/output read. The worker independently re-derives both output locations
+from its actual parsed Csc options (including the default PDB path) and requires
+them to match the complete compiled snapshot before reading those outputs. A
+valid PE/PDB byte proof at a different location cannot substitute for that join.
 
 The graph resource profile distinguishes controlled semantic buffers from I/O.
 All parent graph readers share one cumulative512MiB semantic/buffer admission.

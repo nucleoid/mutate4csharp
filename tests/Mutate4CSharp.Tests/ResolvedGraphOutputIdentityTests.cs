@@ -47,6 +47,60 @@ public sealed class ResolvedGraphOutputIdentityTests
         Assert.Equal("preserve private external bytes", File.ReadAllText(externalFile));
     }
 
+    [Theory]
+    [InlineData("source")]
+    [InlineData("pe")]
+    [InlineData("pdb")]
+    public async Task Logger_refuses_external_ordinary_source_or_outputs_before_any_read(string foreignRole)
+    {
+        await using var owned = OwnedDirectory.Create(OwnedDirectory.PrivateParent("logger-path-control"), "data");
+        var root = Path.Combine(owned.Root, "source"); var packages = Path.Combine(owned.Root, "packages");
+        var outside = Path.Combine(owned.Root, "source-lookalike");
+        Directory.CreateDirectory(root); Directory.CreateDirectory(packages); Directory.CreateDirectory(outside);
+        var source = Path.Combine(root, "Subject.cs"); var pe = Path.Combine(root, "GraphOutput.dll"); var pdb = Path.ChangeExtension(pe, ".pdb");
+        var actual = Emit("public sealed class Subject { public int Value() => 1; }", ResolvedGraphPathProfile.Source + "/Subject.cs");
+        File.WriteAllBytes(source, actual.Source); File.WriteAllBytes(pe, actual.Pe); File.WriteAllBytes(pdb, actual.Pdb);
+        string[] Tokens(string s, string p, string d) => ["/target:library", "/out:" + p, "/pdb:" + d,
+            "/debug:portable", "/deterministic+", "/pathmap:" + root + "=" + ResolvedGraphPathProfile.Source + "," + packages + "=" + ResolvedGraphPathProfile.Packages, s];
+        var positiveBudget = new ResolvedGraphBudget(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        using (var inputs = new ResolvedGraphInputs(positiveBudget))
+        {
+            var snapshot = ResolvedGraphCompiledSources.Capture(Tokens(source, pe, pdb), Path.Combine(root, "Graph.csproj"),
+                root, packages, inputs, positiveBudget, new List<ResolvedGraphFile>());
+            Assert.Equal(1, snapshot.Proof.MatchedDocuments);
+            var parsed = CSharpCommandLineParser.Default.Parse(Tokens(source, pe, pdb), root, sdkDirectory: null);
+            ResolvedGraphCompiledSources.RequireParsedOutputCorrespondence(parsed, root, root, snapshot);
+            // Both outputs are real and byte-proved, but another actual /out or
+            // /pdb location cannot be substituted into the task's frozen DATA.
+            var otherPe = Path.Combine(root, "Other.dll"); var otherPdb = Path.Combine(root, "Other.pdb");
+            File.WriteAllBytes(otherPe, actual.Pe); File.WriteAllBytes(otherPdb, actual.Pdb);
+            foreach (var changed in new[] { Tokens(source, otherPe, pdb), Tokens(source, pe, otherPdb) })
+            {
+                var otherParsed = CSharpCommandLineParser.Default.Parse(changed, root, sdkDirectory: null);
+                Assert.Throws<EvaluationContractException>(() =>
+                    ResolvedGraphCompiledSources.RequireParsedOutputCorrespondence(otherParsed, root, root, snapshot));
+            }
+            var defaultPdb = CSharpCommandLineParser.Default.Parse(Tokens(source, pe, pdb).Where(t => !t.StartsWith("/pdb:", StringComparison.Ordinal)), root, sdkDirectory: null);
+            ResolvedGraphCompiledSources.RequireParsedOutputCorrespondence(defaultPdb, root, root, snapshot);
+        }
+        var budget = new ResolvedGraphBudget(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        using (var inputs = new ResolvedGraphInputs(budget))
+        {
+            // Missing outside paths prove the refusal precedes even an attempted
+            // input open; a later file-not-found exception would fail this test.
+            var tokens = Tokens(foreignRole == "source" ? Path.Combine(outside, "Subject.cs") : source,
+                foreignRole == "pe" ? Path.Combine(outside, "GraphOutput.dll") : pe,
+                foreignRole == "pdb" ? Path.Combine(outside, "GraphOutput.pdb") : pdb);
+            var retained = new List<ResolvedGraphFile>();
+            var error = Assert.Throws<SnapshotCaptureException>(() => ResolvedGraphCompiledSources.Capture(tokens,
+                Path.Combine(root, "Graph.csproj"), root, packages, inputs, budget, retained));
+            Assert.Contains("actual owned", error.Message);
+            Assert.Empty(retained);
+            var usage = budget.Resources.ObservePreDelivery();
+            Assert.Equal(0, usage.Frames); Assert.Equal(0, usage.IoCharged); Assert.Equal(0, usage.SemanticCharged);
+        }
+    }
+
     [Fact]
     public void Actual_emit_binds_complete_pe_pdb_and_every_emitted_source_checksum()
     {

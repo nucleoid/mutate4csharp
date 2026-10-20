@@ -88,12 +88,25 @@ internal static class ResolvedGraphTaskCapture
                 !switches.TryGetValue("UseSharedCompilation", out var shared) || shared.GetBoolean() ||
                 switches.TryGetValue("SkipCompilerExecution", out var skip) && skip.GetBoolean())
                 throw Refuse("Original Csc switched away from supported actual argv/nonshared execution.");
+            var compiled = JsonSerializer.Deserialize<GraphCompiledSnapshot>(fields["Compiled"].GetRawText(), ResolvedGraphProtocol.Options)
+                ?? throw Refuse("Complete actual Csc compiled document/output snapshot required.");
+            Absolute(compiled.PePath); Absolute(compiled.PdbPath); Hash(compiled.PeSha256); Hash(compiled.PdbSha256);
+            if (compiled.Documents is null || compiled.Documents.Length is < 1 or > ResolvedGraphInputs.MaximumFiles ||
+                compiled.PathMap is null || compiled.PathMap.Count > 1024 || compiled.Proof is null)
+                throw Refuse("Complete bounded compiled source/path-map membership required.");
+            foreach (var compiledDocument in compiled.Documents)
+            {
+                inputs.CheckWork();
+                if (compiledDocument is null) throw Refuse("Compiled document is null.");
+                Absolute(compiledDocument.Path); Hash(compiledDocument.Sha256);
+            }
+            foreach (var mapping in compiled.PathMap) { inputs.CheckWork(); Absolute(mapping.Key); Charge(mapping.Value); }
+            Hash(compiled.Proof.PeSha256); Hash(compiled.Proof.PdbSha256);
             rows.Add(new(key, Absolute(Text(project["ProjectFile"])), retainedGlobals,
                 Absolute(Text(fields["TaskAssemblyLocation"])), Absolute(Text(fields["TaskFile"])),
                 argv, switches.TryGetValue("SkipCompilerExecution", out skip) ? skip.GetBoolean() : null)
                         { EvaluatedProperties = evaluated, ProjectInstanceId = instance, EvaluationId = evaluation,
-                Compiled = JsonSerializer.Deserialize<GraphCompiledSnapshot>(fields["Compiled"].GetRawText(), ResolvedGraphProtocol.Options)
-                    ?? throw Refuse("Complete actual Csc compiled document/output snapshot required.") });
+                Compiled = compiled });
         }
         inputs.Recheck(actual);
         inputs.CheckWork();
@@ -105,9 +118,14 @@ internal static class ResolvedGraphTaskCapture
 
         string Charge(string value)
         {
-            if (value.Length > 65_536 || value.Contains('\0') || value.Length > 16 * 1024 * 1024 - totalCharacters)
+            if (value is null || value.Length > 65_536 || value.Contains('\0') || value.Length > 16 * 1024 * 1024 - totalCharacters)
                 throw new SnapshotLimitException("Complete original Csc character limit exceeded.");
             totalCharacters += value.Length; return value;
+        }
+        void Hash(string value)
+        {
+            Charge(value);
+            if (value.Length != 64 || value.Any(character => !char.IsAsciiHexDigitLower(character))) throw Refuse("Complete lower-case compiled SHA256 required.");
         }
         string Absolute(string value)
         {

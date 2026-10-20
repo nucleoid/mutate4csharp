@@ -177,6 +177,10 @@ public sealed class ResolvedGraphTaskContextContractTests
     [InlineData("instance-mismatch")]
     [InlineData("missing-instance")]
     [InlineData("ambiguous")]
+    [InlineData("relative-pe")]
+    [InlineData("relative-pdb")]
+    [InlineData("relative-document")]
+    [InlineData("invalid-output-hash")]
     public async Task Data_context_requires_evaluated_fields_exact_instance_and_unique_selection(string mode)
     {
         await using var owner = OwnedDirectory.Create(OwnedDirectory.PrivateParent("context-contract"), "data");
@@ -208,6 +212,13 @@ public sealed class ResolvedGraphTaskContextContractTests
                 new Dictionary<string, string>(), new(Guid.Empty, Guid.Empty, 0, 1, new string('0', 64), new string('0', 64)))
         };
         var first = Row(11);
+        var compiled = (GraphCompiledSnapshot)first["Compiled"];
+        first["Compiled"] = mode switch {
+            "relative-pe" => compiled with { PePath = "DATA_ONLY.dll" },
+            "relative-pdb" => compiled with { PdbPath = "DATA_ONLY.pdb" },
+            "relative-document" => compiled with { Documents = [new("DATA_ONLY.cs", new string('0', 64))] },
+            "invalid-output-hash" => compiled with { PeSha256 = new string('G', 64) },
+            _ => compiled };
         if (mode == "missing-instance") ((Dictionary<string, object>)first["Project"]).Remove("ProjectInstanceId");
         var rows = mode == "ambiguous" ? new[] { first, Row(12) } : new[] { first };
         var digest = new string('a', 64);

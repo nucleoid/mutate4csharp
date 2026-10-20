@@ -18,7 +18,21 @@ internal static class ResolvedGraphTokenPreflight
             throw new EvaluationContractException("Explicit non-UTF8 compiler source encoding is unsupported by the snapshot mutation writer.");
     }
 
-    internal static void RequireSupportedSourceBom(ReadOnlySpan<byte> bytes)
+    internal static void RequireSupportedSourceBytes(ReadOnlySpan<byte> bytes)
+    {
+        var (encoding, preamble) = SourceEncoding(bytes);
+        try { _ = encoding.GetCharCount(bytes[preamble..]); }
+        catch (System.Text.DecoderFallbackException) { throw InvalidSourceBytes(); }
+    }
+
+    internal static string DecodeSupportedSource(byte[] bytes)
+    {
+        var (encoding, preamble) = SourceEncoding(bytes);
+        try { return encoding.GetString(bytes, preamble, bytes.Length - preamble); }
+        catch (System.Text.DecoderFallbackException) { throw InvalidSourceBytes(); }
+    }
+
+    private static (System.Text.Encoding Encoding, int Preamble) SourceEncoding(ReadOnlySpan<byte> bytes)
     {
         // UTF32 LE begins with the UTF16 LE prefix. Both Roslyn and the default
         // reader detect UTF32, but the mutation writer only preserves UTF8/16.
@@ -26,7 +40,19 @@ internal static class ResolvedGraphTokenPreflight
             (bytes[0] == 0xff && bytes[1] == 0xfe && bytes[2] == 0 && bytes[3] == 0 ||
              bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 0xfe && bytes[3] == 0xff))
             throw new EvaluationContractException("UTF32 source BOM is unsupported by the snapshot mutation writer.");
+        // Match the actual snapshot writer's throwing decoder, including the
+        // no-BOM case. Do not assume a selected compiler's implicit fallback
+        // decoder or replacement characters preserve the same source offsets.
+        System.Text.Encoding encoding = new System.Text.UTF8Encoding(false, true);
+        var preamble = 0;
+        if (bytes.StartsWith(System.Text.Encoding.UTF8.GetPreamble())) preamble = 3;
+        else if (bytes.StartsWith(System.Text.Encoding.Unicode.GetPreamble())) { encoding = new System.Text.UnicodeEncoding(false, false, true); preamble = 2; }
+        else if (bytes.StartsWith(System.Text.Encoding.BigEndianUnicode.GetPreamble())) { encoding = new System.Text.UnicodeEncoding(true, false, true); preamble = 2; }
+        return (encoding, preamble);
     }
+
+    private static EvaluationContractException InvalidSourceBytes() => new(
+        "Compiler source bytes are not valid in the snapshot writer's strict UTF8/UTF16 encoding profile.");
 
     internal static void RequireClosedParserInputs(IReadOnlyList<string> tokens)
     {
