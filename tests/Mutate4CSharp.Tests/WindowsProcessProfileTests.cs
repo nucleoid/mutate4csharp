@@ -8,6 +8,13 @@ namespace Mutate4CSharp.Tests;
 // or external service is needed; source-only until the root grants its lane.
 public sealed class WindowsProcessProfileTests
 {
+    private static string PowerShellExecutable()
+    {
+        var selected = Environment.GetEnvironmentVariable("MUTATE4CSHARP_TEST_PWSH") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "PowerShell", "7", "pwsh.exe");
+        Assert.True(Path.IsPathFullyQualified(selected) && File.Exists(selected), "An actual existing absolute PowerShell7 executable is required; set MUTATE4CSHARP_TEST_PWSH or install the CI default.");
+        return selected;
+    }
+
     [Fact]
     public async Task Genuine_Windows_child_accepts_environment_above_32Ki_without_losing_values_or_clears()
     {
@@ -18,8 +25,7 @@ public sealed class WindowsProcessProfileTests
             ["MUTATE_WIDE_ENV_A"] = new('a', 20_000), ["MUTATE_WIDE_ENV_B"] = new('b', 20_000),
             ["MUTATE_WIDE_ENV_SENTINEL"] = nonce, ["ComSpec"] = null };
         Assert.False(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ComSpec")), "The actual closed Windows fixture requires inherited ComSpec before its explicit clear.");
-        var shell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "PowerShell", "7", "pwsh.exe");
-        Assert.True(File.Exists(shell), "The actual environment fixture requires installed PowerShell7.");
+        var shell = PowerShellExecutable();
         var observe = """
             $a=[Environment]::GetEnvironmentVariable('MUTATE_WIDE_ENV_A')
             $b=[Environment]::GetEnvironmentVariable('MUTATE_WIDE_ENV_B')
@@ -68,8 +74,7 @@ public sealed class WindowsProcessProfileTests
     {
         if (!OperatingSystem.IsWindows()) return;
         await using var owned = OwnedDirectory.Create(OwnedDirectory.PrivateParent("windows-timeout-profile"), "fixture");
-        var shell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "PowerShell", "7", "pwsh.exe");
-        Assert.True(File.Exists(shell), "The actual timeout fixture requires installed PowerShell7.");
+        var shell = PowerShellExecutable();
         var ready = Path.Combine(owned.Root, "ready.json"); var locked = Path.Combine(owned.Root, "owned-lock.data");
         var nonce = Guid.NewGuid().ToString("N");
         static string Literal(string value) => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
