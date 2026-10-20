@@ -120,6 +120,37 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
         return ["-p:TargetFramework=" + framework];
     }
 
+    internal static SnapshotCaptureException CreateCompilerFailure(ProcessTreeResult actualReturn)
+    {
+        // Format already-returned bounded DATA only. Prefer the logger's
+        // original inner cause over a consequential shutdown error or the
+        // diagnostic verbosity's potentially enormous command-line preamble.
+        var streams = new[] { actualReturn.StandardError, actualReturn.StandardOutput };
+        string? selected = null;
+        foreach (var marker in new[] { "---> Mutate4CSharp.", ": error " })
+        {
+            foreach (var stream in streams)
+            {
+                var start = stream.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                if (start < 0) continue;
+                start += marker.StartsWith("--->", StringComparison.Ordinal) ? 5 : 2;
+                var end = stream.IndexOfAny(['\r', '\n'], start);
+                if (end < 0) end = stream.Length;
+                selected = stream.Substring(start, Math.Min(end - start, EvaluationEvidence.MaxDiagnosticLength));
+                selected = System.Text.RegularExpressions.Regex.Replace(selected, @"https?://\S+", "[source-uri]",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+                break;
+            }
+            if (selected is not null) break;
+        }
+        selected ??= $"no explicit error line; stdoutChars={actualReturn.StandardOutput.Length}; stderrChars={actualReturn.StandardError.Length}; raw streams withheld";
+        const string prefix = "Resolved graph compiler producer failed: ";
+        var failure = new SnapshotCaptureException(prefix + EvaluationTextBounds.Prefix(
+            $"exit={actualReturn.ExitCode}; timedOut={actualReturn.TimedOut}; {selected}", EvaluationEvidence.MaxDiagnosticLength - prefix.Length));
+        failure.Data["ResolvedGraphCompiler.ActualReturn"] = actualReturn;
+        return failure;
+    }
+
     private async Task<ResolvedProjectCapture> CompileAsync(ResolvedProjectSelection selection,
         TimeSpan remaining, CancellationToken cancellationToken)
     {
@@ -182,14 +213,7 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
         _actualProducerReturns.Add(run); // DATA; ProcessTree owns its actual process.
         _budget.CheckWork();
         if (run.TimedOut || run.ExitCode != 0)
-        {
-            var failure = new SnapshotCaptureException("Resolved graph compiler producer did not complete successfully: " +
-                EvaluationTextBounds.Prefix(run.StandardError + " " + run.StandardOutput, EvaluationEvidence.MaxDiagnosticLength));
-            // Keep the original bounded producer return as failure DATA. A
-            // diagnostic excerpt must not discard its earlier primary error.
-            failure.Data["ResolvedGraphCompiler.ActualReturn"] = run;
-            throw failure;
-        }
+            throw CreateCompilerFailure(run);
         foreach (var image in images) _inputs.Recheck(image);
         _inputs.Recheck(taskDefinition);
         _inputs.Recheck(requestFile);

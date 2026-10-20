@@ -18,6 +18,8 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
       MSBUILDDISABLENODEREUSE: 1
+      # Keep latestPatch resolution independent of the hosted image's SDKs.
+      DOTNET_INSTALL_DIR: ${{ runner.temp }}/mutate-dotnet
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,7 +38,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $revision = (& git rev-parse HEAD)
           if ($LASTEXITCODE -ne 0 -or $revision -cnotmatch '^[0-9a-f]{40}$') { throw 'Actual clean source revision required' }
-          if ((& dotnet --version) -cne '10.0.103' -or $LASTEXITCODE -ne 0) { throw 'Ordinary source must select SDK103' }
+          $selectedSdk = (& dotnet --version)
+          if ($LASTEXITCODE -ne 0 -or $selectedSdk -cne '10.0.103') { throw "Ordinary source must select SDK103; observed '$selectedSdk'" }
           & dotnet restore mutate4csharp.slnx --locked-mode -m:1 -nodeReuse:false -p:UseSharedCompilation=false
           if ($LASTEXITCODE -ne 0) { throw 'Ordinary locked restore failed' }
           & dotnet build mutate4csharp.slnx -m:1 --no-restore -nodeReuse:false -p:UseSharedCompilation=false "-p:SourceRevisionId=$revision"
