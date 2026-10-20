@@ -198,7 +198,9 @@ public sealed class WindowsProcessProfileTests
             $start.UseShellExecute=$false
             $start.Arguments='-NoProfile -NonInteractive -EncodedCommand {{Encoded(child)}}'
             $descendant=[Diagnostics.Process]::Start($start)
-            try{while(-not [IO.File]::Exists({{Literal(Path.Combine(owned.Root, "root-release"))}})){Start-Sleep -Milliseconds 10}}finally{$descendant.Dispose()}
+            try {
+                while(-not [IO.File]::Exists({{Literal(Path.Combine(owned.Root, "root-release"))}})) { Start-Sleep -Milliseconds 10 }
+            } finally { $descendant.Dispose() }
             """;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var run = ProcessTree.RunAsync(shell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Encoded(root)],
