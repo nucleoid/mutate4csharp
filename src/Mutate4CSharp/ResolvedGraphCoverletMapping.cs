@@ -31,7 +31,7 @@ internal sealed class ResolvedGraphCoverletMapping
             if (File.Exists(query) || Directory.Exists(query))
                 throw new EvaluationContractException("Fresh actual coverage build query is required; no output adoption.");
             var args = new List<string> { "build", project, "-f", framework, "-c", configuration,
-                "-m:1", "-nodeReuse:false", "-p:UseSharedCompilation=false",
+                "-target:Build", "-m:1", "-nodeReuse:false", "-p:UseSharedCompilation=false",
                 ResolvedGraphPathProfile.Argument(sourceRoot, packageRoot),
                 "-p:NuGetPackageRoot=" + Trailing(packageRoot),
                 "-getResultOutputFile:" + query,
