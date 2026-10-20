@@ -164,10 +164,12 @@ internal sealed record ResolvedGraphObservedTask(string EventIdentity, string Pr
     IReadOnlyDictionary<string, string> GlobalProperties, string TaskAssemblyLocation, string TaskFile,
     IReadOnlyList<string> Tokens, bool? SkipCompilerExecution)
 {
-    internal IReadOnlyDictionary<string, string> EvaluatedProperties { get; init; } = new Dictionary<string, string>();
-    internal GraphCompiledSnapshot? Compiled { get; init; }
-    internal int ProjectInstanceId { get; init; } = -1;
-    internal int EvaluationId { get; init; } = -1;
+    // Public accessors on this internal DTO enroll these observations in the
+    // same-source private worker JSON. They remain DATA, not capabilities.
+    public IReadOnlyDictionary<string, string> EvaluatedProperties { get; init; } = new Dictionary<string, string>();
+    public GraphCompiledSnapshot? Compiled { get; init; }
+    public int ProjectInstanceId { get; init; } = -1;
+    public int EvaluationId { get; init; } = -1;
     internal void RequireObservedExecutionSwitch()
     {
         if (SkipCompilerExecution != false)

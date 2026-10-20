@@ -40,6 +40,21 @@ public sealed class ResolvedGraphInheritedCompilerFixtureTests : IDisposable
         original.CheckWork();
 
         Assert.Equal(3, capture.Projects.Count);
+        // Exercise the actual private request's nested observation shape with
+        // genuine captured inputs before drift. A serialization round trip is
+        // DATA only; the worker must still recheck every source/output image.
+        var transported = JsonSerializer.Deserialize<ResolvedProjectCapture[]>(
+            JsonSerializer.SerializeToUtf8Bytes(capture.Projects, ResolvedGraphProtocol.Options), ResolvedGraphProtocol.Options)!;
+        foreach (var returned in transported)
+        {
+            var originalTask = capture.Projects.Single(p => p.Selection == returned.Selection).FirstCsc!;
+            var returnedTask = Assert.IsType<ResolvedGraphObservedTask>(returned.FirstCsc);
+            Assert.Equal(originalTask.ProjectInstanceId, returnedTask.ProjectInstanceId);
+            Assert.Equal(originalTask.EvaluationId, returnedTask.EvaluationId);
+            Assert.Equal(originalTask.EvaluatedProperties.OrderBy(p => p.Key), returnedTask.EvaluatedProperties.OrderBy(p => p.Key));
+            Assert.NotNull(returnedTask.Compiled);
+            Assert.Equal(JsonSerializer.Serialize(originalTask.Compiled), JsonSerializer.Serialize(returnedTask.Compiled));
+        }
         var app = Assert.Single(capture.Projects, project => project.Selection.Project == "src/App/App.csproj");
         var dependency = Assert.Single(capture.Projects,
             project => project.Selection.Project == "src/Dependency/Dependency.csproj");
