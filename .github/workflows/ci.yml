@@ -10,13 +10,16 @@ permissions:
 jobs:
   test:
     strategy:
+      fail-fast: false
       max-parallel: 2
       matrix:
         include:
           - os: ubuntu-latest
             scope: core
           - os: windows-latest
-            scope: core
+            scope: core-review
+          - os: windows-latest
+            scope: core-other
           - os: ubuntu-latest
             scope: graph
           - os: windows-latest
@@ -131,11 +134,20 @@ jobs:
           # process arguments and the exact manifest/environment path values.
           @("DOTNET_HOST_PATH=$hostPath", "MUTATE4CSHARP_GRAPH_CAPTURE_MANIFEST=$manifest", "MUTATE4CSHARP_GRAPH_CAPTURE_MANIFEST_SHA256=$($digest[0])") | Out-File -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: round-ten-contract-regressions
-        if: matrix.scope == 'core'
+        if: matrix.scope == 'core' || matrix.scope == 'core-review'
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~IssueEightReviewRoundTenTests" -- xUnit.MaxParallelThreads=1
       - name: core-contracts
         if: matrix.scope == 'core'
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests" -- xUnit.MaxParallelThreads=1
+      # The original core filter is partitioned by one predicate and its exact
+      # complement on Windows. No case is dropped or sampled; the two existing
+      # graph/packaging exclusions and per-job resource/time limits are unchanged.
+      - name: windows-review-core-contracts
+        if: matrix.scope == 'core-review'
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName~IssueEightReview" -- xUnit.MaxParallelThreads=1
+      - name: windows-other-core-contracts
+        if: matrix.scope == 'core-other'
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName!~IssueEightReview" -- xUnit.MaxParallelThreads=1
       - name: actual-inherited-compiler-graph
         if: matrix.scope == 'graph'
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~ResolvedGraphInheritedCompilerFixtureTests" -- xUnit.MaxParallelThreads=1
