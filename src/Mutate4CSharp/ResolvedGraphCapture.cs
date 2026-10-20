@@ -120,7 +120,8 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
         return ["-p:TargetFramework=" + framework];
     }
 
-    internal static SnapshotCaptureException CreateCompilerFailure(ProcessTreeResult actualReturn)
+    internal static SnapshotCaptureException CreateCompilerFailure(ProcessTreeResult actualReturn,
+        string? sourceRoot = null, string? packageRoot = null, string? privateRoot = null)
     {
         // Format already-returned bounded DATA only. Prefer the logger's
         // original inner cause over a consequential shutdown error or the
@@ -136,9 +137,7 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
                 start += skip;
                 var end = stream.IndexOfAny(['\r', '\n'], start);
                 if (end < 0) end = stream.Length;
-                selected = stream.Substring(start, Math.Min(end - start, EvaluationEvidence.MaxDiagnosticLength));
-                selected = System.Text.RegularExpressions.Regex.Replace(selected, @"https?://\S+", "[source-uri]",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+                selected = SafeDiagnostic(stream.AsSpan(start, end - start));
                 break;
             }
             if (selected is not null) break;
@@ -149,6 +148,38 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
             $"exit={actualReturn.ExitCode}; timedOut={actualReturn.TimedOut}; {selected}", EvaluationEvidence.MaxDiagnosticLength - prefix.Length));
         failure.Data["ResolvedGraphCompiler.ActualReturn"] = actualReturn;
         return failure;
+
+        string SafeDiagnostic(ReadOnlySpan<char> text)
+        {
+            // Redact before bounding, including a root crossing the output
+            // boundary. Scan the returned DATA without copying a long raw line.
+            var roots = new[] { (Root: sourceRoot, Role: ResolvedGraphPathProfile.Source),
+                (Root: packageRoot, Role: ResolvedGraphPathProfile.Packages), (Root: privateRoot, Role: "/_/mutate-private") }
+                .Where(row => !string.IsNullOrEmpty(row.Root))
+                .SelectMany(row => new[] { (Root: row.Root!.TrimEnd('\\', '/'), row.Role),
+                    (Root: row.Root!.TrimEnd('\\', '/').Replace('\\', '/'), row.Role) })
+                .OrderByDescending(row => row.Root.Length).ToArray();
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            var safe = new StringBuilder();
+            for (var index = 0; index < text.Length && safe.Length < EvaluationEvidence.MaxDiagnosticLength;)
+            {
+                if (text[index..].StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+                    text[index..].StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+                {
+                    safe.Append("[source-uri]");
+                    while (index < text.Length && !char.IsWhiteSpace(text[index])) index++;
+                    continue;
+                }
+                var matched = false;
+                foreach (var row in roots)
+                    if (row.Root.Length > 0 && text[index..].StartsWith(row.Root, comparison))
+                    {
+                        safe.Append(row.Role); index += row.Root.Length; matched = true; break;
+                    }
+                if (!matched) safe.Append(text[index++]);
+            }
+            return EvaluationTextBounds.Prefix(safe.ToString(), EvaluationEvidence.MaxDiagnosticLength);
+        }
     }
 
     private async Task<ResolvedProjectCapture> CompileAsync(ResolvedProjectSelection selection,
@@ -213,7 +244,7 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
         _actualProducerReturns.Add(run); // DATA; ProcessTree owns its actual process.
         _budget.CheckWork();
         if (run.TimedOut || run.ExitCode != 0)
-            throw CreateCompilerFailure(run);
+            throw CreateCompilerFailure(run, Root, _packages.Root, Path.GetDirectoryName(files.Root));
         foreach (var image in images) _inputs.Recheck(image);
         _inputs.Recheck(taskDefinition);
         _inputs.Recheck(requestFile);
@@ -272,7 +303,8 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
         var queryFile = _inputs.Read(queryPath, "config", MaxQueryBytes);
         var query = new UTF8Encoding(false, true).GetString(queryFile.Bytes);
         _budget.CheckWork();
-        var captured = ResolvedProjectCapture.ReadActual(Root, selection, query, cancellationToken, first, _firstTasks.Values.ToArray());
+        var captured = ResolvedProjectCapture.ReadActual(Root, selection, query, cancellationToken, first,
+            _firstTasks.Values.ToArray(), actualTasks.Tasks);
         _inputs.Recheck(queryFile);
         if (captured.Properties["CscToolPath"].Length != 0 || captured.Properties["CscToolExe"].Length != 0)
             throw new EvaluationContractException("Custom Csc tool selection requires a separately complete compiler profile.");
@@ -539,7 +571,8 @@ internal sealed record ResolvedProjectCapture(ResolvedProjectSelection Selection
 
     internal static ResolvedProjectCapture ReadActual(string root, ResolvedProjectSelection selection,
         string actualJson, CancellationToken cancellationToken, ResolvedGraphObservedTask? firstCsc = null,
-        IReadOnlyList<ResolvedGraphObservedTask>? actualContexts = null)
+        IReadOnlyList<ResolvedGraphObservedTask>? actualContexts = null,
+        IReadOnlyList<ResolvedGraphObservedTask>? currentProducerContexts = null)
     {
         if (Encoding.UTF8.GetByteCount(actualJson) > ResolvedGraphCapture.MaxQueryBytes)
             throw new SnapshotLimitException("Complete compiler query exceeds its finite byte limit.");
@@ -596,30 +629,38 @@ internal sealed record ResolvedProjectCapture(ResolvedProjectSelection Selection
             throw new EvaluationContractException("Successful graph capture requires actual compiler input and token output inventories.");
         var edges = items["_MSBuildProjectReferenceExistent"].Select(edge => ReadEdge(root,
             Path.GetDirectoryName(properties["MSBuildProjectFullPath"])!, selection, edge,
-            firstCsc is null ? null : actualContexts ?? throw new EvaluationContractException("Actual reference context census required."), firstCsc)).ToArray();
+            firstCsc is null ? null : actualContexts ?? throw new EvaluationContractException("Actual reference context census required."),
+            firstCsc, currentProducerContexts)).ToArray();
         return new(selection, properties, items, edges,
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(actualJson))).ToLowerInvariant(), firstCsc);
     }
 
     private static ResolvedProjectEdge ReadEdge(string root, string projectDirectory,
         ResolvedProjectSelection parent, ResolvedGraphItem edge, IReadOnlyList<ResolvedGraphObservedTask>? actualContexts,
-        ResolvedGraphObservedTask? actualParent)
+        ResolvedGraphObservedTask? actualParent, IReadOnlyList<ResolvedGraphObservedTask>? currentProducerContexts)
     {
         var metadata = edge.Metadata;
         var path = Path.GetFullPath(edge.Identity, projectDirectory);
         var relative = SnapshotInputPolicy.NormalizeRelative(Path.GetRelativePath(root, path).Replace('\\', '/'));
-        var framework = Setting("SetTargetFramework", "TargetFramework", actualContexts is null ? parent.Framework : "");
-        var configuration = Setting("SetConfiguration", "Configuration", actualContexts is null ? parent.Configuration : "");
+        var removals = metadata.TryGetValue("UndefineProperties", out var removed) && removed.Length > 0
+            ? FiniteRemovals(removed) : [];
+        var framework = Setting("SetTargetFramework", "TargetFramework", actualContexts is null ? parent.Framework : Inherited("TargetFramework"));
+        var configuration = Setting("SetConfiguration", "Configuration", actualContexts is null ? parent.Configuration : Inherited("Configuration"));
         ResolvedGraphObservedTask? actualChild = null;
         if (actualContexts is not null)
         {
-            // Parent defaults are not reference-project evaluations. Join the
-            // real first Csc instance, constrained by any actual edge assignment.
-            var matches = actualContexts.Where(task => task.ProjectInstanceId >= 0 && SamePath(task.ProjectFile, path) &&
+            // Inherit only actual parent GLOBALS that MSBuild passes to the
+            // child, never the parent's evaluated/default framework. Explicit
+            // edge assignments/removals still control the actual child join.
+            bool Matches(ResolvedGraphObservedTask task) => task.ProjectInstanceId >= 0 && SamePath(task.ProjectFile, path) &&
                 task.EvaluatedProperties.TryGetValue("TargetFramework", out var actualFramework) &&
                 (framework.Length == 0 || actualFramework == framework) &&
                 task.EvaluatedProperties.TryGetValue("Configuration", out var actualConfiguration) &&
-                (configuration.Length == 0 || actualConfiguration == configuration)).ToArray();
+                (configuration.Length == 0 || actualConfiguration == configuration);
+            var matches = currentProducerContexts?.Where(Matches).ToArray() ?? [];
+            // Up-to-date children may have no new Csc event. Reuse only the
+            // already joined first tasks, with the same inherited constraints.
+            if (matches.Length == 0) matches = actualContexts.Where(Matches).ToArray();
             if (matches.Length != 1)
                 throw new EvaluationContractException("Exactly one actual evaluated project-reference Csc instance required; no parent fallback.");
             framework = matches[0].EvaluatedProperties["TargetFramework"];
@@ -631,9 +672,12 @@ internal sealed record ResolvedProjectCapture(ResolvedProjectSelection Selection
         foreach (var name in new[] { "AdditionalProperties", "GlobalPropertiesToRemove", "SetPlatform" })
             if (metadata.TryGetValue(name, out var value) && value.Length > 0)
                 throw TransformRefusal(name, value, "unsupported-transform");
-        if (metadata.TryGetValue("UndefineProperties", out var removed) && removed.Length > 0)
+        if (removed is { Length: > 0 })
             RequireFiniteRemoval(removed, metadata, actualParent, actualChild);
         return new(new(relative, framework, configuration), metadata);
+
+        string Inherited(string property) => !removals.Contains(property, StringComparer.Ordinal) &&
+            actualParent is not null && actualParent.GlobalProperties.TryGetValue(property, out var value) ? value : "";
 
         string Setting(string metadataName, string property, string fallback)
         {
@@ -652,16 +696,7 @@ internal sealed record ResolvedProjectCapture(ResolvedProjectSelection Selection
         ResolvedGraphObservedTask? parent, ResolvedGraphObservedTask? child)
     {
         const string field = "UndefineProperties";
-        if (raw.Length > 256) throw TransformRefusal(field, raw, "literal-length");
-        var pieces = raw.Split(';');
-        var start = pieces[0].Length == 0 ? 1 : 0;
-        if (pieces.Length > 4 || start == pieces.Length)
-            throw TransformRefusal(field, raw, "literal-piece-count");
-        var names = pieces[start..];
-        var supported = names.SequenceEqual(new[] { "TargetFramework" }, StringComparer.Ordinal) ||
-            names.SequenceEqual(new[] { "RuntimeIdentifier", "SelfContained" }, StringComparer.Ordinal) ||
-            names.SequenceEqual(new[] { "TargetFramework", "RuntimeIdentifier", "SelfContained" }, StringComparer.Ordinal);
-        if (!supported) throw TransformRefusal(field, raw, "unsupported-literal-profile");
+        var names = FiniteRemovals(raw);
         if (parent is null || child is null || parent.ProjectInstanceId < 0 || child.ProjectInstanceId < 0)
             throw TransformRefusal(field, raw, "actual-parent-child-required");
         // EvaluationId is separately retained, including unavailable -1. It is
@@ -702,6 +737,21 @@ internal sealed record ResolvedProjectCapture(ResolvedProjectSelection Selection
                     throw TransformRefusal(field, raw, "global-key-alias");
             return result;
         }
+    }
+    private static string[] FiniteRemovals(string raw)
+    {
+        const string field = "UndefineProperties";
+        if (raw.Length > 256) throw TransformRefusal(field, raw, "literal-length");
+        var pieces = raw.Split(';');
+        var start = pieces[0].Length == 0 ? 1 : 0;
+        if (pieces.Length > 4 || start == pieces.Length)
+            throw TransformRefusal(field, raw, "literal-piece-count");
+        var names = pieces[start..];
+        var supported = names.SequenceEqual(new[] { "TargetFramework" }, StringComparer.Ordinal) ||
+            names.SequenceEqual(new[] { "RuntimeIdentifier", "SelfContained" }, StringComparer.Ordinal) ||
+            names.SequenceEqual(new[] { "TargetFramework", "RuntimeIdentifier", "SelfContained" }, StringComparer.Ordinal);
+        if (!supported) throw TransformRefusal(field, raw, "unsupported-literal-profile");
+        return names;
     }
 
     private static EvaluationContractException TransformRefusal(string field, string raw, string reason) =>

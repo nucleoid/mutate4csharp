@@ -179,6 +179,47 @@ public sealed class ResolvedGraphInheritedCompilerFixtureTests : IDisposable
     }
 
     [Fact]
+    public async Task Actual_shared_projects_join_production_Release_and_test_Debug_contexts()
+    {
+        WriteFixture();
+        // Keep a valid Debug-only input while retaining Release's real
+        // conditional Compile removal. Both contexts must actually compile.
+        _repository.WriteText("src/App/Disabled.cs", "internal static class DebugOnlyInput { internal const int Value = 7; }\n");
+        var document = System.Text.Json.Nodes.JsonNode.Parse(_repository.Read(".mutate4csharp.json"))!;
+        document["testSuites"]![0]!["configuration"] = "Debug";
+        _repository.WriteText(".mutate4csharp.json", document.ToJsonString());
+        _repository.Git("add", "."); _repository.Git("commit", "-m", "shared actual Release and Debug compiler contexts");
+        var token = TestContext.Current.CancellationToken;
+        var original = new ResolvedGraphBudget(TimeSpan.FromSeconds(1100), token);
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [], SnapshotCaptureOptions.Default, token);
+        using var inputs = new ResolvedGraphInputs(original);
+        var deployment = ResolvedGraphDeployment.Load(inputs);
+        var configuration = CheckConfiguration.Load(_repository.Root, _repository.Read(".mutate4csharp.json"));
+        await using var environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
+            ["src/App/App.csproj", "tests/CompilerSuite/CompilerSuite.csproj"],
+            DependencyPreparationOptions.Default with { Timeout = original.RemainingWork }, token);
+        await using var capture = await CaptureWithFailureTranscriptAsync(() => ResolvedGraphCapture.CreateAsync(snapshot, configuration,
+            environment, original.RemainingWork, token, deployment.Logger, original));
+        Assert.Equal(5, capture.Projects.Count);
+        var suite = Assert.Single(capture.Projects, project => project.Selection.Project == "tests/CompilerSuite/CompilerSuite.csproj");
+        Assert.Equal("Debug", suite.Selection.Configuration);
+        foreach (var selectedConfiguration in new[] { "Release", "Debug" })
+        {
+            var app = Assert.Single(capture.Projects, project => project.Selection.Project == "src/App/App.csproj" &&
+                project.Selection.Configuration == selectedConfiguration);
+            var dependency = Assert.Single(capture.Projects, project => project.Selection.Project == "src/Dependency/Dependency.csproj" &&
+                project.Selection.Configuration == selectedConfiguration);
+            Assert.Contains(app.Edges, edge => edge.Selection == dependency.Selection);
+            Assert.Equal(selectedConfiguration, app.FirstCsc!.GlobalProperties["Configuration"]);
+            Assert.Equal(selectedConfiguration, dependency.FirstCsc!.GlobalProperties["Configuration"]);
+            Assert.NotNull(app.FirstCsc.Compiled); Assert.NotNull(dependency.FirstCsc.Compiled);
+            if (selectedConfiguration == "Debug") Assert.Contains(suite.Edges, edge => edge.Selection == app.Selection);
+            Assert.Equal(selectedConfiguration == "Debug", app.Items["Compile"].Any(item => item.Identity.EndsWith("Disabled.cs", StringComparison.Ordinal)));
+        }
+        capture.ValidateAuthoredInputs(); Assert.Null(original.Observe().Cleanup);
+    }
+
+    [Fact]
     public void Failed_restore_diagnostic_keeps_first_error_after_long_path_and_before_trailing_statuses()
     {
         // Formatting DATA only: this does not claim an actual NuGet invocation.

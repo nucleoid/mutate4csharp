@@ -7,6 +7,67 @@ namespace Mutate4CSharp.Tests;
 public sealed class ResolvedGraphTaskContextContractTests
 {
     [Theory]
+    [InlineData("inherited-configuration")]
+    [InlineData("inherited-framework")]
+    [InlineData("explicit-configuration")]
+    [InlineData("undefined-framework")]
+    [InlineData("current-producer")]
+    [InlineData("still-ambiguous")]
+    [InlineData("current-producer-ambiguous")]
+    public void Actual_parent_globals_join_shared_child_contexts_without_guessing_evaluated_defaults(string mode)
+    {
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "mutate-shared-edge-data"));
+        var parentPath = Path.Combine(root, "Parent.csproj"); var childPath = Path.Combine(root, "Child.csproj");
+        var parentGlobals = new Dictionary<string, string> { ["Configuration"] = "Debug" };
+        if (mode is "inherited-framework" or "undefined-framework") parentGlobals["TargetFramework"] = "net10.0";
+        ResolvedGraphObservedTask TaskRecord(string path, int instance, string framework, string configuration,
+            IReadOnlyDictionary<string, string> globals) => new("DATA_ONLY_" + instance, path, globals,
+                "DATA_ONLY_TASK_IMAGE", "DATA_ONLY_TARGET", ["/define:DATA_ONLY"], false) {
+                ProjectInstanceId = instance, EvaluationId = -1,
+                EvaluatedProperties = new Dictionary<string, string> {
+                    ["TargetFramework"] = framework, ["Configuration"] = configuration, ["MSBuildProjectFullPath"] = path } };
+        var parent = TaskRecord(parentPath, 10, "net10.0", "Debug", parentGlobals);
+        var childFramework = mode == "inherited-framework" ? "net10.0" : "netstandard2.1";
+        var childConfiguration = mode == "explicit-configuration" ? "Release" : "Debug";
+        var childGlobals = new Dictionary<string, string> { ["Configuration"] = childConfiguration };
+        if (mode == "inherited-framework") childGlobals["TargetFramework"] = childFramework;
+        var child = TaskRecord(childPath, 11, childFramework, childConfiguration, childGlobals);
+        var other = TaskRecord(childPath, 12, "netstandard2.1", childConfiguration == "Debug" ? "Release" : "Debug",
+            new Dictionary<string, string> { ["Configuration"] = childConfiguration == "Debug" ? "Release" : "Debug" });
+        if (mode is "inherited-framework" or "current-producer" or "current-producer-ambiguous")
+            other = TaskRecord(childPath, 12, childFramework == "net10.0" ? "netstandard2.1" : "net10.0", childConfiguration,
+                new Dictionary<string, string> { ["Configuration"] = childConfiguration });
+        if (mode == "still-ambiguous") other = child with { ProjectInstanceId = 12 };
+        var contexts = new[] { parent, child, other };
+        IReadOnlyList<ResolvedGraphObservedTask>? current = mode switch {
+            "current-producer" => [parent, child], "current-producer-ambiguous" => contexts, _ => null };
+        var properties = ResolvedProjectCapture.PropertyNames.ToDictionary(name => name, _ => "", StringComparer.Ordinal);
+        properties["MSBuildProjectFullPath"] = parentPath;
+        properties["TargetFramework"] = "net10.0"; properties["Configuration"] = "Debug";
+        properties["UseSharedCompilation"] = "false"; properties["ProvideCommandLineArgs"] = "true";
+        var items = ResolvedProjectCapture.ItemNames.ToDictionary(name => name,
+            _ => Array.Empty<Dictionary<string, string>>(), StringComparer.Ordinal);
+        items["Compile"] = [new() { ["Identity"] = "Parent.cs" }];
+        items["CscCommandLineArgs"] = [new() { ["Identity"] = "/define:DATA_ONLY" }];
+        items["ReferencePathWithRefAssemblies"] = [new() { ["Identity"] = "reference.dll" }];
+        var edge = new Dictionary<string, string> { ["Identity"] = "Child.csproj" };
+        if (mode == "explicit-configuration") edge["SetConfiguration"] = "Configuration=Release";
+        if (mode == "undefined-framework") edge["UndefineProperties"] = ";TargetFramework";
+        items["_MSBuildProjectReferenceExistent"] = [edge];
+        var json = JsonSerializer.Serialize(new { Properties = properties, Items = items });
+        ResolvedProjectCapture Read() => ResolvedProjectCapture.ReadActual(root, new("Parent.csproj", "net10.0", "Debug"),
+            json, CancellationToken.None, parent, contexts, current);
+        if (mode is "still-ambiguous" or "current-producer-ambiguous")
+            Assert.Contains("Exactly one actual evaluated project-reference Csc instance", Assert.Throws<EvaluationContractException>(() => Read()).Message);
+        else
+        {
+            var selected = Assert.Single(Read().Edges).Selection;
+            Assert.Equal(childConfiguration, selected.Configuration); Assert.Equal(childFramework, selected.Framework);
+            Assert.Equal("Child.csproj", selected.Project);
+        }
+    }
+
+    [Theory]
     [InlineData("framework", true)]
     [InlineData("rid", true)]
     [InlineData("all", true)]

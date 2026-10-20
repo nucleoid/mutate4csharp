@@ -20,6 +20,14 @@ internal static class ResolvedGraphCompiledSources
             !parsed.CompilationOptions.Deterministic)
             throw new EvaluationContractException("Complete deterministic compiler output profile required.");
         var pathMap = ResolvedGraphPathProfile.Require(parsed.PathMap, sourceRoot, packageRoot);
+        string? generatedRoot = null;
+        if (parsed.GeneratedFilesOutputDirectory is { } generated)
+        {
+            generatedRoot = Path.GetFullPath(generated, directory);
+            var relative = Path.GetRelativePath(Path.GetFullPath(sourceRoot), generatedRoot);
+            if (Path.IsPathRooted(relative) || relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+                throw new SnapshotCaptureException("Compiler generated source escapes the actual owned graph clone.");
+        }
         var pePath = Path.GetFullPath(Path.Combine(parsed.OutputDirectory, parsed.OutputFileName));
         var pdbPath = parsed.PdbPath is null ? Path.ChangeExtension(pePath, ".pdb") : Path.GetFullPath(parsed.PdbPath, directory);
         var pe = inputs.Read(pePath, "reference"); retained.Add(pe);
@@ -29,9 +37,8 @@ internal static class ResolvedGraphCompiledSources
         // Generated compiler trees are emitted by the SAME Csc invocation. No
         // guessing virtual filenames, arbitrary PDB-directed disk reads or prefix
         // acceptance: all generated directory entries pass the existing owner.
-        if (parsed.GeneratedFilesOutputDirectory is { } generated)
+        if (generatedRoot is { } root)
         {
-            var root = Path.GetFullPath(generated, directory);
             if (inputs.GeneratedDirectoryPresent(root))
             {
                 var pending = new Queue<(string Path, int Depth)>(); pending.Enqueue((root, 0));

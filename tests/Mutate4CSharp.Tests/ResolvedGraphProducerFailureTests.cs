@@ -2,6 +2,28 @@ namespace Mutate4CSharp.Tests;
 
 public sealed class ResolvedGraphProducerFailureTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Public_failure_redacts_all_owned_roots_before_bounding_and_preserves_private_actual_return(bool slashSpelling)
+    {
+        var privateRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "private-graph-capture-" + new string('x', 180)));
+        var source = Path.Combine(privateRoot, "source"); var packages = Path.Combine(privateRoot, "packages");
+        string Spelling(string path) => slashSpelling ? path.Replace('\\', '/') : path;
+        var returned = new ProcessTreeResult(1, false,
+            "MSBUILD : Logger error MSB4017: " + Spelling(source) + "/Subject.cs; " + Spelling(packages) + "/Dependency.cs; " +
+            Spelling(privateRoot) + "/csc/events.json; https://user:secret@example.invalid/path?token=hidden\n", "", TimeSpan.FromSeconds(1));
+        var failure = ResolvedGraphCapture.CreateCompilerFailure(returned, source, packages, privateRoot);
+        Assert.Contains("/_/mutate-source/Subject.cs", failure.Message);
+        Assert.Contains("/_/mutate-packages/Dependency.cs", failure.Message);
+        Assert.Contains("/_/mutate-private/csc/events.json", failure.Message);
+        Assert.Contains("[source-uri]", failure.Message);
+        Assert.DoesNotContain(privateRoot, failure.Message); Assert.DoesNotContain(Spelling(privateRoot), failure.Message);
+        Assert.DoesNotContain("secret", failure.Message); Assert.DoesNotContain(new string('x', 20), failure.Message);
+        Assert.True(failure.Message.Length <= EvaluationEvidence.MaxDiagnosticLength);
+        Assert.Same(returned, failure.Data["ResolvedGraphCompiler.ActualReturn"]);
+    }
+
     [Fact]
     public void Original_callback_cause_survives_long_command_preamble_and_shutdown_refusal()
     {

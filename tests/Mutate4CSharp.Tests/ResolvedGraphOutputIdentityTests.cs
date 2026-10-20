@@ -11,6 +11,43 @@ namespace Mutate4CSharp.Tests;
 public sealed class ResolvedGraphOutputIdentityTests
 {
     [Fact]
+    public async Task Logger_generated_directory_is_owned_before_any_source_or_output_read_or_traversal()
+    {
+        await using var owned = OwnedDirectory.Create(OwnedDirectory.PrivateParent("logger-generated-control"), "data");
+        var sourceRoot = Path.Combine(owned.Root, "source"); var packageRoot = Path.Combine(owned.Root, "packages");
+        var generatedRoot = Path.Combine(sourceRoot, "generated");
+        var externalRoot = Path.Combine(owned.Root, "source-lookalike");
+        foreach (var directory in new[] { sourceRoot, packageRoot, generatedRoot, externalRoot }) Directory.CreateDirectory(directory);
+        var externalFile = Path.Combine(externalRoot, "must-not-be-traversed.txt"); File.WriteAllText(externalFile, "preserve private external bytes");
+        var source = Path.Combine(sourceRoot, "Subject.cs"); var pe = Path.Combine(sourceRoot, "GraphOutput.dll"); var pdb = Path.ChangeExtension(pe, ".pdb");
+        var actual = Emit("public sealed class Subject { public int Value() => 1; }", ResolvedGraphPathProfile.Source + "/Subject.cs");
+        File.WriteAllBytes(source, actual.Source); File.WriteAllBytes(pe, actual.Pe); File.WriteAllBytes(pdb, actual.Pdb);
+        string[] Tokens(string generated) => ["/target:library", "/out:" + pe, "/pdb:" + pdb, "/debug:portable", "/deterministic+",
+            "/pathmap:" + sourceRoot + "=" + ResolvedGraphPathProfile.Source + "," + packageRoot + "=" + ResolvedGraphPathProfile.Packages,
+            "/generatedfilesout:" + generated, source];
+        var positiveBudget = new ResolvedGraphBudget(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        using (var inputs = new ResolvedGraphInputs(positiveBudget))
+        {
+            var retained = new List<ResolvedGraphFile>();
+            var snapshot = ResolvedGraphCompiledSources.Capture(Tokens(generatedRoot), Path.Combine(sourceRoot, "Graph.csproj"),
+                sourceRoot, packageRoot, inputs, positiveBudget, retained);
+            Assert.Equal(1, snapshot.Proof.MatchedDocuments); Assert.Equal(3, retained.Count);
+        }
+        var refusedBudget = new ResolvedGraphBudget(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        using (var inputs = new ResolvedGraphInputs(refusedBudget))
+        {
+            var retained = new List<ResolvedGraphFile>();
+            var refusal = Assert.Throws<SnapshotCaptureException>(() => ResolvedGraphCompiledSources.Capture(Tokens(externalRoot),
+                Path.Combine(sourceRoot, "Graph.csproj"), sourceRoot, packageRoot, inputs, refusedBudget, retained));
+            Assert.Contains("generated source escapes", refusal.Message);
+            var usage = refusedBudget.Resources.ObservePreDelivery();
+            Assert.Equal(0, usage.Frames); Assert.Equal(0, usage.IoCharged); Assert.Equal(0, usage.SemanticCharged);
+            Assert.Empty(retained);
+        }
+        Assert.Equal("preserve private external bytes", File.ReadAllText(externalFile));
+    }
+
+    [Fact]
     public void Actual_emit_binds_complete_pe_pdb_and_every_emitted_source_checksum()
     {
         var actual = Emit("public sealed class Subject { public int Choose(int x) => x > 2 ? 1 : 0; }");
