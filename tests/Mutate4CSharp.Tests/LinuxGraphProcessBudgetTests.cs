@@ -130,7 +130,7 @@ public sealed class LinuxGraphProcessBudgetTests : IDisposable
         var original = new ResolvedGraphBudget(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var run = ProcessTree.RunAsync("/bin/sh",
-            ["-c", "trap '' TERM; echo $$ > failure-child.pid.tmp; /bin/mv failure-child.pid.tmp failure-child.pid; /bin/sleep 0.3; printf '%0128d' 0; exec /bin/sleep 60"], root,
+            ["-c", "trap '' TERM; echo $$ > failure-child.pid.tmp; /bin/mv failure-child.pid.tmp failure-child.pid; while [ ! -f failure-release ]; do /bin/sleep 0.01; done; printf '%0128d' 0; exec /bin/sleep 60"], root,
             TimeSpan.FromSeconds(10), cancellation.Token,
             new Dictionary<string, string?> { ["NUGET_PACKAGES"] = packages }, 64,
             requireLinuxSessionIsolation: true, originalBudget: original);
@@ -147,9 +147,14 @@ public sealed class LinuxGraphProcessBudgetTests : IDisposable
             }
             actualChild = Process.GetProcessById(int.Parse(await File.ReadAllTextAsync(marker, TestContext.Current.CancellationToken)));
             _ = actualChild.SafeHandle; Assert.False(actualChild.HasExited);
+            var originalChild = ReadOriginalLinuxIdentity(actualChild.Id);
+            Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => AssertOriginalLinuxProcessTerminated(originalChild));
+            original.CheckWork();
+            await File.WriteAllTextAsync(Path.Combine(root, "failure-release"), "release", TestContext.Current.CancellationToken);
             var failure = await Assert.ThrowsAsync<IOException>(() => run);
             Assert.Contains("output exceeded", failure.Message);
-            Assert.True(actualChild.HasExited); Assert.NotNull(original.Observe().Cleanup);
+            AssertOriginalLinuxProcessTerminated(originalChild);
+            Assert.NotNull(original.Observe().Cleanup);
             ProcessTree.LinuxOriginalProcessFrame.AssertDirectoryMayBeRemoved(root);
             ProcessTree.LinuxOriginalProcessFrame.AssertDirectoryMayBeRemoved(packages);
         }
@@ -175,10 +180,11 @@ public sealed class LinuxGraphProcessBudgetTests : IDisposable
         Assert.Null(budget.Observe().Cleanup); budget.CheckWork();
 
         var marker = Path.Combine(root, "original-child.pid");
-        using var workTimer = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token);
-        workTimer.CancelAfter(budget.RemainingWork);
+        // The product's SAME original budget owns its work timer. A second
+        // CancelAfter can round down and request caller cancellation before the
+        // original endpoint, legitimately producing cancellation, not timeout.
         var run = ProcessTree.RunAsync("/bin/sh", ["-c", "echo $$ > original-child.pid.tmp; /bin/mv original-child.pid.tmp original-child.pid; exec /bin/sleep 60"], root,
-            TimeSpan.FromSeconds(30), workTimer.Token, requireLinuxSessionIsolation: true, originalBudget: budget);
+            TimeSpan.FromSeconds(30), cancellation.Token, requireLinuxSessionIsolation: true, originalBudget: budget);
         Process? actualChild = null;
         try
         {
@@ -192,8 +198,9 @@ public sealed class LinuxGraphProcessBudgetTests : IDisposable
             actualChild = Process.GetProcessById(int.Parse(await File.ReadAllTextAsync(marker, TestContext.Current.CancellationToken)));
             _ = actualChild.SafeHandle; _ = actualChild.StartTime;
             Assert.False(actualChild.HasExited);
+            var originalChild = ReadOriginalLinuxIdentity(actualChild.Id);
             var timedOut = await run;
-            Assert.True(timedOut.TimedOut); Assert.True(actualChild.HasExited);
+            Assert.True(timedOut.TimedOut); AssertOriginalLinuxProcessTerminated(originalChild);
             Assert.Equal(origin.Original, budget.Observe().Original);
             Assert.Equal(origin.WholeTicks, budget.Observe().WholeTicks);
             Assert.True(Stopwatch.GetElapsedTime(origin.Original) >= TimeSpan.FromTicks(origin.WorkTicks));
@@ -207,6 +214,58 @@ public sealed class LinuxGraphProcessBudgetTests : IDisposable
             try { await run; } catch when (!run.IsCompletedSuccessfully) { }
             actualChild?.Dispose();
         }
+    }
+
+    private static (int Pid, ulong StartTime) ReadOriginalLinuxIdentity(int pid)
+    {
+        var observation = ReadLinuxObservation(pid);
+        var actual = observation ?? throw new Xunit.Sdk.XunitException("Original Linux child disappeared before identity capture.");
+        Assert.True(actual.State is not ('Z' or 'X'), actual.Raw);
+        return (pid, actual.StartTime);
+    }
+
+    private static void AssertOriginalLinuxProcessTerminated((int Pid, ulong StartTime) original)
+    {
+        // A non-parent Process handle need not observe waitpid retirement for
+        // an orphan zombie. Independently inspect the SAME /proc identity;
+        // absence or a non-executable terminal state proves no live child.
+        var observation = ReadLinuxObservation(original.Pid);
+        if (observation is null) return;
+        Assert.Equal(original.StartTime, observation.Value.StartTime); // PID reuse is unknown, never success.
+        Assert.True(observation.Value.State is 'Z' or 'X', observation.Value.Raw);
+    }
+
+    private static (char State, ulong StartTime, string Raw)? ReadLinuxObservation(int pid)
+    {
+        string stat;
+        try
+        {
+            using var stream = new FileStream($"/proc/{pid}/stat", FileMode.Open,
+                FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            var bytes = new byte[16 * 1024 + 1];
+            var count = 0;
+            while (count < bytes.Length)
+            {
+                var read = stream.Read(bytes, count, bytes.Length - count);
+                if (read == 0) break;
+                count += read;
+            }
+            Assert.InRange(count, 1, bytes.Length - 1);
+            stat = System.Text.Encoding.UTF8.GetString(bytes, 0, count);
+        }
+        catch (FileNotFoundException) { return null; }
+        catch (DirectoryNotFoundException) { return null; }
+        // Unreadable, malformed or substituted identities refuse. Retain the
+        // bounded kernel record in assertion diagnostics for an actual failure.
+        Assert.InRange(stat.Length, 1, 16 * 1024);
+        var commandEnd = stat.LastIndexOf(')');
+        Assert.True(commandEnd >= 0 && commandEnd + 2 < stat.Length, stat);
+        Assert.True(stat.StartsWith(pid.ToString(System.Globalization.CultureInfo.InvariantCulture) + " (", StringComparison.Ordinal), stat);
+        var fields = stat[(commandEnd + 2)..].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        Assert.True(fields.Length > 19 && fields[0].Length == 1, stat);
+        Assert.True(ulong.TryParse(fields[19], System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out var startTime), stat);
+        return (fields[0][0], startTime, stat);
     }
 
     public void Dispose() { if (!retainRoot) Directory.Delete(root, recursive: true); }

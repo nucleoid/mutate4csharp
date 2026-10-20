@@ -47,6 +47,7 @@
     <None Include="../../scripts/agent-gate.sh" Pack="true" PackagePath="scripts/" />
     <None Include="../../scripts/source-state.py" Pack="true" PackagePath="scripts/" />
     <None Include="../../scripts/create-graph-deployment.py" Pack="true" PackagePath="scripts/" />
+    <None Include="../../scripts/test-create-graph-deployment.py" Pack="true" PackagePath="scripts/" />
     <None Include="../../docs/contracts/check-config-v1.schema.json" Pack="true" PackagePath="docs/contracts/" />
     <None Include="../../docs/contracts/check-config-v2.schema.json" Pack="true" PackagePath="docs/contracts/" />
     <None Include="../../docs/contracts/discovery-state-v1.schema.json" Pack="true" PackagePath="docs/contracts/" />

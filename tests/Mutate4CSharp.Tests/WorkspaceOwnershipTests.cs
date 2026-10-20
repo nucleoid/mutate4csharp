@@ -49,10 +49,11 @@ public sealed class WorkspaceOwnershipTests
         Assert.True(Directory.Exists(active.Root));
 
         File.Delete(foreign);
-        await active.DisposeAsync();
         var cleanup = OwnedDirectory.Create(foreignParent, "cleanup");
         await cleanup.DisposeAsync();
         Assert.False(Directory.Exists(foreignParent));
+        Assert.True(Directory.Exists(active.Root));
+        await active.DisposeAsync();
     }
 
     [Fact]
