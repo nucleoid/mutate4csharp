@@ -136,7 +136,7 @@ jobs:
         if: matrix.scope == 'graph'
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~ResolvedGraphInheritedCompilerFixtureTests" -- xUnit.MaxParallelThreads=1
       - name: isolated-local-package
-        if: matrix.scope == 'installed' && runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.scope == 'installed'
         shell: bash
         run: |
           set -euo pipefail
@@ -146,19 +146,19 @@ jobs:
           echo "MUTATE4CSHARP_PACKED_FEED=${WORKSPACE}/feed" >> "$GITHUB_ENV"
       - name: local-tool-workflow
         id: installed_contract
-        if: matrix.scope == 'installed' && runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.scope == 'installed'
         env:
           MUTATE4CSHARP_CERTIFICATION_DIRECTORY: ${{ runner.temp }}/mutate4csharp-installed-certification
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~ToolPackagingIntegrationTests" -- xUnit.MaxParallelThreads=1
       - name: installed-certification-artifacts
-        if: matrix.scope == 'installed' && runner.os == 'Linux' && always()
+        if: runner.os == 'Linux' && matrix.scope == 'installed' && always()
         uses: actions/upload-artifact@v4
         with:
           name: installed-certification-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ runner.temp }}/mutate4csharp-installed-certification
           if-no-files-found: ${{ steps.installed_contract.outcome == 'success' && 'error' || 'warn' }}
       - name: round-seven-shipped-workflow
-        if: matrix.scope == 'installed' && runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.scope == 'installed'
         shell: bash
         run: |
           set -euo pipefail
