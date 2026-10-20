@@ -2,8 +2,8 @@ using System.Text.Json;
 
 namespace Mutate4CSharp.Tests;
 
-// New candidate integration source, NOT part of the compiled193-input checkpoint.
-// UNEXECUTED. This invokes actual restore/compiler producers, never query DTOs.
+// Invokes actual restore/compiler producers, never query DTOs. Failed producer
+// transcripts remain bounded test diagnostics; they cannot authorize a result.
 public sealed class ResolvedGraphInheritedCompilerFixtureTests : IDisposable
 {
     private readonly SnapshotTestRepository _repository = new();
@@ -35,8 +35,8 @@ public sealed class ResolvedGraphInheritedCompilerFixtureTests : IDisposable
             ["src/App/App.csproj", "tests/CompilerSuite/CompilerSuite.csproj"],
             DependencyPreparationOptions.Default with { Timeout = original.RemainingWork }, token);
         original.CheckWork();
-        await using var capture = await ResolvedGraphCapture.CreateAsync(snapshot, configuration,
-            environment, original.RemainingWork, token, logger, original);
+        await using var capture = await CaptureWithFailureTranscriptAsync(() => ResolvedGraphCapture.CreateAsync(snapshot, configuration,
+            environment, original.RemainingWork, token, logger, original));
         original.CheckWork();
 
         Assert.Equal(3, capture.Projects.Count);
@@ -380,6 +380,19 @@ public sealed class ResolvedGraphInheritedCompilerFixtureTests : IDisposable
             }
         }
     }
+    private static async Task<ResolvedGraphCapture> CaptureWithFailureTranscriptAsync(Func<Task<ResolvedGraphCapture>> capture)
+    {
+        try { return await capture(); }
+        catch (SnapshotCaptureException failure) when (failure.Data["ResolvedGraphCompiler.ActualReturn"] is ProcessTreeResult returned)
+        {
+            TestContext.Current.TestOutputHelper?.WriteLine(
+                $"Original compiler return: exit={returned.ExitCode}; timedOut={returned.TimedOut}; stdoutChars={returned.StandardOutput.Length}; stderrChars={returned.StandardError.Length}\n" +
+                "stdout:\n" + EvaluationTextBounds.Prefix(returned.StandardOutput, 8192) +
+                "\nstderr:\n" + EvaluationTextBounds.Prefix(returned.StandardError, 8192));
+            throw;
+        }
+    }
+
     private void WriteFixture()
     {
         _repository.WriteText("global.json", """
