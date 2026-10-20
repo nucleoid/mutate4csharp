@@ -182,8 +182,14 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
         _actualProducerReturns.Add(run); // DATA; ProcessTree owns its actual process.
         _budget.CheckWork();
         if (run.TimedOut || run.ExitCode != 0)
-            throw new SnapshotCaptureException("Resolved graph compiler producer did not complete successfully: " +
-                EvaluationTextBounds.Suffix(run.StandardError + " " + run.StandardOutput, EvaluationEvidence.MaxDiagnosticLength));
+        {
+            var failure = new SnapshotCaptureException("Resolved graph compiler producer did not complete successfully: " +
+                EvaluationTextBounds.Prefix(run.StandardError + " " + run.StandardOutput, EvaluationEvidence.MaxDiagnosticLength));
+            // Keep the original bounded producer return as failure DATA. A
+            // diagnostic excerpt must not discard its earlier primary error.
+            failure.Data["ResolvedGraphCompiler.ActualReturn"] = run;
+            throw failure;
+        }
         foreach (var image in images) _inputs.Recheck(image);
         _inputs.Recheck(taskDefinition);
         _inputs.Recheck(requestFile);

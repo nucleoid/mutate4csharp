@@ -293,6 +293,11 @@ public sealed class ResolvedGraphCscLogger : ILogger
             _closing = true;
             try
             {
+                // A callback already latched terminal cleanup. Preserve that
+                // original cause instead of replacing it with CheckWork's
+                // consequential cleanup refusal during MSBuild shutdown.
+                if (_failure is not null)
+                    throw new LoggerException("Original graph Csc callback failed before shutdown.", _failure);
                 _budget!.CheckWork();
                 if (_failure is not null || !_finished || (_tasks.Count == 0 && !_permitEmptyTasks) ||
                     _tasks.Values.Any(t => !t.Finished || !t.Succeeded || !t.OutputSeen) ||
