@@ -55,7 +55,7 @@ internal sealed class ResolvedGraphCanonicalContext
             Edges = actual.Edges.Select(e => new { e.Selection, ActualMetadata = SemanticMetadata(e.ActualMetadata) }).ToArray(),
             Task = new { first.ProjectFile, first.GlobalProperties, first.EvaluatedProperties,
                 first.TaskAssemblyLocation, first.TaskFile, first.Tokens, first.SkipCompilerExecution },
-            Inputs = retained.Select(f => new { Path = Value(f.Path), f.Role, SemanticBytes = InputIdentity(f) })
+            Inputs = retained.Select(f => new { Path = Value(f.Path), f.Role, SemanticBytes = InputIdentity(f, inputs) })
                 .OrderBy(f => f.Path, StringComparer.Ordinal).ThenBy(f => f.Role, StringComparer.Ordinal).ToArray()
         };
         var encoded = ResolvedGraphProtocol.SerializeBounded(semantic, inputs, ResolvedGraphCapture.MaxQueryBytes, 1_048_576);
@@ -71,7 +71,7 @@ internal sealed class ResolvedGraphCanonicalContext
             [("complete-semantic-record-sha256", Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant())]);
     }
 
-    private string InputIdentity(ResolvedGraphFile file)
+    private string InputIdentity(ResolvedGraphFile file, ResolvedGraphInputs inputs)
     {
         var relative = Path.GetRelativePath(_roots[0].Root, file.Path);
         var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
