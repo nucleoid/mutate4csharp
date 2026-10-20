@@ -69,6 +69,21 @@ stamps and unit tests cannot certify native execution, package currentness,
 quality or production capability. New source32 regressions require genuine
 positive-first RED/GREEN runs after distinct source review.
 
+The original graph interval reserves ten percent, capped at 60 seconds, for first
+cleanup inside its unchanged whole deadline. Parent, logger and worker retain the
+same absolute work/whole endpoints and earliest terminal cleanup. Work expiry
+refuses new input/process work while the remaining original cleanup can release
+known owners. Expired whole deadlines, unknown settlement and failed first-close
+remain refusals; there is no deadline extension or disposition retry.
+
+Explicit compiler source encodings are limited to UTF8. The same source profile is
+checked at the original compiler callback and the semantic worker. Default BOM
+detection still supports UTF8 and UTF16 sources that the snapshot writer can
+preserve. Other explicit code pages can shift character offsets even when the
+original text matches at the wrong token, so those contexts return INCOMPLETE.
+UTF32 BOMs are refused at both source boundaries because their decoded offsets
+cannot be safely written by the existing UTF8/UTF16 snapshot writer.
+
 The graph resource profile distinguishes controlled semantic buffers from I/O.
 All parent graph readers share one cumulative512MiB semantic/buffer admission.
 Complete hash-only deployment images use one64KiB buffer per input owner and are

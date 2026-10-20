@@ -8,6 +8,26 @@ internal static class ResolvedGraphTokenPreflight
 {
     private static readonly string[] EffectfulOptions = ["ruleset", "recurse", "lib", "loadpath"];
 
+    internal static void RequireSupportedSourceEncoding(System.Text.Encoding? encoding)
+    {
+        // SourceText still detects a source BOM when no explicit code page was
+        // selected. The snapshot writer preserves UTF8/UTF16 BOMs. An explicit
+        // different decoder can produce matching text at the WRONG character
+        // offset, so a later Original substring check alone is insufficient.
+        if (encoding is not null && encoding.CodePage != System.Text.Encoding.UTF8.CodePage)
+            throw new EvaluationContractException("Explicit non-UTF8 compiler source encoding is unsupported by the snapshot mutation writer.");
+    }
+
+    internal static void RequireSupportedSourceBom(ReadOnlySpan<byte> bytes)
+    {
+        // UTF32 LE begins with the UTF16 LE prefix. Both Roslyn and the default
+        // reader detect UTF32, but the mutation writer only preserves UTF8/16.
+        if (bytes.Length >= 4 &&
+            (bytes[0] == 0xff && bytes[1] == 0xfe && bytes[2] == 0 && bytes[3] == 0 ||
+             bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 0xfe && bytes[3] == 0xff))
+            throw new EvaluationContractException("UTF32 source BOM is unsupported by the snapshot mutation writer.");
+    }
+
     internal static void RequireClosedParserInputs(IReadOnlyList<string> tokens)
     {
         if (tokens.Count is < 1 or > ResolvedGraphCapture.MaxItems)

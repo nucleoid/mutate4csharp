@@ -16,6 +16,7 @@ internal static class ResolvedGraphCompiledSources
         var directory = Path.GetDirectoryName(Path.GetFullPath(project))!;
         var parsed = CSharpCommandLineParser.Default.Parse(tokens, directory, sdkDirectory: null);
         inputs.CheckWork();
+        ResolvedGraphTokenPreflight.RequireSupportedSourceEncoding(parsed.Encoding);
         if (parsed.Errors.Any(d => d.Severity == DiagnosticSeverity.Error) || parsed.OutputFileName is null || parsed.OutputDirectory is null || !parsed.EmitPdb ||
             !parsed.CompilationOptions.Deterministic)
             throw new EvaluationContractException("Complete deterministic compiler output profile required.");
@@ -69,6 +70,7 @@ internal static class ResolvedGraphCompiledSources
             path = Path.GetFullPath(path);
             if (files.ContainsKey(path)) throw new EvaluationContractException("Duplicate original compiled source.");
             var file = inputs.Read(path, role); retained.Add(file); files.Add(path, file);
+            ResolvedGraphTokenPreflight.RequireSupportedSourceBom(file.Bytes);
         }
     }
 

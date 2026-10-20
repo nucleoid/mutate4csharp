@@ -103,6 +103,7 @@ internal static class ResolvedGraphWorkerProgram
         inputs.CheckWork();
         var parsed = CSharpCommandLineParser.Default.Parse(tokens, directory, sdkDirectory: null);
         inputs.CheckWork();
+        ResolvedGraphTokenPreflight.RequireSupportedSourceEncoding(parsed.Encoding);
         if (parsed.Errors.Any(d => d.Severity == DiagnosticSeverity.Error))
             throw new EvaluationContractException("Actual selected Csc tokens did not parse in the same compiler.");
         if (parsed.CompilationOptions.CryptoKeyFile is not null || parsed.CompilationOptions.CryptoKeyContainer is not null ||
@@ -241,6 +242,7 @@ internal static class ResolvedGraphWorkerProgram
             var relative = inSource ? Path.GetRelativePath(root, path).Replace('\\', '/') : "$packages/" + Path.GetRelativePath(packageRoot, path).Replace('\\', '/');
             if (trees.ContainsKey(relative)) throw new EvaluationContractException("Duplicate actual compiler/generated source.");
             var file = inputs.Read(path, generatedSource ? "generated-source" : "source"); retained.Add(file);
+            ResolvedGraphTokenPreflight.RequireSupportedSourceBom(file.Bytes);
             compiledSources.Add(path, file.Bytes);
             using var bytes = new MemoryStream(file.Bytes, writable: false);
             inputs.CheckWork();
