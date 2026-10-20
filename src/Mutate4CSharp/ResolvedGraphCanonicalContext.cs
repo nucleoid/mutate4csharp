@@ -76,7 +76,7 @@ internal sealed class ResolvedGraphCanonicalContext
             Items = actual.Items.ToDictionary(p => p.Key, p => p.Value.Select(i => new { i.Identity,
                 Metadata = SemanticMetadata(i.Metadata, boundary) }).ToArray(), StringComparer.Ordinal),
             Edges = actual.Edges.Select(e => new { e.Selection, ActualMetadata = SemanticMetadata(e.ActualMetadata, boundary) }).ToArray(),
-            Task = new { first.ProjectFile, first.GlobalProperties, first.EvaluatedProperties,
+            Task = new { first.ProjectFile, GlobalProperties = SemanticGlobalProperties(first.GlobalProperties), first.EvaluatedProperties,
                 first.TaskAssemblyLocation, first.TaskFile, first.Tokens, first.SkipCompilerExecution },
             Inputs = retained.Select(f => new { Path = Value(f.Path, boundary), f.Role, SemanticBytes = InputIdentity(f, inputs) })
                 .OrderBy(f => f.Path, StringComparer.Ordinal).ThenBy(f => f.Role, StringComparer.Ordinal).ToArray(),
@@ -110,6 +110,23 @@ internal sealed class ResolvedGraphCanonicalContext
                 [("complete-text-sha256", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Value(text)))).ToLowerInvariant())]);
         }
         return file.Sha256;
+    }
+
+    private IReadOnlyDictionary<string, string> SemanticGlobalProperties(IReadOnlyDictionary<string, string> properties)
+    {
+        var result = properties.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+        foreach (var property in properties.Where(p => p.Key.Equals("PathMap", StringComparison.OrdinalIgnoreCase)))
+        {
+            // This exact producer property retains MSBuild's literal %2C.
+            // Decode no arbitrary string: admit only the complete closed pair
+            // which generated this actual compiler invocation, then name roles.
+            var expected = ResolvedGraphPathProfile.Argument(_roots[0].Root, _roots[1].Root)["-p:PathMap=".Length..];
+            if (property.Value != expected)
+                throw new EvaluationContractException("Original PathMap global must match the exact owned producer profile.");
+            result[property.Key] = "$owned-source=" + ResolvedGraphPathProfile.Source +
+                "%2C$owned-packages=" + ResolvedGraphPathProfile.Packages;
+        }
+        return result;
     }
 
     private ResolvedGraphFile? ReadObservedBoundary(ResolvedProjectCapture actual,

@@ -7,6 +7,72 @@ namespace Mutate4CSharp.Tests;
 public sealed class ResolvedGraphCanonicalContextTests
 {
     [Fact]
+    public void Exact_original_MSBuild_path_map_global_keeps_both_owned_roles_and_escaped_separator()
+    {
+        var parent = Path.Combine(Path.GetTempPath(), "graph-path-map-global");
+        var first = Path.Combine(parent, "first"); var second = Path.Combine(parent, "second");
+        Assert.Equal(Identity(first, PathMapContext(first)), Identity(second, PathMapContext(second)));
+        using var inputs = new ResolvedGraphInputs(TimeSpan.FromSeconds(30), CancellationToken.None);
+        var bytes = new ResolvedGraphCanonicalContext(Path.Combine(first, "source"), Path.Combine(first, "packages"))
+            .CanonicalBytes(PathMapContext(first), [], inputs);
+        using var record = System.Text.Json.JsonDocument.Parse(bytes);
+        Assert.Equal("$owned-source=/_/mutate-source%2C$owned-packages=/_/mutate-packages",
+            record.RootElement.GetProperty("Task").GetProperty("GlobalProperties").GetProperty("PathMap").GetString());
+        var custom = PathMapContext(first);
+        var before = custom.FirstCsc!.GlobalProperties.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+        before["CustomEscapedValue"] = "custom%2Cvalue";
+        custom = custom with { FirstCsc = custom.FirstCsc! with { GlobalProperties = before } };
+        var after = before.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+        after["CustomEscapedValue"] = "custom,value";
+        Assert.NotEqual(Identity(first, custom), Identity(first, custom with {
+            FirstCsc = custom.FirstCsc! with { GlobalProperties = after } }));
+        // The same byte pattern in a custom global gets no escaped-path rule.
+        ResolvedProjectCapture CustomMap(string root)
+        {
+            var value = PathMapContext(root);
+            return value with { FirstCsc = value.FirstCsc! with {
+                GlobalProperties = new Dictionary<string, string> { ["CustomMap"] = OriginalPathMap(root) } } };
+        }
+        Assert.NotEqual(Identity(first, CustomMap(first)), Identity(second, CustomMap(second)));
+    }
+
+    [Theory]
+    [InlineData("literal-comma")]
+    [InlineData("lowercase-escape")]
+    [InlineData("source-trailing-separator")]
+    [InlineData("package-trailing-separator")]
+    [InlineData("source-dot-alias")]
+    [InlineData("different-destination")]
+    public void Path_map_global_rejects_aliases_instead_of_decoding_or_omitting_them(string corruption)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "graph-path-map-refusal");
+        var source = Path.Combine(root, "source"); var packages = Path.Combine(root, "packages");
+        var raw = OriginalPathMap(root);
+        raw = corruption switch {
+            "literal-comma" => raw.Replace("%2C", ",", StringComparison.Ordinal),
+            "lowercase-escape" => raw.Replace("%2C", "%2c", StringComparison.Ordinal),
+            "source-trailing-separator" => raw.Replace(source + "=", source + Path.DirectorySeparatorChar + "=", StringComparison.Ordinal),
+            "package-trailing-separator" => raw.Replace(packages + "=", packages + Path.DirectorySeparatorChar + "=", StringComparison.Ordinal),
+            "source-dot-alias" => raw.Replace(source + "=", source + Path.DirectorySeparatorChar + ".=", StringComparison.Ordinal),
+            _ => raw.Replace("/_/mutate-packages", "/_/other-packages", StringComparison.Ordinal)
+        };
+        var actual = PathMapContext(root);
+        actual = actual with { FirstCsc = actual.FirstCsc! with {
+            GlobalProperties = new Dictionary<string, string> { ["PathMap"] = raw } } };
+        Assert.Throws<EvaluationContractException>(() => Identity(root, actual));
+    }
+
+    private static ResolvedProjectCapture PathMapContext(string root)
+    {
+        var actual = Context(root, "physical", "external-compiler");
+        return actual with { FirstCsc = actual.FirstCsc! with { GlobalProperties =
+            new Dictionary<string, string> { ["Configuration"] = "Release", ["PathMap"] = OriginalPathMap(root) } } };
+    }
+
+    private static string OriginalPathMap(string root) =>
+        ResolvedGraphPathProfile.Argument(Path.Combine(root, "source"), Path.Combine(root, "packages"))["-p:PathMap=".Length..];
+
+    [Fact]
     public void Derived_owned_directory_joins_full_path_before_fresh_root_normalization()
     {
         var parent = Path.Combine(Path.GetTempPath(), "graph-derived-directory");
