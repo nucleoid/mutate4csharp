@@ -344,7 +344,7 @@ internal static class StrictMutationEnumerator
         return new(sourcePaths, excluded, sources, trees, compilation, identity);
     }
 
-    private static IReadOnlyList<string> SelectTargetPaths(ProjectScopeUnit unit, ScopePlan scopePlan,
+    internal static IReadOnlyList<string> SelectTargetPaths(ProjectScopeUnit unit, ScopePlan scopePlan,
         IReadOnlyList<string> sourcePaths)
     {
         if (unit.Expansion.Equals("FULL_PROJECT", StringComparison.Ordinal)) return sourcePaths;

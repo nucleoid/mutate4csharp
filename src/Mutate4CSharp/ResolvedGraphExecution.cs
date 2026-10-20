@@ -19,7 +19,7 @@ internal static class ResolvedGraphExecution
             var images = deployment.ReadActual(inputs);
             capture = await ResolvedGraphCapture.CreateAsync(snapshot, configuration, environment,
                 original.RemainingWork, token, deployment.Logger, original);
-            var configurationFile = snapshot.Files.Single(f => f.Exists && f.RelativePath == "mutate4csharp.json");
+            var configurationFile = ResolvedGraphCandidateAdmission.ConfigurationFile(snapshot);
             var config = inputs.Read(Path.Combine(snapshot.CaptureRoot, configurationFile.RelativePath), "config", 1_048_576);
             if (config.Bytes.LongLength != configurationFile.Length || config.Sha256 != configurationFile.Sha256)
                 throw new SnapshotDivergedException("Original graph configuration differs from immutable snapshot.");
@@ -28,9 +28,13 @@ internal static class ResolvedGraphExecution
                 deployment.WorkerClosure.Single(i => Path.GetFileName(i.Path) == "Microsoft.CodeAnalysis.dll").Sha256,
                 deployment.WorkerClosure.Single(i => Path.GetFileName(i.Path) == "Microsoft.CodeAnalysis.CSharp.dll").Sha256);
             var childGrant = original.Resources.ReserveChild("worker");
+            // The worker consumes only configured production selections. Keep
+            // each complete record; suite/dependency captures remain retained
+            // on the parent. Large selected closures still refuse at the
+            // unchanged 16MiB request / 32MiB result and protocol node bounds.
             var request = new GraphWorkerRequest(3, capture.Root, capture.PackageRoot, config.Bytes, scope,
                 snapshot.Files.Where(f => f.Exists).Select(f => f.RelativePath).ToArray(),
-                capture.Projects.ToArray(), compiler, deployment.SourceRevision, origin, childGrant);
+                ResolvedGraphCandidateAdmission.ProductionContexts(configuration, capture.Projects), compiler, deployment.SourceRevision, origin, childGrant);
             var requestPath = Path.Combine(capture.Root, "resolved-graph-request.json");
             var resultPath = Path.Combine(capture.Root, "resolved-graph-result.json");
             original.CheckWork();
@@ -62,14 +66,13 @@ internal static class ResolvedGraphExecution
                 throw new EvaluationContractException("Worker result does not join its SAME actual producer, request, source, compiler and original.");
             original.Resources.ObserveChildReturn(childGrant, output.PreDelivery, result.Bytes.LongLength);
             enumeration = output.Enumeration;
-            if (enumeration.Candidates.Count > StrictMutationEnumerator.MaxCandidates || enumeration.Reasons.Count > 100 ||
+            if (enumeration.Candidates is null || enumeration.Reasons is null ||
+                enumeration.Candidates.Any(c => c is null || c.Material is null) ||
+                enumeration.Candidates.Count > StrictMutationEnumerator.MaxCandidates || enumeration.Reasons.Count > 100 ||
                 enumeration.IsComplete && (enumeration.SemanticContextIdentity?.Length != 64 || enumeration.Reasons.Count != 0) ||
                 enumeration.Candidates.Select(c => c.EvaluationUnitId).Distinct(StringComparer.Ordinal).Count() != enumeration.Candidates.Count)
                 throw new EvaluationContractException("Complete worker enumeration membership/identity invalid.");
-            foreach (var candidate in enumeration.Candidates)
-                if (!configuration.Projects.Any(p => p.Project == candidate.ProjectPath && p.TargetFramework == candidate.TargetFramework &&
-                    p.ParseContext == candidate.ParseContext) || !request.CapturedPaths.Contains(candidate.Material.RepositoryPath, StringComparer.Ordinal))
-                    throw new EvaluationContractException("Worker candidate escapes current configured source closure.");
+            ResolvedGraphCandidateAdmission.Validate(snapshot, configuration, scope, enumeration.Candidates, inputs);
             inputs.Recheck(result); inputs.Recheck(actualRequest); inputs.Recheck(config);
             foreach (var image in images) inputs.Recheck(image);
             capture.ValidateAuthoredInputs();

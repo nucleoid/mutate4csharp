@@ -536,6 +536,36 @@ public sealed partial class ResolvedGraphInheritedCompilerFixtureTests : IDispos
             }
         }
     }
+    [Fact(Timeout = 1_100_000)]
+    public async Task Actual_FULL_PROJECT_keeps_uncaptured_build_generated_sites_as_semantic_context_only()
+    {
+        WriteFixture();
+        var targets = System.Text.Encoding.UTF8.GetString(_repository.Read("Directory.Build.targets"));
+        _repository.WriteText("Directory.Build.targets", targets.Replace("internal const int Value = 17%3B }",
+            "internal const int Value = 17%3B internal static int Offset(int value) => value + 17%3B }", StringComparison.Ordinal));
+        _repository.WriteText("mutate4csharp.json", System.Text.Encoding.UTF8.GetString(_repository.Read(".mutate4csharp.json")));
+        _repository.Git("add", "."); _repository.Git("commit", "-m", "actual full project with generated mutation sites");
+        var token = TestContext.Current.CancellationToken;
+        var original = new ResolvedGraphBudget(TimeSpan.FromSeconds(1100), token);
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [], SnapshotCaptureOptions.Default, token);
+        using var inputs = new ResolvedGraphInputs(original);
+        var deployment = ResolvedGraphDeployment.Load(inputs);
+        var selected = await ScopePlanner.PlanExplicitAsync(["src/App/App.cs"], snapshot.CaptureRoot, token);
+        Assert.True(selected.Plan.IsComplete, JsonSerializer.Serialize(selected.Plan.Reasons));
+        // Exercise the parent's conservative full-project selection with an
+        // actual inherited compiler graph, not a fabricated worker result.
+        var scope = selected.Plan with { ProjectUnits = [Assert.Single(selected.Plan.ProjectUnits) with { Expansion = "FULL_PROJECT", Inputs = [] }] };
+        var configuration = CheckConfiguration.Load(snapshot.CaptureRoot, selected.ConfigurationBytes!);
+        await using var environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
+            ["src/App/App.csproj", "tests/CompilerSuite/CompilerSuite.csproj"],
+            DependencyPreparationOptions.Default with { Timeout = original.RemainingWork }, token, original);
+        var actual = await ResolvedGraphExecution.EnumerateAsync(snapshot, configuration, scope, environment, deployment, original, token);
+        Assert.True(actual.IsComplete, JsonSerializer.Serialize(actual.Reasons)); Assert.NotEmpty(actual.Candidates);
+        Assert.All(actual.Candidates, candidate => Assert.Equal("src/App/App.cs", candidate.Material.RepositoryPath));
+        Assert.DoesNotContain(actual.Candidates, candidate => candidate.Material.RepositoryPath.Contains("GeneratedFixture", StringComparison.Ordinal));
+        await snapshot.ValidateOriginalAsync(token); original.CheckWork(); Assert.Null(original.Observe().Cleanup);
+    }
+
     private static async Task<ResolvedGraphCapture> CaptureWithFailureTranscriptAsync(Func<Task<ResolvedGraphCapture>> capture)
     {
         try { return await capture(); }

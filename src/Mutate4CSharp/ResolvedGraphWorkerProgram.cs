@@ -49,12 +49,13 @@ internal static class ResolvedGraphWorkerProgram
         if (!configuration.IsResolvedGraph) throw new EvaluationContractException("No implicit legacy worker profile.");
         CheckLoadedCompiler(request.Compiler, inputs);
         var contexts = new Dictionary<string, ResolvedCompilerContext>(StringComparer.Ordinal);
+        var capturedPaths = request.CapturedPaths.ToHashSet(StringComparer.Ordinal);
         foreach (var project in configuration.Projects)
         {
             var actual = request.Projects.Where(c => c.Selection.Project == project.Project &&
                 c.Selection.Framework == project.TargetFramework && c.Selection.Configuration == project.Configuration).ToArray();
             if (actual.Length != 1) throw new EvaluationContractException("Exactly one original compiler context per configured production selection required.");
-            contexts.Add(project.Project, BuildContext(request.Root, request.PackageRoot, project, configuration, actual[0], inputs, originalBudget));
+            contexts.Add(project.Project, BuildContext(request.Root, request.PackageRoot, project, configuration, actual[0], capturedPaths, inputs, originalBudget));
         }
         var result = StrictMutationEnumerator.EnumerateCaptured(configuration, request.Scope,
             request.CapturedPaths, contexts, CancellationToken.None);
@@ -92,7 +93,8 @@ internal static class ResolvedGraphWorkerProgram
     }
 
     private static ResolvedCompilerContext BuildContext(string root, string packageRoot, CheckProject project,
-        CheckConfiguration configuration, ResolvedProjectCapture actual, ResolvedGraphInputs inputs, ResolvedGraphBudget original)
+        CheckConfiguration configuration, ResolvedProjectCapture actual, IReadOnlySet<string> capturedPaths,
+        ResolvedGraphInputs inputs, ResolvedGraphBudget original)
     {
         var directory = Path.GetDirectoryName(Path.GetFullPath(project.Project, root))!;
         var originalTask = actual.FirstCsc ?? throw new EvaluationContractException("Original first-Csc capture is required; later synthetic/query-only tokens are insufficient.");
@@ -203,7 +205,7 @@ internal static class ResolvedGraphWorkerProgram
         if (compilation.GetDiagnostics().Any(d => d.Severity == DiagnosticSeverity.Error))
             throw new EvaluationContractException("Captured complete selected-compiler context has semantic errors.");
         foreach (var file in retained) inputs.Recheck(file);
-        var owned = sourceTexts.Keys.Where(path => project.Sources.Any(pattern =>
+        var owned = sourceTexts.Keys.Where(path => capturedPaths.Contains(path) && project.Sources.Any(pattern =>
             ProjectOwnershipResolver.GlobMatches(path, pattern))).Order(StringComparer.Ordinal).ToArray();
         var excluded = owned.Where(path => configuration.Exclusions.Any(e => ProjectOwnershipResolver.GlobMatches(path, e.Path)) ||
             ScopePlanner.IsGeneratedSource(path, sourceTexts[path]) ||
