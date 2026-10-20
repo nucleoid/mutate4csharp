@@ -131,6 +131,12 @@ same absolute work/whole endpoints and earliest terminal cleanup. Work expiry
 refuses new input/process work while the remaining original cleanup can release
 known owners. Expired whole deadlines, unknown settlement and failed first-close
 remain refusals; there is no deadline extension or disposition retry.
+Linux graph calls pass that same original through target and cold setsid-probe
+admission. Existing process, output and reaping waits shrink to its work or
+disposition endpoint; terminal cleanup cannot grant another process birth.
+Unsettled graph calls retain their strict-wrapper status directory as evidence.
+These cooperative checks retain the existing Linux containment limitations and
+do not issue native ownership or certify a completed execution.
 
 Explicit compiler source encodings are limited to UTF8. The same source profile is
 checked at the original compiler callback and the semantic worker. Default BOM

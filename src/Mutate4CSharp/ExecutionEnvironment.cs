@@ -46,6 +46,7 @@ internal static class ProcessTree
         if (OperatingSystem.IsWindows())
             return await WindowsProcessTree.RunAsync(executable, arguments, workingDirectory, timeout,
                 cancellationToken, environment, maxOutputBytes, originalBudget);
+        CheckWork();
         using var strictLaunch = platform.IsLinux && requireLinuxSessionIsolation
             ? LinuxStrictLaunch.Create()
             : null;
@@ -54,7 +55,7 @@ internal static class ProcessTree
         var launchArguments = arguments;
         if (strictLaunch is not null)
         {
-            launchExecutable = ResolveLinuxSetSid();
+            launchExecutable = ResolveLinuxSetSidForOriginal(originalBudget, cancellationToken);
             launchArguments = ["--wait", "/bin/sh", "-c", LinuxStrictLaunch.WrapperScript,
                 "mutate4csharp-boundary", strictLaunch.StatusPath, executable, .. arguments];
         }
@@ -72,7 +73,13 @@ internal static class ProcessTree
             }
         using var process = new Process { StartInfo = info };
         var watch = Stopwatch.StartNew();
+        CheckWork();
+        var workTimeout = originalBudget is null || timeout < originalBudget.RemainingWork
+            ? timeout : originalBudget.RemainingWork;
+        if (originalBudget is not null && workTimeout <= TimeSpan.Zero)
+            throw new TimeoutException("Actual graph original work endpoint expired before process birth.");
         if (!process.Start()) throw new InvalidOperationException($"Could not start {executable}.");
+        if (originalBudget is not null) strictLaunch?.RetainUnsettled();
         var linuxIdentity = platform.IsLinux && TryReadLinuxIdentity(process.Id, out var launched)
             ? launched
             : (LinuxProcessIdentity?)null;
@@ -80,23 +87,26 @@ internal static class ProcessTree
         using var drainCancellation = new CancellationTokenSource();
         var outputTask = ReadBoundedAsync(process.StandardOutput.BaseStream, maxOutputBytes, drainCancellation.Token);
         var errorTask = ReadBoundedAsync(process.StandardError.BaseStream, maxOutputBytes, drainCancellation.Token);
-        using var timeoutSource = new CancellationTokenSource(timeout);
+        using var timeoutSource = new CancellationTokenSource(workTimeout);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
         var timedOut = false;
         int? strictExitCode = null;
+        Task? completionTask = null;
         try
         {
+            CheckWork();
             var processTask = process.WaitForExitAsync(linked.Token);
             Task<int>? strictCompletionTask = strictLaunch is null
                 ? null
                 : WaitForStrictCompletionAsync(strictLaunch.StatusPath, processTask, linked.Token);
-            Task completionTask = strictCompletionTask ?? processTask;
+            completionTask = strictCompletionTask ?? processTask;
             var pending = new List<Task> { completionTask, outputTask, errorTask };
             var observationDelay = LinuxObservationInitialDelay;
             var groupScanDelay = LinuxGroupScanInitialDelay;
             var nextGroupScan = groupScanDelay;
             while (!completionTask.IsCompleted)
             {
+                CheckWork();
                 var includeGroupScan = watch.Elapsed >= nextGroupScan;
                 CaptureLinuxOwnedProcesses(linuxBoundary, includeGroupScan);
                 if (includeGroupScan)
@@ -119,33 +129,38 @@ internal static class ProcessTree
             }
             if (strictCompletionTask is null) await processTask;
             else strictExitCode = await strictCompletionTask;
+            CheckWork();
             if (useStrictLinuxBoundary) CaptureLinuxOwnedProcesses(linuxBoundary);
         }
-        catch (OperationCanceledException)
+        catch (Exception interruption) when (interruption is OperationCanceledException ||
+            interruption is TimeoutException && originalBudget is not null)
         {
-            timedOut = timeoutSource.IsCancellationRequested && !cancellationToken.IsCancellationRequested;
+            timedOut = interruption is TimeoutException ||
+                timeoutSource.IsCancellationRequested && !cancellationToken.IsCancellationRequested;
             Exception primaryFailure = timedOut
-                ? new TimeoutException($"Process exceeded its {timeout.TotalSeconds:g}-second timeout.")
-                : new OperationCanceledException(cancellationToken);
-            KillLinuxBoundaryForFailure(linuxBoundary);
-            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
-            try { await process.WaitForExitAsync(CancellationToken.None); } catch { }
+                ? interruption is TimeoutException ? interruption : new TimeoutException(originalBudget is null
+                    ? $"Process exceeded its {timeout.TotalSeconds:g}-second timeout."
+                    : "Process exceeded its original or per-call work endpoint.", interruption)
+                : interruption;
+            originalBudget?.BeginFailureCleanup();
+            try { await StopRootForCleanup(); }
+            catch (Exception cleanup) { throw CreateCleanupFailure(primaryFailure, cleanup); }
             await CompleteCancellationCleanupAsync(primaryFailure,
-                async () => { _ = await AwaitOutputsAsync(outputTask, errorTask, drainCancellation); },
+                async () => { _ = await AwaitOutputsAsync(outputTask, errorTask, drainCancellation, originalBudget); },
                 () => linuxBoundary.Isolated
-                    ? TerminateAndReapLinuxBoundaryAsync(linuxBoundary)
+                    ? TerminateAndReapLinuxBoundaryAsync(linuxBoundary, originalBudget)
                     : Task.CompletedTask);
-            if (!timedOut) cancellationToken.ThrowIfCancellationRequested();
+            if (!timedOut) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(interruption).Throw();
         }
         catch (Exception primaryFailure)
         {
-            KillLinuxBoundaryForFailure(linuxBoundary);
-            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
-            try { await process.WaitForExitAsync(CancellationToken.None); } catch { }
+            originalBudget?.BeginFailureCleanup();
+            try { await StopRootForCleanup(); }
+            catch (Exception cleanup) { throw CreateCleanupFailure(primaryFailure, cleanup); }
             CancelAndObserveOutputs(outputTask, errorTask, drainCancellation);
             try
             {
-                if (linuxBoundary.Isolated) await TerminateAndReapLinuxBoundaryAsync(linuxBoundary);
+                if (linuxBoundary.Isolated) await TerminateAndReapLinuxBoundaryAsync(linuxBoundary, originalBudget);
             }
             catch (Exception cleanupFailure) { throw CreateCleanupFailure(primaryFailure, cleanupFailure); }
             throw;
@@ -153,11 +168,38 @@ internal static class ProcessTree
         if (useStrictLinuxBoundary)
         {
             var strictOutput = await CompleteStrictSuccessAsync(process, linuxBoundary, outputTask, errorTask,
-                drainCancellation);
+                drainCancellation, originalBudget);
+            strictLaunch!.MarkSettled();
             return new(strictExitCode ?? -1, timedOut, strictOutput.Output, strictOutput.Error, watch.Elapsed);
         }
-        var (output, error) = await AwaitOutputsAsync(outputTask, errorTask, drainCancellation);
+        var (output, error) = await AwaitOutputsAsync(outputTask, errorTask, drainCancellation, originalBudget);
         return new(process.HasExited ? process.ExitCode : -1, timedOut, output, error, watch.Elapsed);
+
+        void CheckWork() { cancellationToken.ThrowIfCancellationRequested(); originalBudget?.CheckWork(); }
+        async Task WaitForRootCleanup()
+        {
+            originalBudget?.CheckDisposition();
+            var exit = process.WaitForExitAsync(CancellationToken.None);
+            if (originalBudget is null) await exit;
+            else await exit.WaitAsync(originalBudget.RemainingDisposition);
+            originalBudget?.CheckDisposition();
+        }
+        async Task StopRootForCleanup()
+        {
+            originalBudget?.CheckDisposition();
+            linked.Cancel(); // The original completion observer must also become terminal.
+            KillLinuxBoundaryForFailure(linuxBoundary, originalBudget);
+            originalBudget?.CheckDisposition();
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+            if (originalBudget is null) { try { await WaitForRootCleanup(); } catch { } }
+            else await WaitForRootCleanup();
+            if (completionTask is not null)
+            {
+                try { await completionTask.WaitAsync(originalBudget?.RemainingDisposition ?? OutputDrainTimeout); }
+                catch (OperationCanceledException) { } // Cancellation is an observed terminal observer state.
+                originalBudget?.CheckDisposition();
+            }
+        }
     }
 
     private static async Task<int> WaitForStrictCompletionAsync(string statusPath, Task processTask,
@@ -187,35 +229,43 @@ internal static class ProcessTree
         }
     }
 
-    private static void KillLinuxBoundaryForFailure(LinuxProcessBoundary boundary)
+    private static void KillLinuxBoundaryForFailure(LinuxProcessBoundary boundary, ResolvedGraphBudget? originalBudget = null)
     {
+        originalBudget?.CheckDisposition();
         if (boundary.Isolated)
         {
             CaptureLinuxOwnedProcesses(boundary);
-            TryKillLinuxProcessGroups(boundary);
-            TryKillLinuxProcesses(boundary.Owned);
+            TryKillLinuxProcessGroups(boundary, originalBudget);
+            TryKillLinuxProcesses(boundary.Owned, originalBudget);
             return;
         }
         if (boundary.Launched is not { } launched || !IsSameLinuxProcess(launched)) return;
-        TryKillLinuxProcesses(CaptureLinuxDescendants(launched.Pid));
+        TryKillLinuxProcesses(CaptureLinuxDescendants(launched.Pid), originalBudget);
     }
 
     private static async Task<(string Output, string Error)> CompleteStrictSuccessAsync(Process process,
         LinuxProcessBoundary boundary, Task<string> output, Task<string> error,
-        CancellationTokenSource drainCancellation)
+        CancellationTokenSource drainCancellation, ResolvedGraphBudget? originalBudget = null)
     {
         var failures = new List<Exception>();
-        try { await TerminateAndReapLinuxBoundaryAsync(boundary); }
+        try { await TerminateAndReapLinuxBoundaryAsync(boundary, originalBudget); }
         catch (Exception ex) { failures.Add(ex); }
-        try { await process.WaitForExitAsync(CancellationToken.None); }
+        try
+        {
+            originalBudget?.CheckDisposition();
+            var exit = process.WaitForExitAsync(CancellationToken.None);
+            if (originalBudget is null) await exit;
+            else await exit.WaitAsync(originalBudget.RemainingDisposition);
+            originalBudget?.CheckDisposition();
+        }
         catch (Exception ex) { failures.Add(ex); }
         (string Output, string Error) drained = default;
-        try { drained = await AwaitOutputsAsync(output, error, drainCancellation); }
+        try { drained = await AwaitOutputsAsync(output, error, drainCancellation, originalBudget); }
         catch (Exception ex) { failures.Add(ex); }
         if (failures.Count == 0) return drained;
 
         CancelAndObserveOutputs(output, error, drainCancellation);
-        try { await TerminateAndReapLinuxBoundaryAsync(boundary); }
+        try { await TerminateAndReapLinuxBoundaryAsync(boundary, originalBudget); }
         catch (Exception ex) { failures.Add(ex); }
         var cleanupFailure = failures.Count == 1
             ? failures[0]
@@ -246,8 +296,11 @@ internal static class ProcessTree
         throw CreateCleanupFailure(primaryFailure, cleanupFailure);
     }
 
-    private static string ResolveLinuxSetSid()
+    private static string ResolveLinuxSetSid() => ResolveLinuxSetSidForOriginal(null, CancellationToken.None);
+
+    private static string ResolveLinuxSetSidForOriginal(ResolvedGraphBudget? originalBudget, CancellationToken token)
     {
+        token.ThrowIfCancellationRequested(); originalBudget?.CheckWork();
         var executable = FindLinuxSetSid();
         if (executable is null)
             throw new InvalidOperationException("Linux process cleanup requires util-linux setsid with --wait support.");
@@ -256,8 +309,8 @@ internal static class ProcessTree
         bool waitWorks;
         try
         {
-            help = ReadSetSidHelp(executable);
-            waitWorks = SetSidSupportsWait(help) && ProbeSetSidWait(executable);
+            help = ReadSetSidHelp(executable, originalBudget, token);
+            waitWorks = SetSidSupportsWait(help) && ProbeSetSidWait(executable, originalBudget, token);
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or
                                    InvalidOperationException or UnauthorizedAccessException)
@@ -304,43 +357,62 @@ internal static class ProcessTree
     private static string BoundDiagnostic(string value, int maximum) =>
         EvaluationTextBounds.Prefix(value, maximum);
 
-    private static string ReadSetSidHelp(string executable)
+    private static string ReadSetSidHelp(string executable, ResolvedGraphBudget? originalBudget, CancellationToken token)
     {
-        var result = RunSetSidProbe(executable, ["--help"]);
+        var result = RunSetSidProbe(executable, ["--help"], originalBudget, token);
         if (result.ExitCode != 0)
             throw new InvalidOperationException(
                 $"Could not inspect {executable} for --wait support (exit {result.ExitCode}).");
         return result.Output + "\n" + result.Error;
     }
 
-    private static bool ProbeSetSidWait(string executable)
+    private static bool ProbeSetSidWait(string executable, ResolvedGraphBudget? originalBudget, CancellationToken token)
     {
-        var result = RunSetSidProbe(executable, ["--wait", "/bin/sh", "-c", "exit 23"]);
+        var result = RunSetSidProbe(executable, ["--wait", "/bin/sh", "-c", "exit 23"], originalBudget, token);
         return result.ExitCode == 23;
     }
 
     private static (int ExitCode, string Output, string Error) RunSetSidProbe(
-        string executable, IReadOnlyList<string> arguments)
+        string executable, IReadOnlyList<string> arguments, ResolvedGraphBudget? originalBudget, CancellationToken token)
     {
+        token.ThrowIfCancellationRequested(); originalBudget?.CheckWork();
         var info = new ProcessStartInfo(executable)
         {
             RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
             CreateNoWindow = true
         };
         foreach (var argument in arguments) info.ArgumentList.Add(argument);
+        token.ThrowIfCancellationRequested(); originalBudget?.CheckWork();
+        var work = TimeSpan.FromSeconds(2);
+        if (originalBudget is not null && originalBudget.RemainingWork < work) work = originalBudget.RemainingWork;
+        if (work <= TimeSpan.Zero) throw new TimeoutException("Actual graph original work endpoint expired before probe birth.");
         using var probe = Process.Start(info) ??
             throw new InvalidOperationException($"Could not inspect {executable}.");
         var output = ReadBoundedAsync(probe.StandardOutput.BaseStream, 64 * 1024, CancellationToken.None);
         var error = ReadBoundedAsync(probe.StandardError.BaseStream, 64 * 1024, CancellationToken.None);
         try
         {
-            Task.WhenAll(probe.WaitForExitAsync(), output, error).WaitAsync(TimeSpan.FromSeconds(2))
+            token.ThrowIfCancellationRequested(); originalBudget?.CheckWork();
+            Task.WhenAll(probe.WaitForExitAsync(), output, error).WaitAsync(work, token)
                 .GetAwaiter().GetResult();
+            token.ThrowIfCancellationRequested(); originalBudget?.CheckWork();
         }
-        catch (TimeoutException ex)
+        catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
         {
-            try { probe.Kill(entireProcessTree: true); } catch { }
-            try { probe.WaitForExit(2000); } catch { }
+            originalBudget?.BeginFailureCleanup();
+            try
+            {
+                originalBudget?.CheckDisposition();
+                try { probe.Kill(entireProcessTree: true); } catch { }
+                var exit = probe.WaitForExitAsync(CancellationToken.None);
+                var cleanup = TimeSpan.FromSeconds(2);
+                if (originalBudget is not null && originalBudget.RemainingDisposition < cleanup)
+                    cleanup = originalBudget.RemainingDisposition;
+                Task.WhenAll(exit, output, error).WaitAsync(cleanup).GetAwaiter().GetResult();
+                originalBudget?.CheckDisposition();
+            }
+            catch (Exception cleanup) { throw CreateCleanupFailure(ex, cleanup); }
+            if (ex is OperationCanceledException) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex).Throw();
             throw new InvalidOperationException(
                 $"Timed out inspecting {executable} for --wait support.", ex);
         }
@@ -348,11 +420,16 @@ internal static class ProcessTree
     }
 
     private static async Task<(string Output, string Error)> AwaitOutputsAsync(Task<string> output,
-        Task<string> error, CancellationTokenSource drainCancellation)
+        Task<string> error, CancellationTokenSource drainCancellation, ResolvedGraphBudget? originalBudget = null)
     {
         try
         {
-            await Task.WhenAll(output, error).WaitAsync(OutputDrainTimeout);
+            originalBudget?.CheckDisposition();
+            var remaining = OutputDrainTimeout;
+            if (originalBudget is not null && originalBudget.RemainingDisposition < remaining)
+                remaining = originalBudget.RemainingDisposition;
+            await Task.WhenAll(output, error).WaitAsync(remaining);
+            originalBudget?.CheckDisposition();
             return (await output, await error);
         }
         catch (TimeoutException ex)
@@ -461,10 +538,11 @@ internal static class ProcessTree
         return false;
     }
 
-    private static void TryKillLinuxProcesses(IEnumerable<LinuxProcessIdentity> processes)
+    private static void TryKillLinuxProcesses(IEnumerable<LinuxProcessIdentity> processes, ResolvedGraphBudget? originalBudget = null)
     {
         foreach (var identity in processes)
         {
+            originalBudget?.CheckDisposition();
             if (!IsSameLinuxProcess(identity)) continue;
             try
             {
@@ -478,7 +556,7 @@ internal static class ProcessTree
         }
     }
 
-    private static async Task TerminateAndReapLinuxBoundaryAsync(LinuxProcessBoundary boundary)
+    private static async Task TerminateAndReapLinuxBoundaryAsync(LinuxProcessBoundary boundary, ResolvedGraphBudget? originalBudget = null)
     {
         if (!OperatingSystem.IsLinux() || boundary.Launched is null) return;
         var watch = Stopwatch.StartNew();
@@ -486,6 +564,7 @@ internal static class ProcessTree
         var nextGroupScan = TimeSpan.Zero;
         while (true)
         {
+            originalBudget?.CheckDisposition();
             var includeGroupScan = watch.Elapsed >= nextGroupScan;
             CaptureLinuxOwnedProcesses(boundary, includeGroupScan);
             if (includeGroupScan)
@@ -497,12 +576,15 @@ internal static class ProcessTree
             var remaining = boundary.Owned.Where(identity => identity.Pid != Environment.ProcessId)
                 .Where(IsSameLinuxProcess).ToArray();
             if (remaining.Length == 0) return;
-            TryKillLinuxProcessGroups(boundary);
-            TryKillLinuxProcesses(remaining);
+            TryKillLinuxProcessGroups(boundary, originalBudget);
+            TryKillLinuxProcesses(remaining, originalBudget);
             if (watch.Elapsed >= LinuxDescendantReapingTimeout)
                 throw new IOException("Timed out waiting for the owned Linux process boundary to become empty: " +
                     string.Join(", ", remaining.Select(item => item.Pid)));
-            await Task.Delay(LinuxObservationInitialDelay, CancellationToken.None);
+            var delay = LinuxObservationInitialDelay;
+            if (originalBudget is not null && originalBudget.RemainingDisposition < delay)
+                delay = originalBudget.RemainingDisposition;
+            await Task.Delay(delay, CancellationToken.None);
         }
     }
 
@@ -534,12 +616,13 @@ internal static class ProcessTree
         return true;
     }
 
-    private static void TryKillLinuxProcessGroups(LinuxProcessBoundary boundary)
+    private static void TryKillLinuxProcessGroups(LinuxProcessBoundary boundary, ResolvedGraphBudget? originalBudget = null)
     {
         if (!OperatingSystem.IsLinux() || !boundary.Isolated) return;
         var groups = new HashSet<int>();
         foreach (var expected in boundary.Owned)
         {
+            originalBudget?.CheckDisposition();
             if (!TryReadLinuxIdentity(expected.Pid, out var current) || current.IsZombie ||
                 !HasContinuousLinuxIdentity(expected, current)) continue;
             if (current.ProcessGroupId == boundary.ProcessGroupId)
@@ -548,11 +631,14 @@ internal static class ProcessTree
                 groups.Add(current.Pid);
         }
         foreach (var group in groups)
+        {
+            originalBudget?.CheckDisposition();
             try { _ = Kill(-group, 9); }
             catch (DllNotFoundException) { }
             catch (EntryPointNotFoundException) { }
             catch (BadImageFormatException) { }
             catch (MarshalDirectiveException) { }
+        }
     }
 
     [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
@@ -577,6 +663,9 @@ internal static class ProcessTree
 
         private string Root { get; }
         public string StatusPath { get; }
+        private bool retainedUnsettled;
+        public void RetainUnsettled() => retainedUnsettled = true;
+        public void MarkSettled() => retainedUnsettled = false;
 
         public static LinuxStrictLaunch Create()
         {
@@ -586,6 +675,7 @@ internal static class ProcessTree
 
         public void Dispose()
         {
+            if (retainedUnsettled) return;
             try { Directory.Delete(Root, true); }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
