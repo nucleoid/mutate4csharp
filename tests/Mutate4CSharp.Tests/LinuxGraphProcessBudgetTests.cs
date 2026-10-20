@@ -40,6 +40,28 @@ public sealed class LinuxGraphProcessBudgetTests : IDisposable
         Assert.Empty(Directory.EnumerateFileSystemEntries(root));
     }
 
+    [Fact(Timeout = 10_000)]
+    public async Task Expired_whole_retains_actual_exited_process_handle_and_observer_without_late_close_or_retry()
+    {
+        Assert.SkipWhen(!OperatingSystem.IsLinux(), "Actual Linux retained root-handle control; no containment claim.");
+        var budget = new ResolvedGraphBudget(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+        var process = new Process { StartInfo = new ProcessStartInfo("/bin/sleep") { ArgumentList = { "0.1" }, UseShellExecute = false } };
+        var owner = new ProcessTree.LinuxOriginalProcessFrame(process, budget);
+        budget.CheckWork(); Assert.True(process.Start());
+        var actualHandle = process.SafeHandle;
+        var exit = process.WaitForExitAsync(TestContext.Current.CancellationToken); owner.Track(exit);
+        await exit; Assert.True(process.HasExited);
+        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); owner.Track(pending.Task);
+        await Task.Delay(TimeSpan.FromSeconds(1.05), TestContext.Current.CancellationToken);
+        Assert.Throws<SnapshotCleanupException>(owner.CloseSettled);
+        owner.Dispose(); // Retains the SAME process, actual observers and original; never calls Dispose on Process.
+        Assert.False(actualHandle.IsClosed); Assert.Same(actualHandle, process.SafeHandle);
+        Assert.Throws<EvaluationContractException>(owner.CloseSettled);
+        pending.SetResult(); // Later completion does not renew first-close authority.
+        Assert.Throws<EvaluationContractException>(owner.CloseSettled);
+        Assert.False(actualHandle.IsClosed);
+    }
+
     [Fact(Timeout = 30_000)]
     public async Task Actual_success_then_original_work_expiry_requires_real_descendant_exit_inside_same_whole()
     {

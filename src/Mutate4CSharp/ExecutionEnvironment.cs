@@ -71,7 +71,11 @@ internal static class ProcessTree
                     info.Environment.Remove(inherited);
                 if (item.Value is not null) info.Environment[item.Key] = item.Value;
             }
-        using var process = new Process { StartInfo = info };
+        using var legacyProcess = originalBudget is null ? new Process { StartInfo = info } : null;
+        using var originalProcess = originalBudget is null ? null : new LinuxOriginalProcessFrame(
+            new Process { StartInfo = info }, originalBudget,
+            () => strictLaunch?.RetainUnsettled(), () => strictLaunch?.MarkSettled());
+        var process = legacyProcess ?? originalProcess!.Process;
         var watch = Stopwatch.StartNew();
         CheckWork();
         var workTimeout = originalBudget is null || timeout < originalBudget.RemainingWork
@@ -84,11 +88,16 @@ internal static class ProcessTree
             ? launched
             : (LinuxProcessIdentity?)null;
         var linuxBoundary = new LinuxProcessBoundary(linuxIdentity, useStrictLinuxBoundary);
-        using var drainCancellation = new CancellationTokenSource();
+        if (originalProcess is not null) originalProcess.Boundary = linuxBoundary;
+        using var legacyDrain = originalBudget is null ? new CancellationTokenSource() : null;
+        var drainCancellation = legacyDrain ?? originalProcess!.Own(new CancellationTokenSource());
         var outputTask = ReadBoundedAsync(process.StandardOutput.BaseStream, maxOutputBytes, drainCancellation.Token);
         var errorTask = ReadBoundedAsync(process.StandardError.BaseStream, maxOutputBytes, drainCancellation.Token);
-        using var timeoutSource = new CancellationTokenSource(workTimeout);
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
+        originalProcess?.Track(outputTask); originalProcess?.Track(errorTask);
+        using var legacyTimeout = originalBudget is null ? new CancellationTokenSource(workTimeout) : null;
+        var timeoutSource = legacyTimeout ?? originalProcess!.Own(new CancellationTokenSource(workTimeout));
+        using var legacyLinked = originalBudget is null ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token) : null;
+        var linked = legacyLinked ?? originalProcess!.Own(CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token));
         var timedOut = false;
         int? strictExitCode = null;
         Task? completionTask = null;
@@ -96,10 +105,12 @@ internal static class ProcessTree
         {
             CheckWork();
             var processTask = process.WaitForExitAsync(linked.Token);
+            originalProcess?.Track(processTask);
             Task<int>? strictCompletionTask = strictLaunch is null
                 ? null
                 : WaitForStrictCompletionAsync(strictLaunch.StatusPath, processTask, linked.Token);
             completionTask = strictCompletionTask ?? processTask;
+            if (strictCompletionTask is not null) originalProcess?.Track(strictCompletionTask);
             var pending = new List<Task> { completionTask, outputTask, errorTask };
             var observationDelay = LinuxObservationInitialDelay;
             var groupScanDelay = LinuxGroupScanInitialDelay;
@@ -150,7 +161,12 @@ internal static class ProcessTree
                 () => linuxBoundary.Isolated
                     ? TerminateAndReapLinuxBoundaryAsync(linuxBoundary, originalBudget)
                     : Task.CompletedTask);
-            if (!timedOut) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(interruption).Throw();
+            if (!timedOut)
+            {
+                try { originalProcess?.CloseSettled(); }
+                catch (Exception cleanup) { throw CreateCleanupFailure(primaryFailure, cleanup); }
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(interruption).Throw();
+            }
         }
         catch (Exception primaryFailure)
         {
@@ -169,17 +185,21 @@ internal static class ProcessTree
         {
             var strictOutput = await CompleteStrictSuccessAsync(process, linuxBoundary, outputTask, errorTask,
                 drainCancellation, originalBudget);
+            originalProcess?.CloseSettled();
             strictLaunch!.MarkSettled();
             return new(strictExitCode ?? -1, timedOut, strictOutput.Output, strictOutput.Error, watch.Elapsed);
         }
         var (output, error) = await AwaitOutputsAsync(outputTask, errorTask, drainCancellation, originalBudget);
-        return new(process.HasExited ? process.ExitCode : -1, timedOut, output, error, watch.Elapsed);
+        var result = new ProcessTreeResult(process.HasExited ? process.ExitCode : -1, timedOut, output, error, watch.Elapsed);
+        originalProcess?.CloseSettled();
+        return result;
 
         void CheckWork() { cancellationToken.ThrowIfCancellationRequested(); originalBudget?.CheckWork(); }
         async Task WaitForRootCleanup()
         {
             originalBudget?.CheckDisposition();
             var exit = process.WaitForExitAsync(CancellationToken.None);
+            originalProcess?.Track(exit);
             if (originalBudget is null) await exit;
             else await exit.WaitAsync(originalBudget.RemainingDisposition);
             originalBudget?.CheckDisposition();
@@ -386,14 +406,19 @@ internal static class ProcessTree
         var work = TimeSpan.FromSeconds(2);
         if (originalBudget is not null && originalBudget.RemainingWork < work) work = originalBudget.RemainingWork;
         if (work <= TimeSpan.Zero) throw new TimeoutException("Actual graph original work endpoint expired before probe birth.");
-        using var probe = Process.Start(info) ??
-            throw new InvalidOperationException($"Could not inspect {executable}.");
+        using var legacyProbe = originalBudget is null ? new Process { StartInfo = info } : null;
+        using var originalProbe = originalBudget is null ? null : new LinuxOriginalProcessFrame(new Process { StartInfo = info }, originalBudget);
+        var probe = legacyProbe ?? originalProbe!.Process;
+        token.ThrowIfCancellationRequested(); originalBudget?.CheckWork();
+        if (!probe.Start()) throw new InvalidOperationException($"Could not inspect {executable}.");
         var output = ReadBoundedAsync(probe.StandardOutput.BaseStream, 64 * 1024, CancellationToken.None);
         var error = ReadBoundedAsync(probe.StandardError.BaseStream, 64 * 1024, CancellationToken.None);
+        originalProbe?.Track(output); originalProbe?.Track(error);
         try
         {
             token.ThrowIfCancellationRequested(); originalBudget?.CheckWork();
-            Task.WhenAll(probe.WaitForExitAsync(), output, error).WaitAsync(work, token)
+            var exit = probe.WaitForExitAsync(); originalProbe?.Track(exit);
+            Task.WhenAll(exit, output, error).WaitAsync(work, token)
                 .GetAwaiter().GetResult();
             token.ThrowIfCancellationRequested(); originalBudget?.CheckWork();
         }
@@ -405,18 +430,22 @@ internal static class ProcessTree
                 originalBudget?.CheckDisposition();
                 try { probe.Kill(entireProcessTree: true); } catch { }
                 var exit = probe.WaitForExitAsync(CancellationToken.None);
+                originalProbe?.Track(exit);
                 var cleanup = TimeSpan.FromSeconds(2);
                 if (originalBudget is not null && originalBudget.RemainingDisposition < cleanup)
                     cleanup = originalBudget.RemainingDisposition;
                 Task.WhenAll(exit, output, error).WaitAsync(cleanup).GetAwaiter().GetResult();
                 originalBudget?.CheckDisposition();
+                originalProbe?.CloseSettled();
             }
             catch (Exception cleanup) { throw CreateCleanupFailure(ex, cleanup); }
             if (ex is OperationCanceledException) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex).Throw();
             throw new InvalidOperationException(
                 $"Timed out inspecting {executable} for --wait support.", ex);
         }
-        return (probe.ExitCode, output.GetAwaiter().GetResult(), error.GetAwaiter().GetResult());
+        var result = (probe.ExitCode, output.GetAwaiter().GetResult(), error.GetAwaiter().GetResult());
+        originalProbe?.CloseSettled();
+        return result;
     }
 
     private static async Task<(string Output, string Error)> AwaitOutputsAsync(Task<string> output,
@@ -646,6 +675,60 @@ internal static class ProcessTree
 
     private readonly record struct LinuxProcessIdentity(int Pid, int ParentPid, int ProcessGroupId,
         int SessionId, ulong StartTime, bool IsZombie);
+
+    // Original-budget calls never let a language-level using silently close an
+    // actual process after failed/expired settlement. This retains that SAME
+    // Process, observers, controls and status owner; it grants no Linux containment.
+    internal sealed class LinuxOriginalProcessFrame : IDisposable
+    {
+        private static readonly ConcurrentBag<LinuxOriginalProcessFrame> Unsettled = [];
+        private readonly ResolvedGraphBudget budget;
+        private readonly List<IDisposable> resources = [];
+        private readonly List<Task> observers = [];
+        private readonly Action? settled;
+        private bool closeRequested, closeReturned;
+        private Exception? closeFailure;
+        internal Process Process { get; }
+        internal object? Boundary { get; set; } // Retain observed identities only; never adopt or reconstruct them.
+        internal LinuxOriginalProcessFrame(Process process, ResolvedGraphBudget original,
+            Action? retainStatus = null, Action? settledStatus = null)
+        {
+            original.Resources.AdmitFrame();
+            Process = process; budget = original; resources.Add(process);
+            settled = settledStatus; retainStatus?.Invoke();
+        }
+        internal T Own<T>(T resource) where T : IDisposable { resources.Add(resource); return resource; }
+        internal void Track(Task observer) => observers.Add(observer);
+        internal void CloseSettled()
+        {
+            if (closeRequested) throw new EvaluationContractException("Original Linux process first-close cannot retry.");
+            closeRequested = true;
+            try
+            {
+                budget.CheckDisposition();
+                if (observers.Any(task => !task.IsCompleted) || !Process.HasExited)
+                    throw new IOException("Actual Linux process/observers remain unsettled; retain original handles.");
+                foreach (var resource in resources.AsEnumerable().Reverse())
+                {
+                    budget.CheckDisposition();
+                    resource.Dispose();
+                    budget.CheckDisposition();
+                }
+                closeReturned = true;
+                budget.CheckDisposition(); settled?.Invoke();
+            }
+            catch (Exception failure)
+            {
+                closeFailure = failure;
+                throw new SnapshotCleanupException(failure);
+            }
+        }
+        public void Dispose()
+        {
+            // No late close, retry or Task replacement after unknown disposition.
+            if (!closeReturned || closeFailure is not null) Unsettled.Add(this);
+        }
+    }
 
     private sealed class LinuxStrictLaunch : IDisposable
     {
