@@ -564,7 +564,7 @@ internal sealed record ResolvedProjectCapture(ResolvedProjectSelection Selection
     IReadOnlyDictionary<string, IReadOnlyList<ResolvedGraphItem>> Items,
     IReadOnlyList<ResolvedProjectEdge> Edges, string RawSha256, ResolvedGraphObservedTask? FirstCsc = null)
 {
-    internal static readonly string[] PropertyNames = ["MSBuildProjectFullPath", "MSBuildToolsPath", "NETCoreSdkVersion",
+    internal static readonly string[] PropertyNames = ["MSBuildProjectFullPath", "MSBuildToolsPath", "NETCoreSdkVersion", "UserProfile", "NuGetPackageRoot",
         "TargetFramework", "Configuration", "LangVersion", "Nullable", "DefineConstants", "MSBuildAllProjects",
         "ProjectAssetsFile", "MSBuildProjectExtensionsPath", "CscToolPath", "CscToolExe", "CscEnvironment", "UseSharedCompilation",
         "ProvideCommandLineArgs", "SkipCompilerExecution", "CompilerGeneratedFilesOutputPath", "CustomBeforeMicrosoftCSharpTargets",

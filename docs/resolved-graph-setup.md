@@ -228,7 +228,7 @@ and quantitative full graph fit remain mandatory. Larger graphs can exhaust
 these finite limits and must return INCOMPLETE; none of the bounds establishes
 that the complete Forge graph fits before its actual census and genuine run.
 
-Canonical semantic context version5 gives one explicit equivalence to the first
+Canonical semantic context version6 gives one explicit equivalence to the first
 MSBuildAllProjects slot. MSBuild can select either generated NuGet import by its
 last-modified timestamp, so the exact selected project's queried source-owned
 MSBuildProjectExtensionsPath and same-directory ProjectAssetsFile locator join
@@ -243,8 +243,20 @@ certifies restore: a custom target choosing that same exact pair has the same
 equivalence. Every suffix slot/order, global override, other scalar, actual Csc
 option and compiler/source/reference input still binds. Aliases, unknown imports
 and foreign directories receive no first-slot normalization; incomplete pairs
-refuse. Version5 changes only the semantic digest domain/record, not a transport
+refuse. Version6 changes only the semantic digest domain/record, not a transport
 schema, resource grant, caller hook policy or native authority.
 Every generated-pair root replacement also charges its actual segment/joined
 string buffers on that same original before allocation. Repeated root tokens can
 exhaust the existing semantic credit;64KiB file bounds do not renew that credit.
+
+Version6 also queries evaluated `UserProfile` and `NuGetPackageRoot` in the same
+selected-project compiler query; both values and all globals remain significant.
+Only inside those two admitted generated imports, the literal `$(UserProfile)`
+plus the exact native-path suffix of the privately owned package root can receive
+the existing package role. The evaluated profile must be canonical and an exact
+Ordinal ancestor of that root; the evaluated package root must join the exact
+owned root, with at most its canonical trailing separator. Either property as a
+global override disables this additional rule. Missing, mismatched and aliased
+bindings leave the complete text significant. There is no environment fallback,
+general macro expansion or source-root alias rule. Existing token boundaries,
+complete file read/recheck and per-replacement allocation admission still apply.

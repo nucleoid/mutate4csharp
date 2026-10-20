@@ -69,7 +69,7 @@ internal sealed class ResolvedGraphCanonicalContext
         // The complete bounded record can exceed the identity framing API's
         // 16KiB scalar limit. Hash EVERY canonical byte, then frame its fixed
         // digest under a new domain; never truncate or expand that global limit.
-        return MutationIdentity.ComputeDigest("resolved-canonical-context-v5",
+        return MutationIdentity.ComputeDigest("resolved-canonical-context-v6",
             [("complete-semantic-record-sha256", Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant())]);
     }
 
@@ -78,12 +78,13 @@ internal sealed class ResolvedGraphCanonicalContext
         var first = actual.FirstCsc ?? throw new EvaluationContractException("Original Csc context required.");
         var boundary = ReadObservedBoundary(actual, retained, inputs);
         var incremental = ReadIncrementalHint(actual, inputs);
+        var packageAlias = incremental.Files.Length == 0 ? null : ReadGeneratedPackageAlias(actual, inputs);
         // Do not include process/event numeric IDs or complete raw-query SHA in
         // semantic identity: they are physical joins, retained on the original.
         var semantic = new {
             actual.Selection, Properties = incremental.Properties,
             IncrementalHintImports = incremental.Files.Select(file => new {
-                Path = Value(file.Path), SemanticBytes = GeneratedImportIdentity(file, inputs) }).ToArray(),
+                Path = Value(file.Path), SemanticBytes = GeneratedImportIdentity(file, inputs, packageAlias) }).ToArray(),
             Items = actual.Items.ToDictionary(p => p.Key, p => p.Value.Select(i => new { i.Identity,
                 Metadata = SemanticMetadata(i.Metadata, boundary) }).ToArray(), StringComparer.Ordinal),
             Edges = actual.Edges.Select(e => new { e.Selection, ActualMetadata = SemanticMetadata(e.ActualMetadata, boundary) }).ToArray(),
@@ -144,7 +145,57 @@ internal sealed class ResolvedGraphCanonicalContext
         return (properties, files);
     }
 
-    private string GeneratedImportIdentity(ResolvedGraphFile file, ResolvedGraphInputs inputs)
+    private string? ReadGeneratedPackageAlias(ResolvedProjectCapture actual, ResolvedGraphInputs inputs)
+    {
+        // These are evaluated values from the SAME selected-project query, not
+        // process environment or a macro evaluator. Keep both values and every
+        // global in the semantic record even when this exact alias is eligible.
+        if (actual.FirstCsc!.GlobalProperties.Keys.Any(key =>
+                key.Equals("UserProfile", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals("NuGetPackageRoot", StringComparison.OrdinalIgnoreCase)) ||
+            !actual.Properties.TryGetValue("UserProfile", out var profile) || profile.Length is <= 0 or > 4096 ||
+            !actual.Properties.TryGetValue("NuGetPackageRoot", out var packages) || packages.Length is <= 0 or > 4096)
+            return null;
+        // Charge canonical path and trim buffers BEFORE Path.GetFullPath can
+        // allocate them. Extent rejection above does not allocate path strings.
+        inputs.ReserveAllocation(checked(4L * (profile.Length + packages.Length)));
+        if (!ExactPath(profile) || !ExactPath(packages)) return null;
+        profile = Path.TrimEndingDirectorySeparator(profile);
+        packages = Path.TrimEndingDirectorySeparator(packages);
+        if (!packages.Equals(_roots[1].Root, StringComparison.Ordinal) ||
+            packages.Length <= profile.Length || !packages.StartsWith(profile, StringComparison.Ordinal) ||
+            packages[profile.Length] != Path.DirectorySeparatorChar)
+            return null;
+        const string macro = "$(UserProfile)";
+        inputs.ReserveAllocation(checked(4L * (macro.Length + packages.Length - profile.Length)));
+        return macro + packages[profile.Length..];
+    }
+
+    private static string ReplaceGeneratedPackageAlias(string text, string alias, ResolvedGraphInputs inputs)
+    {
+        const string replacement = "$owned-packages";
+        var start = 0;
+        while (start < text.Length)
+        {
+            // Only this literal macro spelling and exact queried-root suffix.
+            // Unknown macros, case aliases and non-token prefixes remain bytes.
+            var index = text.IndexOf(alias, start, StringComparison.Ordinal);
+            if (index < 0) break;
+            var end = index + alias.Length;
+            var before = index == 0 || text[index - 1] is '=' or ':' or ';' or ',' or '"' or ' ' or '>' or '\'';
+            var after = end == text.Length || text[end] is '/' or '\\' or ';' or ',' or '"' or ' ' or '=' or '<' or '\'';
+            if (before && after)
+            {
+                inputs.ReserveAllocation(checked(4L * (text.Length - alias.Length + replacement.Length)));
+                text = text[..index] + replacement + text[end..];
+                start = index + replacement.Length;
+            }
+            else start = end;
+        }
+        return text;
+    }
+
+    private string GeneratedImportIdentity(ResolvedGraphFile file, ResolvedGraphInputs inputs, string? packageAlias)
     {
         // Preserve raw bytes/SHA for the SAME bounded input owner's analysis
         // lifetime; this does not add an external artifact/export census. Only exact
@@ -156,8 +207,9 @@ internal sealed class ResolvedGraphCanonicalContext
         // attribute boundaries. This only extends root-token boundaries for
         // these two complete files; all other canonical strings keep Value's
         // prior rules and every XML byte outside owned-root tokens still binds.
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-            Value(text, null, generatedImport: true, replacementOwner: inputs)))).ToLowerInvariant();
+        text = Value(text, null, generatedImport: true, replacementOwner: inputs);
+        if (packageAlias is not null) text = ReplaceGeneratedPackageAlias(text, packageAlias, inputs);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
     }
 
     private static bool ExactPath(string path) => path.Length is > 0 and <= 4096 &&

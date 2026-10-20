@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Security.Cryptography;
 
 namespace Mutate4CSharp.Tests;
 
@@ -34,6 +35,116 @@ public sealed class ResolvedGraphIncrementalHintTests
         File.AppendAllText(second.Targets, "custom-last-byte=B", new UTF8Encoding(false));
         Assert.NotEqual(changedProps, second.Identity(second.Context(second.Targets)));
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Exact_evaluated_profile_package_alias_matches_physical_owned_root_across_fresh_pairs(bool trailingSeparator)
+    {
+        using var first = new Fixture(); using var second = new Fixture();
+        Assert.Contains("UserProfile", ResolvedProjectCapture.PropertyNames);
+        Assert.Contains("NuGetPackageRoot", ResolvedProjectCapture.PropertyNames);
+        first.WritePackage(first.PackageAlias);
+        second.WritePackage(second.Packages);
+        var left = first.BoundContext(first.Props, trailingSeparator);
+        var right = second.BoundContext(second.Targets, trailingSeparator);
+        Assert.Equal(first.Identity(left), second.Identity(right));
+        using var record = JsonDocument.Parse(first.Bytes(left));
+        Assert.Equal(first.Profile, record.RootElement.GetProperty("Properties").GetProperty("UserProfile").GetString());
+        var before = first.ImportHash(left);
+        File.AppendAllText(first.Props, "<Custom>still-significant</Custom>", new UTF8Encoding(false));
+        Assert.NotEqual(before, first.ImportHash(left));
+    }
+
+    [Theory]
+    [InlineData("missing-profile")]
+    [InlineData("missing-packages")]
+    [InlineData("relative-profile")]
+    [InlineData("profile-dot-alias")]
+    [InlineData("foreign-profile")]
+    [InlineData("foreign-packages")]
+    [InlineData("package-dot-alias")]
+    [InlineData("UserProfile")]
+    [InlineData("userprofile")]
+    [InlineData("NuGetPackageRoot")]
+    [InlineData("nugetpackageroot")]
+    public void Unsupported_query_bindings_and_global_overrides_keep_complete_alias_bytes(string change)
+    {
+        using var fixture = new Fixture();
+        var text = fixture.WritePackage(fixture.PackageAlias);
+        var value = fixture.BoundContext(fixture.Props);
+        if (change.StartsWith("missing-", StringComparison.Ordinal))
+        {
+            var properties = value.Properties.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+            properties.Remove(change == "missing-profile" ? "UserProfile" : "NuGetPackageRoot");
+            value = value with { Properties = properties };
+        }
+        else if (change is "relative-profile" or "profile-dot-alias" or "foreign-profile")
+            value = Properties(value, "UserProfile", change switch {
+                "relative-profile" => "relative-profile",
+                "profile-dot-alias" => Path.Combine(fixture.Profile, "."),
+                _ => fixture.Source });
+        else if (change is "foreign-packages" or "package-dot-alias")
+            value = Properties(value, "NuGetPackageRoot", change == "foreign-packages" ? fixture.Source : Path.Combine(fixture.Packages, "."));
+        else value = value with { FirstCsc = value.FirstCsc! with {
+            GlobalProperties = new Dictionary<string, string> { [change] = "explicit-global" } } };
+        // Inspect the import digest itself: changed query/global fields cannot
+        // make this pass merely by changing the surrounding semantic record.
+        Assert.Equal(Sha(text), fixture.ImportHash(value));
+        Assert.NotEqual(fixture.ImportHash(fixture.BoundContext(fixture.Props)), fixture.ImportHash(value));
+    }
+
+    [Theory]
+    [InlineData("macro-case")]
+    [InlineData("unknown-macro")]
+    [InlineData("suffix-case")]
+    [InlineData("unowned-suffix")]
+    [InlineData("unowned-prefix")]
+    public void Other_macro_spellings_and_partial_path_tokens_are_not_expanded(string change)
+    {
+        using var fixture = new Fixture();
+        var value = fixture.BoundContext(fixture.Props);
+        fixture.WritePackage(fixture.PackageAlias);
+        var accepted = fixture.ImportHash(value);
+        var alias = change switch {
+            "macro-case" => fixture.PackageAlias.Replace("$(UserProfile)", "$(userprofile)", StringComparison.Ordinal),
+            "unknown-macro" => fixture.PackageAlias.Replace("$(UserProfile)", "$(Unknown)", StringComparison.Ordinal),
+            "suffix-case" => fixture.PackageAlias[..^"packages".Length] + "PACKAGES",
+            "unowned-suffix" => fixture.PackageAlias + "-unowned",
+            _ => "prefix" + fixture.PackageAlias };
+        var text = fixture.WritePackage(alias);
+        Assert.Equal(Sha(text), fixture.ImportHash(value));
+        Assert.NotEqual(accepted, fixture.ImportHash(value));
+    }
+
+    [Fact]
+    public void Evaluated_profile_and_global_values_remain_significant_without_alias_replacement()
+    {
+        using var fixture = new Fixture();
+        var value = fixture.BoundContext(fixture.Props);
+        Assert.NotEqual(fixture.Identity(value), fixture.Identity(Properties(value, "UserProfile", fixture.Source)));
+        var first = value with { FirstCsc = value.FirstCsc! with {
+            GlobalProperties = new Dictionary<string, string> { ["UserProfile"] = "first-global" } } };
+        var second = first with { FirstCsc = first.FirstCsc! with {
+            GlobalProperties = new Dictionary<string, string> { ["UserProfile"] = "second-global" } } };
+        Assert.NotEqual(fixture.Identity(first), fixture.Identity(second));
+    }
+
+    [Fact]
+    public void Repeated_package_aliases_charge_every_actual_replacement_on_the_same_original()
+    {
+        using var fixture = new Fixture();
+        var text = string.Concat(Enumerable.Repeat("<Root>" + fixture.PackageAlias + "</Root>\n", 300));
+        Assert.InRange(Encoding.UTF8.GetByteCount(text), 16_384, 65_536);
+        File.WriteAllText(fixture.Props, text, new UTF8Encoding(false));
+        using var inputs = new ResolvedGraphInputs(TimeSpan.FromSeconds(30), CancellationToken.None);
+        inputs.ReserveAllocation(ResolvedGraphResources.SemanticLimit - 4 * 1024 * 1024);
+        var failure = Assert.Throws<SnapshotLimitException>(() => new ResolvedGraphCanonicalContext(fixture.Source, fixture.Packages)
+            .Identity(fixture.BoundContext(fixture.Props), [], inputs));
+        Assert.Contains("semantic/buffer admission", failure.Message, StringComparison.Ordinal);
+    }
+
+    private static string Sha(string text) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
 
     [Fact]
     public void Actual_reread_source_changes_still_change_the_complete_semantic_record()
@@ -188,6 +299,8 @@ public sealed class ResolvedGraphIncrementalHintTests
         private readonly string _root = Path.Combine(Path.GetTempPath(), "mutate-incremental-hint-" + Guid.NewGuid().ToString("N"));
         internal string Source => Path.Combine(_root, "source");
         internal string Packages => Path.Combine(_root, "packages");
+        internal string Profile => Path.TrimEndingDirectorySeparator(Path.GetTempPath());
+        internal string PackageAlias => "$(UserProfile)" + Packages[Profile.Length..];
         internal string Extensions => Path.Combine(Source, "obj");
         internal string Props => Path.Combine(Extensions, "App.csproj.nuget.g.props");
         internal string Targets => Path.Combine(Extensions, "App.csproj.nuget.g.targets");
@@ -197,6 +310,20 @@ public sealed class ResolvedGraphIncrementalHintTests
             // These are complete fixture DATA, not forged native/NuGet proof.
             File.WriteAllText(Props, "<Project><OwnedSource>" + Source + "</OwnedSource><Packages>" + Packages + "</Packages></Project>\n", new UTF8Encoding(false));
             File.WriteAllText(Targets, "<Project><Custom>significant</Custom></Project>\n", new UTF8Encoding(false));
+        }
+        internal string WritePackage(string value)
+        {
+            var text = "<Project><Packages>" + value + "</Packages></Project>\n";
+            File.WriteAllText(Props, text, new UTF8Encoding(false));
+            return text;
+        }
+        internal ResolvedProjectCapture BoundContext(string hint, bool trailingSeparator = false)
+            => Properties(Properties(Context(hint), "UserProfile", Profile), "NuGetPackageRoot",
+                Packages + (trailingSeparator ? Path.DirectorySeparatorChar.ToString() : ""));
+        internal string ImportHash(ResolvedProjectCapture value)
+        {
+            using var document = JsonDocument.Parse(Bytes(value));
+            return document.RootElement.GetProperty("IncrementalHintImports")[0].GetProperty("SemanticBytes").GetString()!;
         }
         internal ResolvedProjectCapture Context(string hint)
         {
