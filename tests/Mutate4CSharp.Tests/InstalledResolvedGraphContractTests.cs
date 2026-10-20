@@ -11,7 +11,8 @@ public sealed partial class ToolPackagingIntegrationTests
     [Trait("InstalledProfile", "graph-sdk401")]
     public async Task InstalledResolvedGraphUsesPackagedHelpersAndExplicitRegeneration()
     {
-        Assert.False(OperatingSystem.IsWindows(), "This installed profile requires the existing Linux prepare route.");
+        Assert.SkipWhen(OperatingSystem.IsWindows(),
+            "Installed v2 regeneration certification uses the Linux Bash preparation profile; Windows installed-v2 acceptance remains separate.");
         var feed = Environment.GetEnvironmentVariable("MUTATE4CSHARP_INSTALLED_GRAPH_FEED");
         Assert.False(string.IsNullOrEmpty(feed), "Prepare a fresh same-source graph-sdk401 feed before this installed-profile case.");
         var host = Environment.GetEnvironmentVariable("MUTATE4CSHARP_INSTALLED_GRAPH_HOST");
