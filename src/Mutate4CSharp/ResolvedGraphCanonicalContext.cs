@@ -21,7 +21,8 @@ internal sealed class ResolvedGraphCanonicalContext
     internal string Value(string value)
         => Value(value, null);
 
-    private string Value(string value, ResolvedGraphFile? boundary, bool generatedImport = false)
+    private string Value(string value, ResolvedGraphFile? boundary, bool generatedImport = false,
+        ResolvedGraphInputs? replacementOwner = null)
     {
         if (value.Length > 65_536 || value.Contains('\0')) throw new SnapshotLimitException("Canonical graph scalar extent.");
         if (boundary is not null)
@@ -48,6 +49,11 @@ internal sealed class ResolvedGraphCanonicalContext
                 if (before && after)
                 {
                     var replacement = "$owned-" + role;
+                    // Only the new complete generated-import path supplies an
+                    // owner here. Charge BOTH substring buffers and the joined
+                    // UTF16 string before any actual segment/concat allocation;
+                    // repeated tokens do not get one flat file-sized grant.
+                    replacementOwner?.ReserveAllocation(checked(4L * (value.Length - root.Length + replacement.Length)));
                     value = value[..index] + replacement + value[end..];
                     start = index + replacement.Length;
                 }
@@ -150,7 +156,8 @@ internal sealed class ResolvedGraphCanonicalContext
         // attribute boundaries. This only extends root-token boundaries for
         // these two complete files; all other canonical strings keep Value's
         // prior rules and every XML byte outside owned-root tokens still binds.
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Value(text, null, generatedImport: true)))).ToLowerInvariant();
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            Value(text, null, generatedImport: true, replacementOwner: inputs)))).ToLowerInvariant();
     }
 
     private static bool ExactPath(string path) => path.Length is > 0 and <= 4096 &&

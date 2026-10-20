@@ -245,3 +245,6 @@ option and compiler/source/reference input still binds. Aliases, unknown imports
 and foreign directories receive no first-slot normalization; incomplete pairs
 refuse. Version5 changes only the semantic digest domain/record, not a transport
 schema, resource grant, caller hook policy or native authority.
+Every generated-pair root replacement also charges its actual segment/joined
+string buffers on that same original before allocation. Repeated root tokens can
+exhaust the existing semantic credit;64KiB file bounds do not renew that credit.

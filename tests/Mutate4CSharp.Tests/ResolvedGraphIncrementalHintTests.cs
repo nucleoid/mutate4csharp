@@ -62,6 +62,23 @@ public sealed class ResolvedGraphIncrementalHintTests
         Assert.NotEqual(first.Identity(first.Context(first.Props)), second.Identity(second.Context(second.Targets)));
     }
 
+    [Fact]
+    public void Repeated_generated_import_roots_charge_each_actual_replacement_before_allocation()
+    {
+        using var fixture = new Fixture();
+        // Consume the SAME original ledger without allocating a giant buffer.
+        // A flat8x-file reservation fits the4MiB remainder; all actual repeated
+        // replacement segment/concat buffers cannot. No resource cap is widened.
+        var text = string.Concat(Enumerable.Repeat("<Root>" + fixture.Source + "</Root>\n", 300));
+        Assert.InRange(Encoding.UTF8.GetByteCount(text), 16_384, 65_536);
+        File.WriteAllText(fixture.Props, text, new UTF8Encoding(false));
+        using var inputs = new ResolvedGraphInputs(TimeSpan.FromSeconds(30), CancellationToken.None);
+        inputs.ReserveAllocation(ResolvedGraphResources.SemanticLimit - 4 * 1024 * 1024);
+        var failure = Assert.Throws<SnapshotLimitException>(() => new ResolvedGraphCanonicalContext(fixture.Source, fixture.Packages)
+            .Identity(fixture.Context(fixture.Props), [], inputs));
+        Assert.Contains("semantic/buffer admission", failure.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("suffix-value")]
     [InlineData("suffix-order")]
