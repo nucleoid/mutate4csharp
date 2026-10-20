@@ -34,6 +34,13 @@ distinct `logger` and `worker` directories. Each helper project itself checks th
 actual selected SDK before CoreCompile. Normal restore/build barriers apply;
 never copy missing transitive dependencies by hand or adopt earlier outputs.
 
+The ordinary SDK103 tool/test build also requires that same explicit
+`-p:SourceRevisionId=<actual-commit>` for deployment-byte validation. A plain
+`dotnet test` which rebuilds without it is not this supported full-suite route:
+the deployment tests report `GRAPH_TEST_SOURCE_REVISION_REQUIRED` before their
+image-drift controls. Obtain the actual revision from the clean source checkout;
+do not use a placeholder or add an implicit Git command to MSBuild evaluation.
+
 After the owned builds, use the metadata-only script:
 
 ```text
@@ -77,7 +84,7 @@ absolute path/length/SHA256 pins. This is intentionally an installation profile:
 moving or updating the SDK/host requires a fresh selection; there is no runtime
 SDK discovery, new-SDK fallback or automatic timestamp/digest renewal.
 
-To select an already installed package against a different admitted host path,
+For standalone selection of an already installed package against a different admitted host path,
 keep that package unchanged. Under the existing resource owner, observe the
 actual installed helper directories and exact SDK401 task, then use the shipped
 script to create a **fresh external** selection:
@@ -103,11 +110,33 @@ all complete bytes and original ownership at every use. A missing deployment or
 explicit host yields GRAPH_DEPLOYMENT_UNAVAILABLE; mismatched identity/bytes or
 host selection yields GRAPH_DEPLOYMENT_STALE, both INCOMPLETE.
 
+When the default packaged manifest exists, the runtime also binds every selected
+logger/worker row to its fixed `graph/sdk401/{logger,worker}` installation role
+and the packaged length/SHA256 tuple, then rereads the actual images. An external
+selection may rebind only the host and SDK pins; copied or changed helpers are
+refused even when their source/SDK metadata stamps are correct. Source builds
+without a packaged manifest retain the explicit trusted source-CI deployment
+route above. A caller's manifest digest or helper stamp does not issue code or
+execution authority.
+
+**Forge servicing recovery:** Forge installed profiles refuse both manifest
+override environment keys by presence, including empty values. The standalone
+external-selection example is therefore unavailable under Forge. After host or
+SDK servicing changes any pinned path/bytes, retain the exact
+GRAPH_DEPLOYMENT_UNAVAILABLE/GRAPH_DEPLOYMENT_STALE failure and perform a normal
+fresh `prepare SOURCE WORKSPACE RECEIPT graph-sdk401` in new external locations.
+Install that newly validated package and rebind/requalify the actual Forge
+profile and its package/host/SDK pins through the existing approval contract.
+Re-preparation is the only supported Forge recovery path. Do not edit an old
+receipt, renew timestamps/digests, add an override, silently select a new SDK, or
+automatically rerun a consumed plan. Successful re-preparation and fresh behavior
+must be observed; documentation and a source-stamp match are not recovery proof.
+
 CI's separate Linux `installed-graph` lane uses existing `prepare ... graph-sdk401`
 and the existing installed-tool test helpers. Its one installed-v2 method must
 observe real enumeration/execution and the deliberate survivor from a weak suite
 using both packaged and freshly regenerated selection, plus a precise wrong-host
-refusal. Reports and logs are uploaded even on failure. To run that method locally,
+refusal and a foreign correctly stamped helper refusal. Reports and logs are uploaded even on failure. To run that method locally,
 set MUTATE4CSHARP_INSTALLED_GRAPH_FEED and MUTATE4CSHARP_INSTALLED_GRAPH_HOST to
 the actual prepared feed/host; optionally choose an external certification
 directory. The complete test environment needs this profile as well as the
@@ -115,6 +144,15 @@ earlier source graph deployment. Source changes alone are not a passed run.
 Relocation to a genuinely different installed host path, Windows installation,
 both platform runs and the complete Forge graph remain acceptance work until
 their actual results are retained.
+
+The installed lane keeps its existing **20-minute** job limit and both positive
+comparisons. Its 1100-second test ceiling and each 480-second check ceiling are
+upper limits, not proof that SDK setup, SDK103 build, graph preparation,
+installation, both positives and refusals fit together. Exact current-source
+hosted step durations and terminal artifact/closure results are still required
+before claiming lane fit. No timeout increase or omitted comparison is approved;
+any later per-check reduction must follow those actual measurements. A job
+cancellation does not become a passed installed profile or a replacement receipt.
 
 All native calls reuse the existing ProcessTree owner. The enclosing original
 deadline shrinks across capture and worker; no new per-worker interval, parallel

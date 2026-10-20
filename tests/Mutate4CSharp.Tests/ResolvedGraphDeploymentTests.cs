@@ -63,8 +63,37 @@ public sealed class ResolvedGraphDeploymentTests : IDisposable
             new ResolvedGraphBudget(TimeSpan.FromSeconds(30), cancellation.Token)));
     }
 
-    private static string ActualRevision() => typeof(ResolvedGraphDeployment).Assembly
-        .GetCustomAttributes<AssemblyMetadataAttribute>().Single(a => a.Key == "MutateSourceRevision").Value!;
+    [Theory]
+    [InlineData("logger-path")]
+    [InlineData("worker-path")]
+    [InlineData("bytes")]
+    [InlineData("hash")]
+    public void Replacement_selection_cannot_move_or_replace_packaged_helper_pins(string changed)
+    {
+        var folder = Path.Combine(_root, "package", "graph", "sdk401");
+        var logger = new GraphProducerImage(Path.Combine(folder, "logger", "Mutate4CSharp.GraphCapture.dll"), 10, new('a', 64));
+        var worker = new GraphProducerImage(Path.Combine(folder, "worker", "Mutate4CSharp.GraphWorker.dll"), 20, new('b', 64));
+        var packaged = new ResolvedGraphDeployment(1, new('c', 40), new("10.0.401", [logger], logger), logger, [worker], []);
+        // Metadata-only consistency controls. The installed integration below
+        // uses actual stamped helper PE bytes; these rows issue no authority.
+        ResolvedGraphDeployment.RequirePackagedHelpers(packaged, packaged, folder);
+        var selected = changed switch {
+            "logger-path" => packaged with { Logger = packaged.Logger with { LoggerClosure = [logger with { Path = Path.Combine(_root, "foreign", Path.GetFileName(logger.Path)) }] } },
+            "worker-path" => packaged with { WorkerClosure = [worker with { Path = Path.Combine(_root, "foreign", Path.GetFileName(worker.Path)) }] },
+            "bytes" => packaged with { WorkerClosure = [worker with { Bytes = worker.Bytes + 1 }] },
+            "hash" => packaged with { WorkerClosure = [worker with { Sha256 = new('d', 64) }] },
+            _ => throw new ArgumentException(changed) };
+        Assert.Throws<EvaluationContractException>(() => ResolvedGraphDeployment.RequirePackagedHelpers(selected, packaged, folder));
+    }
+
+    private static string ActualRevision()
+    {
+        var revision = typeof(ResolvedGraphDeployment).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+            .SingleOrDefault(a => a.Key == "MutateSourceRevision")?.Value;
+        Assert.True(revision is { Length: 40 } && revision.All(char.IsAsciiHexDigitLower),
+            "GRAPH_TEST_SOURCE_REVISION_REQUIRED: build the tool/tests with -p:SourceRevisionId=<actual 40 lowercase hex commit> before deployment-byte controls.");
+        return revision!;
+    }
 
     private StrictExecutionRefusalException Refusal(string code)
     {

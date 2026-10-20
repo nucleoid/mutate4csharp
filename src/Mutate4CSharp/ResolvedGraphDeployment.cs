@@ -55,8 +55,10 @@ internal sealed record ResolvedGraphDeployment(int Version, string SourceRevisio
 
     private static ResolvedGraphDeployment Load(ResolvedGraphInputs inputs, bool requireSelectedHost)
     {
+        var packagedPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "graph", "sdk401", "deployment.json"));
+        var packagedPresent = HasPackagedManifest(packagedPath, inputs);
         var path = Environment.GetEnvironmentVariable("MUTATE4CSHARP_GRAPH_CAPTURE_MANIFEST") ??
-            Path.Combine(AppContext.BaseDirectory, "graph", "sdk401", "deployment.json");
+            packagedPath;
         var digest = Environment.GetEnvironmentVariable("MUTATE4CSHARP_GRAPH_CAPTURE_MANIFEST_SHA256");
         // The fixed installed location is protected by the same image/source
         // closure checks; an explicitly selected fixture manifest also needs its
@@ -66,15 +68,14 @@ internal sealed record ResolvedGraphDeployment(int Version, string SourceRevisio
             throw new EvaluationContractException("Explicit graph deployment requires exact manifest SHA256.");
         var input = inputs.Read(Path.GetFullPath(path), "config", 1_048_576);
         if (digest is not null && input.Sha256 != digest) throw new SnapshotDivergedException("Graph deployment manifest changed.");
-        ResolvedGraphProtocol.RequireUnique(input.Bytes);
-        var result = JsonSerializer.Deserialize<ResolvedGraphDeployment>(input.Bytes,
-            new JsonSerializerOptions { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow, MaxDepth = 8 }) ??
-            throw new EvaluationContractException("Complete graph deployment required.");
-        var folder = Path.GetDirectoryName(input.Path)!;
-        result = result with {
-            Logger = result.Logger with { LoggerClosure = result.Logger.LoggerClosure.Select(i => Resolve(i, "logger")).ToArray() },
-            WorkerClosure = result.WorkerClosure.Select(i => Resolve(i, "worker")).ToArray()
-        };
+        var result = ReadManifest(input, packagedPresent && SamePath(input.Path, packagedPath));
+        ResolvedGraphFile? packagedInput = null;
+        if (packagedPresent)
+        {
+            packagedInput = SamePath(input.Path, packagedPath) ? input : inputs.Read(packagedPath, "config", 1_048_576);
+            var packaged = SamePath(input.Path, packagedPath) ? result : ReadManifest(packagedInput, requirePackageRoles: true);
+            RequirePackagedHelpers(result, packaged, Path.GetDirectoryName(packagedPath)!);
+        }
         if (requireSelectedHost)
         {
             var host = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ??
@@ -85,11 +86,32 @@ internal sealed record ResolvedGraphDeployment(int Version, string SourceRevisio
         }
         result.ReadActual(inputs);
         inputs.Recheck(input, 1_048_576);
+        if (packagedInput is not null && !ReferenceEquals(packagedInput, input)) inputs.Recheck(packagedInput, 1_048_576);
         return result;
+    }
+
+    private static ResolvedGraphDeployment ReadManifest(ResolvedGraphFile input, bool requirePackageRoles)
+    {
+        ResolvedGraphProtocol.RequireUnique(input.Bytes);
+        var result = JsonSerializer.Deserialize<ResolvedGraphDeployment>(input.Bytes,
+            new JsonSerializerOptions { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow, MaxDepth = 8 }) ??
+            throw new EvaluationContractException("Complete graph deployment required.");
+        if (result.Logger?.LoggerClosure is null || result.WorkerClosure is null)
+            throw new EvaluationContractException("Complete graph helper closures required.");
+        var folder = Path.GetDirectoryName(input.Path)!;
+        return result with {
+            Logger = result.Logger with { LoggerClosure = result.Logger.LoggerClosure.Select(i => Resolve(i, "logger")).ToArray() },
+            WorkerClosure = result.WorkerClosure.Select(i => Resolve(i, "worker")).ToArray()
+        };
 
         GraphProducerImage Resolve(GraphProducerImage image, string role)
         {
-            if (Path.IsPathFullyQualified(image.Path)) return image;
+            if (image is null || string.IsNullOrEmpty(image.Path)) throw new EvaluationContractException("Complete graph helper pin required.");
+            if (Path.IsPathFullyQualified(image.Path))
+            {
+                if (requirePackageRoles) throw new EvaluationContractException("Packaged helpers require fixed relative installation roles.");
+                return image;
+            }
             // Relocatable package roles are closed, with exactly one path segment
             // for the image. No general relative/external-path exception exists.
             if (image.Path != role + "/" + Path.GetFileName(image.Path) || image.Path.Contains('\\'))
@@ -97,6 +119,52 @@ internal sealed record ResolvedGraphDeployment(int Version, string SourceRevisio
             return image with { Path = Path.GetFullPath(image.Path, folder) };
         }
     }
+
+    // A replacement selection may rebind host/SDK pins, never helper code. The
+    // package's exact roles and byte tuples, then actual ReadActual hashes, bind
+    // both helpers. A copied caller-writable source stamp is not that authority.
+    internal static void RequirePackagedHelpers(ResolvedGraphDeployment selected,
+        ResolvedGraphDeployment packaged, string packageFolder)
+    {
+        if (packaged.Version != 1 || selected.SourceRevision != packaged.SourceRevision ||
+            selected.Logger.SdkVersion != packaged.Logger.SdkVersion)
+            throw new EvaluationContractException("Replacement graph selection differs from the installed package profile.");
+        RequireRole(selected.Logger.LoggerClosure, packaged.Logger.LoggerClosure, "logger");
+        RequireRole(selected.WorkerClosure, packaged.WorkerClosure, "worker");
+
+        void RequireRole(IReadOnlyList<GraphProducerImage> chosen, IReadOnlyList<GraphProducerImage> installed, string role)
+        {
+            if (chosen.Count != installed.Count) throw new EvaluationContractException("Complete installed helper role membership required.");
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var pin in installed)
+            {
+                var name = Path.GetFileName(pin.Path);
+                var expected = Path.GetFullPath(Path.Combine(packageFolder, role, name));
+                var matches = chosen.Where(p => Path.GetFileName(p.Path) == name).Take(2).ToArray();
+                if (!seen.Add(name) || !SamePath(pin.Path, expected) || matches.Length != 1 ||
+                    !SamePath(matches[0].Path, expected) || matches[0].Bytes != pin.Bytes || matches[0].Sha256 != pin.Sha256)
+                    throw new EvaluationContractException("Replacement graph helpers must retain exact packaged paths and bytes.");
+            }
+        }
+    }
+
+    private static bool HasPackagedManifest(string path, ResolvedGraphInputs inputs)
+    {
+        inputs.CheckWork();
+        try
+        {
+            var attributes = File.GetAttributes(path); inputs.CheckWork();
+            if ((attributes & (FileAttributes.Directory | FileAttributes.Device | FileAttributes.ReparsePoint)) != 0)
+                throw new EvaluationContractException("Packaged graph manifest must be a plain regular file.");
+            return true;
+        }
+        catch (FileNotFoundException) { inputs.CheckWork(); return false; }
+        catch (DirectoryNotFoundException) { inputs.CheckWork(); return false; }
+    }
+
+    private static bool SamePath(string actual, string expected) => Path.IsPathFullyQualified(actual) &&
+        Path.GetFullPath(actual).Equals(Path.GetFullPath(expected),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     private sealed class GraphHostUnavailableException(string message) : IOException(message);
     private sealed class GraphDeploymentLoadFailureException(ResolvedGraphInputs inputs, IEnumerable<Exception> failures)

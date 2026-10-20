@@ -100,6 +100,34 @@ public sealed partial class ToolPackagingIntegrationTests
             await Check("wrong-host", positive: false);
             Environment.SetEnvironmentVariable("DOTNET_HOST_PATH", host);
             await Check("regenerated", positive: true);
+
+            // Copy genuine correctly stamped helpers away from the package and
+            // alter the worker's trailing PE bytes while retaining its valid
+            // metadata. Caller-provided stamps/digests cannot select this code.
+            var foreign = JsonNode.Parse(File.ReadAllText(regenerated))!.AsObject();
+            var foreignRoot = Path.Combine(evidence, "foreign-worker"); Directory.CreateDirectory(foreignRoot);
+            foreach (var row in foreign["WorkerClosure"]!.AsArray())
+            {
+                var originalPath = row!["Path"]!.GetValue<string>();
+                var destination = Path.Combine(foreignRoot, Path.GetFileName(originalPath));
+                var bytes = File.ReadAllBytes(originalPath);
+                if (Path.GetFileName(originalPath) == "Mutate4CSharp.GraphWorker.dll")
+                {
+                    bytes = bytes.Concat(System.Text.Encoding.UTF8.GetBytes("foreign-helper-overlay")).ToArray();
+                    ResolvedGraphDeployment.RequireSourceStamp(bytes, SourceCommit, "10.0.401");
+                }
+                File.WriteAllBytes(destination, bytes);
+                row["Path"] = destination; row["Bytes"] = bytes.LongLength;
+                row["Sha256"] = Convert.ToHexStringLower(SHA256.HashData(bytes));
+            }
+            var foreignManifest = Path.Combine(evidence, "foreign-deployment.json");
+            File.WriteAllText(foreignManifest, foreign.ToJsonString());
+            var foreignDigest = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(foreignManifest)));
+            Environment.SetEnvironmentVariable(keys[1], foreignManifest);
+            Environment.SetEnvironmentVariable(keys[2], foreignDigest);
+            await Check("foreign-correctly-stamped-worker", positive: false);
+            Environment.SetEnvironmentVariable(keys[1], regenerated);
+            Environment.SetEnvironmentVariable(keys[2], digest);
             Assert.Equal(payloadBefore, HashDirectory(toolPath));
             Assert.Equal(sourceBefore, File.ReadAllBytes(source));
             Assert.Equal(statusBefore, (await RunAsync(consumer, "git", "status", "--porcelain=v1", "--untracked-files=all")).StandardOutput);
@@ -107,7 +135,8 @@ public sealed partial class ToolPackagingIntegrationTests
                 schema = "mutate4csharp-installed-resolved-graph-fixture-v1", fixture = true,
                 sourceCommit = SourceCommit, packageVersion = PackageVersion, baseline, host,
                 packageSha256 = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(packagePath))),
-                payloadSha256 = payloadBefore, regeneratedManifestSha256 = digest
+                payloadSha256 = payloadBefore, regeneratedManifestSha256 = digest,
+                refusedForeignManifestSha256 = foreignDigest
             }, new JsonSerializerOptions { WriteIndented = true }));
         }
         finally { foreach (var (key, value) in previous) Environment.SetEnvironmentVariable(key, value); }
