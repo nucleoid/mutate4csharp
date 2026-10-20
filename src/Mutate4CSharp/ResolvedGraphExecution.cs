@@ -46,8 +46,12 @@ internal static class ResolvedGraphExecution
                 1_048_576, requireLinuxSessionIsolation: true);
             original.CheckWork();
             if (actual.TimedOut || actual.ExitCode is not (0 or 1))
-                throw new SnapshotCaptureException("Actual graph semantic worker failed: " +
-                    EvaluationTextBounds.Suffix(actual.StandardError, EvaluationEvidence.MaxDiagnosticLength));
+            {
+                var refused = new SnapshotCaptureException("Actual graph semantic worker failed: " +
+                    EvaluationTextBounds.Prefix(actual.StandardError, EvaluationEvidence.MaxDiagnosticLength));
+                refused.Data["ResolvedGraphWorker.ActualReturn"] = actual;
+                throw refused;
+            }
             var result = inputs.Read(resultPath, "config");
             ResolvedGraphProtocol.RequireUnique(result.Bytes);
             var output = JsonSerializer.Deserialize<GraphWorkerResult>(result.Bytes, ResolvedGraphProtocol.Options) ??

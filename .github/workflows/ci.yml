@@ -54,7 +54,8 @@ jobs:
           # not a new native runner or proof of local native resource closure.
           $revision = (& git rev-parse HEAD)
           if ($LASTEXITCODE -ne 0 -or $revision -cnotmatch '^[0-9a-f]{40}$') { throw 'Actual source revision required' }
-          $hostFile = Get-Item -LiteralPath (Get-Command dotnet -CommandType Application).Source
+          $hostCommand = Get-Command dotnet -CommandType Application | Select-Object -First 1
+          $hostFile = Get-Item -LiteralPath $hostCommand.Source
           if ($hostFile.LinkType) { $hostFile = $hostFile.ResolveLinkTarget($true) }
           $hostPath = $hostFile.FullName
           $sdkTask = Join-Path $hostFile.DirectoryName 'sdk/10.0.401/Roslyn/Microsoft.Build.Tasks.CodeAnalysis.dll'

@@ -183,7 +183,15 @@ internal static class ResolvedGraphWorkerProgram
             references.Add(MetadataReference.CreateFromImage(file.Bytes, reference.Properties, filePath: path));
         }
         if (referencePaths.Distinct(PathComparer).Count() != actual.Items["ReferencePathWithRefAssemblies"].Count)
-            throw new EvaluationContractException("Complete graph reference inventory differs from actual Csc references.");
+        {
+            var used = referencePaths.ToHashSet(PathComparer);
+            var extra = actual.Items["ReferencePathWithRefAssemblies"]
+                .Select(item => Path.GetFullPath(item.Identity, directory)).Where(path => !used.Contains(path)).ToArray();
+            throw new EvaluationContractException("Complete graph reference inventory differs from actual Csc references: " +
+                $"tokenPaths={used.Count}; queryRows={actual.Items["ReferencePathWithRefAssemblies"].Count}; " +
+                $"unconsumed={extra.Length}; firstNames=" +
+                EvaluationTextBounds.Prefix(string.Join(',', extra.Take(8).Select(Path.GetFileName)), 256));
+        }
         // A provider-free first assembly pass cannot acquire signing keyfiles via
         // aliased source assembly attributes. Reject those effects before normal
         // same-options diagnostics/semantic queries; never rewrite consumer attrs.
