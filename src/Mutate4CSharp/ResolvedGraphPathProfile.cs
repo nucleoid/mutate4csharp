@@ -21,11 +21,16 @@ internal static class ResolvedGraphPathProfile
     internal static IReadOnlyDictionary<string, string> Require(ImmutableArray<KeyValuePair<string, string>> map,
         string source, string packages)
     {
-        if (map.Length != 2 || !map.Any(p => Same(p.Key, source) && p.Value == Source) ||
-            !map.Any(p => Same(p.Key, packages) && p.Value == Packages))
+        if (map.Length != 2 || !map.Any(p => Same(p.Key, source) && Destination(p.Value, Source)) ||
+            !map.Any(p => Same(p.Key, packages) && Destination(p.Value, Packages)))
             throw new EvaluationContractException("Actual compiler path mapping differs from the explicit owned-root profile.");
-        return map.ToDictionary(p => Path.GetFullPath(p.Key).TrimEnd(Path.DirectorySeparatorChar), p => p.Value, PathComparer);
+        // Roslyn terminates parsed path-map destinations with '/'. Accept only
+        // that exact representation of the two closed destinations and store
+        // their canonical form so Map adds one separator, never a double '/'.
+        return map.ToDictionary(p => Path.GetFullPath(p.Key).TrimEnd(Path.DirectorySeparatorChar),
+            p => p.Value.TrimEnd('/'), PathComparer);
     }
+    private static bool Destination(string actual, string expected) => actual == expected || actual == expected + "/";
     internal static string Map(string path, IReadOnlyDictionary<string, string> map)
     {
         path = Path.GetFullPath(path);

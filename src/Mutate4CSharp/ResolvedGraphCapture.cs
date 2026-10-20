@@ -127,13 +127,13 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
         // diagnostic verbosity's potentially enormous command-line preamble.
         var streams = new[] { actualReturn.StandardError, actualReturn.StandardOutput };
         string? selected = null;
-        foreach (var marker in new[] { "---> Mutate4CSharp.", ": error " })
+        foreach (var (marker, skip) in new[] { ("---> Mutate4CSharp.", 5), ("\nMutate4CSharp.", 1), (": error ", 2), ("Logger error ", 0) })
         {
             foreach (var stream in streams)
             {
                 var start = stream.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
                 if (start < 0) continue;
-                start += marker.StartsWith("--->", StringComparison.Ordinal) ? 5 : 2;
+                start += skip;
                 var end = stream.IndexOfAny(['\r', '\n'], start);
                 if (end < 0) end = stream.Length;
                 selected = stream.Substring(start, Math.Min(end - start, EvaluationEvidence.MaxDiagnosticLength));

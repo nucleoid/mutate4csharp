@@ -19,6 +19,18 @@ public sealed class ResolvedGraphProducerFailureTests
     }
 
     [Fact]
+    public void Msbuild_plain_exception_header_preserves_callback_cause_without_an_inner_arrow()
+    {
+        var returned = new ProcessTreeResult(1, false,
+            new string('p', 4096) + "\nMSBUILD : Logger error MSB1029: Callback failed before shutdown.\n" +
+            "Mutate4CSharp.EvaluationContractException: Actual compiler path mapping differs.\n at callback\n",
+            "", TimeSpan.FromSeconds(1));
+        var failure = ResolvedGraphCapture.CreateCompilerFailure(returned);
+        Assert.Contains("Actual compiler path mapping differs", failure.Message, StringComparison.Ordinal);
+        Assert.Same(returned, failure.Data["ResolvedGraphCompiler.ActualReturn"]);
+    }
+
+    [Fact]
     public void Ordinary_compiler_error_is_bounded_and_withholds_source_credentials()
     {
         var returned = new ProcessTreeResult(1, false,
