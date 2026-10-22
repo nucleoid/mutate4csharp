@@ -130,17 +130,11 @@ public sealed class SnapshotExecutionTests : IDisposable
         var packages = Path.Combine(_repository.Root, "cancelled-packages");
         Directory.CreateDirectory(packages);
         File.WriteAllBytes(Path.Combine(packages, "package.bin"), new byte[1024]);
-        var method = typeof(ExecutionEnvironment).GetMethod("FingerprintPackages",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static,
-            [typeof(string), typeof(int), typeof(long), typeof(CancellationToken)]);
-        Assert.NotNull(method);
         using var cancelled = new CancellationTokenSource();
         cancelled.Cancel();
 
-        var failure = Assert.Throws<System.Reflection.TargetInvocationException>(() =>
-            method!.Invoke(null, [packages, int.MaxValue, long.MaxValue, cancelled.Token]));
-
-        Assert.IsType<OperationCanceledException>(failure.InnerException);
+        Assert.Throws<OperationCanceledException>(() =>
+            ExecutionEnvironment.FingerprintPackages(packages, cancellationToken: cancelled.Token));
     }
 
     [Fact]

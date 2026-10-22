@@ -78,7 +78,7 @@ public sealed class LinuxGraphProcessBudgetTests : IDisposable
             CancellationToken.None, requireLinuxSessionIsolation: true, originalBudget: budget));
         if (mode == "closing") Assert.IsType<EvaluationContractException>(failure);
         else if (mode == "cancelled") Assert.IsAssignableFrom<OperationCanceledException>(failure);
-        else Assert.IsType<TimeoutException>(failure);
+        else Assert.IsType<ResolvedGraphWorkExpiredException>(failure);
         Assert.Empty(Directory.EnumerateFileSystemEntries(root));
     }
 
