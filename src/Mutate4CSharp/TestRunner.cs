@@ -48,6 +48,17 @@ internal static class TestRunner
             arguments.Insert(insertion, $"-p:NuGetPackageRoot={Path.GetFullPath(packageRoot).TrimEnd(
                 Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)}{Path.DirectorySeparatorChar}");
         }
+        // Legacy Windows commands now share the creation-owned Job boundary.
+        // Disable invocation-started build servers without changing Linux legacy arguments.
+        if (!requireExecutionBoundary && OperatingSystem.IsWindows())
+        {
+            processEnvironment["MSBUILDDISABLENODEREUSE"] = "1";
+            processEnvironment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
+            var separator = arguments.IndexOf("--");
+            var insertion = separator < 0 ? arguments.Count : separator;
+            arguments.Insert(insertion++, "-nodeReuse:false");
+            arguments.Insert(insertion, "-p:UseSharedCompilation=false");
+        }
         var preparationRemaining = timeout - System.Diagnostics.Stopwatch.GetElapsedTime(started);
         if (preparationRemaining <= TimeSpan.Zero) throw new TimeoutException("Complete test operation allowance ended before birth.");
         var mapping = resolvedGraph && collectCoverage

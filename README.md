@@ -64,8 +64,26 @@ atomic JSON report and uses fail-closed outcomes. Its report schema,
 exit precedence, accounting rules, and current frozen-capture gate are documented in
 [`docs/evaluation-contract.md`](docs/evaluation-contract.md). Legacy single-file invocations and
 embedded-manifest behavior retain their existing CLI and mutation semantics and are not strict gating evidence;
-they do not receive the strict snapshot mode's MSBuild isolation arguments. All launched test processes now share
+they do not receive the full strict snapshot isolation contract for private packages and ancestor imports.
+On Windows, default legacy `TestRunner` calls add only per-invocation `-nodeReuse:false` and
+`-p:UseSharedCompilation=false`, with `MSBUILDDISABLENODEREUSE=1` and `DOTNET_CLI_USE_MSBUILD_SERVER=0`,
+to keep build servers from outliving the command inside its private Job. These flags do not stop global services
+or confer full strict snapshot isolation; Linux legacy arguments remain unchanged. All launched test processes now share
 bounded output capture and descendant-aware timeout/cancellation cleanup.
+
+Windows launches use a private Job assigned before the suspended root is resumed; hosts must permit that
+assignment, including nesting under an existing Job. There is no portable-process fallback when assignment
+fails. A null-original (legacy/v1) successful root receives one five-second grace for its actual Job members
+and both output reads to settle. The grace and resource first-close share that same endpoint, clipped to the
+original command timeout plus five seconds; caller cancellation does not restart it. A child that closes its
+output but outlives the grace prevents success. The original owner and overlapping working/package directories
+remain retained as unknown until tool exit; late child exit cannot retroactively turn that invocation into PASS.
+Even a legitimate child exiting near the endpoint, or a resource close physically returning after it, can leave
+conservative UNKNOWN because all existing post-close deadline checks remain required. The graph-original
+profile keeps its own unchanged work and cleanup endpoints. This is stricter than legacy root-exit/EOF success.
+The Windows launch profile admits at most 4096 environment entries, 32767 UTF-16 characters per key or value,
+a 4-Mi-character environment block, and a 32766-character serialized command line. Inputs outside these bounds
+fail before native birth. See [the support matrix](docs/supported-matrix.md) for the compatibility limits.
 Snapshot boundaries, dependency freezing, drift checks, and unsupported external resources are documented in
 [`docs/snapshot-inputs.md`](docs/snapshot-inputs.md).
 Scope discovery, configuration, declaration expansion, exclusions, and current limitations are

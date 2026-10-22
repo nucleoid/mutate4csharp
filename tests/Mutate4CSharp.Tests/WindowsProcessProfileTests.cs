@@ -304,4 +304,163 @@ public sealed class WindowsProcessProfileTests
             actualRoot?.Dispose(); actualChild?.Dispose();
         }
     }
+    [Theory(Timeout = 30_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Actual_nullable_success_grace_retains_unknown_at_cap_or_retires_on_caller_cancel(bool cancel)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        // Deliberate UNKNOWN must not enlist the shared ambient package cache.
+        // Its unique owner/directory remain retained until test-host exit.
+        var owned = OwnedDirectory.Create(OwnedDirectory.PrivateParent("windows-legacy-grace-terminal"), "fixture");
+        var packages = Path.Combine(owned.Root, "packages");
+        Directory.CreateDirectory(packages);
+        var cscript = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cscript.exe");
+        Assert.True(File.Exists(cscript), "The required Windows terminal-grace fixture needs the actual inbox WSH console host; missing/disabled WSH is setup failure, not a skipped native proof.");
+        var shell = PowerShellExecutable();
+        var nonce = Guid.NewGuid().ToString("N");
+        var closed = Path.Combine(owned.Root, "child-closed-streams");
+        var ready = Path.Combine(owned.Root, "ready.json");
+        var releaseRoot = Path.Combine(owned.Root, "release-root");
+        var releaseChild = Path.Combine(owned.Root, "release-child");
+        var finished = Path.Combine(owned.Root, "child-finished");
+        var childPath = Path.Combine(owned.Root, "close-streams.js");
+        static string Literal(string value) => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
+        static string Js(string value) => JsonSerializer.Serialize(value);
+        var child = $$"""
+            var files = new ActiveXObject("Scripting.FileSystemObject");
+            WScript.StdOut.Close();
+            WScript.StdErr.Close();
+            var closed = files.CreateTextFile({{Js(closed + ".tmp")}}, false);
+            closed.Write({{Js(nonce)}}); closed.Close();
+            files.MoveFile({{Js(closed + ".tmp")}}, {{Js(closed)}});
+            var endpoint = (new Date()).getTime() + 20000;
+            while (!files.FileExists({{Js(releaseChild)}})) {
+                if ((new Date()).getTime() >= endpoint) WScript.Quit(31);
+                WScript.Sleep(10);
+            }
+            var finished = files.CreateTextFile({{Js(finished)}}, false);
+            finished.Write({{Js(nonce)}}); finished.Close();
+            WScript.Quit(0);
+            """;
+        await File.WriteAllTextAsync(childPath, child, TestContext.Current.CancellationToken);
+        var root = $$"""
+            $ErrorActionPreference='Stop'
+            $start=[Diagnostics.ProcessStartInfo]::new({{Literal(cscript)}})
+            $start.UseShellExecute=$false
+            $start.Arguments='//nologo //E:JScript ' + '"' + {{Literal(childPath)}} + '"'
+            # Inherit the ORIGINAL capture handles. The actual child closes both
+            # WSH standard streams before publishing its atomic nonce witness.
+            $child=[Diagnostics.Process]::Start($start)
+            try {
+                $watch=[Diagnostics.Stopwatch]::StartNew()
+                while(-not [IO.File]::Exists({{Literal(closed)}})) {
+                    if($child.HasExited){throw 'WSH child exited before the closed-stream witness'}
+                    if($watch.Elapsed.TotalSeconds-ge6){throw 'Closed-stream witness unavailable'}
+                    Start-Sleep -Milliseconds 10
+                }
+                if([IO.File]::ReadAllText({{Literal(closed)}})-cne{{Literal(nonce)}}){throw 'Closed-stream witness mismatch'}
+                $actual=[Diagnostics.Process]::GetCurrentProcess()
+                try {
+                    $row=@{Nonce={{Literal(nonce)}};ChildPid=$child.Id;ChildStarted=$child.StartTime.ToUniversalTime().Ticks;RootPid=$PID;RootStarted=$actual.StartTime.ToUniversalTime().Ticks}|ConvertTo-Json -Compress
+                    [IO.File]::WriteAllText({{Literal(ready + ".tmp")}},$row)
+                    [IO.File]::Move({{Literal(ready + ".tmp")}},{{Literal(ready)}})
+                } finally {$actual.Dispose()}
+                while(-not [IO.File]::Exists({{Literal(releaseRoot)}})) {
+                    if($watch.Elapsed.TotalSeconds-ge12){throw 'Original root was not released'}
+                    Start-Sleep -Milliseconds 10
+                }
+                [Console]::Out.WriteLine('root stream before normal exit')
+                [Console]::Error.WriteLine('root error before normal exit')
+            } finally {$child.Dispose()}
+            """;
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var run = ProcessTree.RunAsync(shell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Convert.ToBase64String(Encoding.Unicode.GetBytes(root))],
+            owned.Root, TimeSpan.FromSeconds(15), cancellation.Token,
+            new Dictionary<string, string?> { ["NUGET_PACKAGES"] = packages }); // No graph original.
+        Process? actualRoot = null, actualChild = null;
+        Exception? primary = null;
+        var knownCancellationClosure = false;
+        try
+        {
+            var watch = Stopwatch.StartNew();
+            while (!File.Exists(ready))
+            {
+                if (run.IsCompleted) await run;
+                Assert.True(watch.Elapsed < TimeSpan.FromSeconds(6), "Actual closed-stream fixture did not become ready.");
+                await Task.Delay(10, TestContext.Current.CancellationToken);
+            }
+            Assert.Equal(nonce, File.ReadAllText(closed));
+            using var row = JsonDocument.Parse(await File.ReadAllBytesAsync(ready, TestContext.Current.CancellationToken));
+            Assert.Equal(nonce, row.RootElement.GetProperty("Nonce").GetString());
+            actualRoot = Process.GetProcessById(row.RootElement.GetProperty("RootPid").GetInt32());
+            actualChild = Process.GetProcessById(row.RootElement.GetProperty("ChildPid").GetInt32());
+            _ = actualRoot.SafeHandle; _ = actualChild.SafeHandle;
+            Assert.Equal(row.RootElement.GetProperty("RootStarted").GetInt64(), actualRoot.StartTime.ToUniversalTime().Ticks);
+            Assert.Equal(row.RootElement.GetProperty("ChildStarted").GetInt64(), actualChild.StartTime.ToUniversalTime().Ticks);
+            Assert.False(actualRoot.HasExited); Assert.False(actualChild.HasExited);
+            var releasedAt = Stopwatch.GetTimestamp();
+            File.WriteAllText(releaseRoot, nonce);
+            await actualRoot.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(0, actualRoot.ExitCode);
+            Assert.False(run.IsCompleted); Assert.False(actualChild.HasExited);
+            if (cancel)
+            {
+                // Cancellation occurs inside an already-running grace. This real
+                // known-closure positive does not manufacture a new graph owner.
+                await Task.Delay(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+                Assert.False(run.IsCompleted); Assert.False(actualChild.HasExited);
+                cancellation.Cancel();
+                var failure = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run);
+                Assert.Equal(cancellation.Token, failure.CancellationToken);
+                Assert.True(Stopwatch.GetElapsedTime(releasedAt) < TimeSpan.FromSeconds(8), "Cancellation did not finish within the original grace and observation slack.");
+                Assert.True(actualChild.HasExited);
+                WindowsProcessTree.AssertDirectoryMayBeRemoved(owned.Root);
+                WindowsProcessTree.AssertDirectoryMayBeRemoved(packages);
+                knownCancellationClosure = true;
+            }
+            else
+            {
+                var failure = await Assert.ThrowsAsync<SnapshotCleanupException>(() => run);
+                var original = Assert.IsType<TimeoutException>(failure.OriginalFailure);
+                var cleanup = Assert.IsType<TimeoutException>(failure.CleanupFailure);
+                Assert.Contains("cleanup endpoint expired", original.Message, StringComparison.Ordinal);
+                Assert.Contains("cleanup endpoint expired", cleanup.Message, StringComparison.Ordinal);
+                Assert.InRange(Stopwatch.GetElapsedTime(releasedAt), TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(8));
+                Assert.False(actualChild.HasExited, "Grace expiry must not perform a late success-time kill.");
+                Assert.Throws<SnapshotCleanupException>(() => WindowsProcessTree.AssertDirectoryMayBeRemoved(owned.Root));
+                Assert.Throws<SnapshotCleanupException>(() => WindowsProcessTree.AssertDirectoryMayBeRemoved(packages));
+                File.WriteAllText(releaseChild, nonce); // Only the SAME identified fixture child.
+                await actualChild.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.Equal(0, actualChild.ExitCode); Assert.Equal(nonce, File.ReadAllText(finished));
+                var repeated = await Assert.ThrowsAsync<SnapshotCleanupException>(() => run);
+                Assert.Same(failure, repeated); // Late physical exit cannot turn UNKNOWN into PASS.
+                Assert.Throws<SnapshotCleanupException>(() => WindowsProcessTree.AssertDirectoryMayBeRemoved(owned.Root));
+            }
+        }
+        catch (Exception failure) { primary = failure; }
+        finally
+        {
+            try
+            {
+                File.WriteAllText(releaseRoot, nonce);
+                File.WriteAllText(releaseChild, nonce);
+                if (!run.IsCompleted)
+                {
+                    cancellation.Cancel();
+                    try { await run; }
+                    catch (Exception stopped) { primary = primary is null ? stopped : new AggregateException(primary, stopped); }
+                }
+                if (actualChild is not null)
+                    await actualChild.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+                actualRoot?.Dispose(); actualChild?.Dispose();
+                // Deliberate UNKNOWN and every failing fixture retain all DATA.
+                // Never Dispose/delete its owned directory or clear Unsettled.
+                if (knownCancellationClosure && primary is null) await owned.DisposeAsync();
+            }
+            catch (Exception cleanup) { primary = primary is null ? cleanup : new AggregateException(primary, cleanup); }
+            GC.KeepAlive(owned);
+        }
+        if (primary is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(primary).Throw();
+    }
 }

@@ -214,6 +214,63 @@ public sealed class IssueFiveReviewRoundTwoTests : IDisposable
         AssertProcessGone(cancelPid);
     }
 
+    [Fact(Timeout = 420_000)]
+    public async Task LegacyWindowsTestRunnerDisablesBuildServersAndCompilesTheRealFixture()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        // Retain the exact fresh fixture on any failure; never stop another invocation's servers.
+        var repository = new SnapshotTestRepository();
+        Console.WriteLine($"Legacy Windows TestRunner fixture: {repository.Root}");
+        WriteRealFixture(repository, Path.Combine(repository.Root, "unused-slow-child.pid"));
+        repository.WriteText("Directory.Build.props", """
+            <Project><PropertyGroup><UseSharedCompilation>true</UseSharedCompilation></PropertyGroup></Project>
+            """);
+        repository.WriteText("Directory.Build.targets", """
+            <Project>
+              <Target Name="AssertLegacyInvocationIsolation" BeforeTargets="CoreCompile">
+                <Error Condition="'$(UseSharedCompilation)' != 'false'" Text="Legacy invocation did not disable shared compilation." />
+                <Error Condition="'$(MSBUILDDISABLENODEREUSE)' != '1'" Text="Legacy invocation did not disable node reuse." />
+                <Error Condition="'$(DOTNET_CLI_USE_MSBUILD_SERVER)' != '0'" Text="Legacy invocation did not disable the CLI build server." />
+                <Error Condition="'$(MUTATE4CSHARP_LEGACY_TEST_MARKER)' == ''" Text="Invocation marker missing." />
+                <WriteLinesToFile File="$(MSBuildProjectDirectory)/legacy-build-proof.txt"
+                    Lines="$(UseSharedCompilation);$(MSBUILDDISABLENODEREUSE);$(DOTNET_CLI_USE_MSBUILD_SERVER);$(MUTATE4CSHARP_LEGACY_TEST_MARKER)"
+                    Overwrite="true" />
+              </Target>
+            </Project>
+            """);
+        var marker = Guid.NewGuid().ToString("N");
+        var variables = new Dictionary<string, string?>
+        {
+            ["NUGET_PACKAGES"] = Path.Combine(repository.Root, "packages"),
+            ["DOTNET_CLI_HOME"] = Path.Combine(repository.Root, "cli-home"),
+            ["MSBUILDDISABLENODEREUSE"] = "0",
+            ["DOTNET_CLI_USE_MSBUILD_SERVER"] = "1",
+            ["MUTATE4CSHARP_LEGACY_TEST_MARKER"] = marker
+        };
+        var testProject = Path.Combine(repository.Root, "tests", "Fixture.Tests", "Fixture.Tests.csproj");
+        var run = await TestRunner.RunAsync(repository.Root, testProject,
+            Path.Combine(repository.Root, "legacy-results"), TimeSpan.FromMinutes(1), collectCoverage: true,
+            TestContext.Current.CancellationToken, variables, framework: "net10.0", configuration: "Release");
+        // Boundary and original arguments intentionally remain at their legacy defaults.
+        Assert.False(run.TimedOut);
+        Assert.True(run.ExitCode == 0,
+            $"Fixture retained at {repository.Root}; exit {run.ExitCode}: " +
+            run.StandardError[^Math.Min(4096, run.StandardError.Length)..] +
+            run.StandardOutput[^Math.Min(4096, run.StandardOutput.Length)..]);
+        Assert.True(run.TrxValid);
+        Assert.True(run.TestsDiscovered);
+        Assert.False(run.HasFailedTests);
+        Assert.Equal(["false", "1", "0", marker], await File.ReadAllLinesAsync(
+            Path.Combine(repository.Root, "tests", "Fixture.Tests", "legacy-build-proof.txt"),
+            TestContext.Current.CancellationToken));
+        Assert.True(File.Exists(Path.Combine(repository.Root, "tests", "Fixture.Tests", "bin", "Release", "net10.0", "Fixture.Tests.dll")));
+        Assert.NotEmpty(TestRunner.FindCoverage(Path.Combine(repository.Root, "legacy-results")));
+        Assert.Equal("0", variables["MSBUILDDISABLENODEREUSE"]);
+        Assert.Equal("1", variables["DOTNET_CLI_USE_MSBUILD_SERVER"]);
+        WindowsProcessTree.AssertDirectoryMayBeRemoved(repository.Root);
+        repository.Dispose();
+    }
+
     private static void WriteRealFixture(SnapshotTestRepository repository, string marker)
     {
         repository.WriteText("src/Fixture/Fixture.csproj", """
