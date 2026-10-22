@@ -39,7 +39,7 @@ public sealed class EvaluationSchedulerTests
         var split = new string('x', EvaluationEvidence.MaxDiagnosticLength - 1) + "😀tail";
         var executor = new DelegateMutationExecutor((work, _, _) => Task.FromResult(
             new ScheduledMutationResult(work.EvaluationUnitId, UnitDisposition.Error,
-                [new EvaluationEvidence(split, split, [split])] )));
+                [new EvaluationEvidence(split, split, [split])])));
 
         var result = await new EvaluationScheduler(executor, TimeProvider.System).RunAsync(
             [new ScheduledMutation("mutation:v1:" + new string('1', 64),

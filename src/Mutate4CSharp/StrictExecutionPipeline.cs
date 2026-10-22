@@ -80,55 +80,55 @@ internal static class StrictExecutionPipeline
         Func<Exception, StrictExecutionOutcome>? recoverInterruptedExecution = null;
         try
         {
-        var enumeration = configuration.IsResolvedGraph
-            ? await ResolvedGraphExecution.EnumerateAsync(snapshot, configuration, scopePlan, environment,
-                graphDeployment!, graphBudget!, cancellationToken)
-            : StrictMutationEnumerator.Enumerate(snapshot, configuration, scopePlan, cancellationToken, environment.SdkVersion);
-        if (!enumeration.IsComplete)
-            throw new StrictExecutionRefusalException(enumeration.Reasons.FirstOrDefault() ??
-                new EvaluationReason("ENUMERATION_CONTEXT_UNSUPPORTED",
-                    "Strict semantic enumeration could not prove one complete candidate set."),
-                enumeration.Reasons);
-        var semanticContext = enumeration.SemanticContextIdentity ??
-            throw new EvaluationContractException("Complete semantic enumeration requires one context identity.");
-        baselines = await new SuiteCoordinator(new VstestSuiteExecutor(snapshot, environment,
-                beforeCoverageParsing: beforeCoverageParsing, resolvedGraph: configuration.IsResolvedGraph, originalBudget: graphBudget),
-            Clock).RunBaselinesAsync(snapshotId, configuration.ExecutionSuites,
-            TimeSpan.FromSeconds(policy.BaselineTimeoutSeconds), deadline, cancellationToken);
-        var aliases = MapBaselineExecutions(configuration.ExecutionSuites, baselines.Executions);
-        var suiteEvidence = ToSuiteEvidence(configuration.ExecutionSuites, aliases, runId, snapshotId);
-        var material = EvaluationCoordinator.BuildEvaluationFingerprintMaterial(snapshot, snapshotId,
-            scopePlan, policy, semanticContext, environment.SdkVersion, environment,
-            configuration.ExecutionSuites, aliases, enumeration.Candidates);
-        BoundMutationPlan bound;
-        try { bound = MutationSelection.Bind(enumeration.Candidates, material); }
-        catch (Exception ex) when (ex is EvaluationContractException or ArgumentException)
-        {
-            throw new StrictExecutionRefusalException(new("ENUMERATION_FINGERPRINT_INVALID",
-                "Fresh semantic enumeration could not bind to the current evaluation fingerprint."),
-                [new("ENUMERATION_FINGERPRINT_INVALID", ex.Message)]);
-        }
-        var targeted = exactMutationIds.Count > 0;
-        MutationSelectionPlan plan;
-        try
-        {
-            plan = targeted
-                ? MutationSelection.PlanTargeted(bound, exactMutationIds,
-                    expectedPlanFingerprint ?? string.Empty, material)
-                : MutationSelection.Plan(bound, material);
-        }
-        catch (EvaluationContractException ex) when (targeted)
-        {
-            throw new StrictExecutionRefusalException(new("TARGET_SELECTION_INVALID",
-                "The exact-ID diagnostic request did not match the freshly bound mutation plan."),
-                [new("TARGET_SELECTION_INVALID", ex.Message)]);
-        }
-        var issued = plan.CreatePendingLedger();
-        var pending = issued.Where(item => item.Disposition == UnitDisposition.Pending)
-            .ToDictionary(item => item.EvaluationUnitId, StringComparer.Ordinal);
-        var completed = issued.Where(item => item.Disposition != UnitDisposition.Pending).ToList();
+            var enumeration = configuration.IsResolvedGraph
+                ? await ResolvedGraphExecution.EnumerateAsync(snapshot, configuration, scopePlan, environment,
+                    graphDeployment!, graphBudget!, cancellationToken)
+                : StrictMutationEnumerator.Enumerate(snapshot, configuration, scopePlan, cancellationToken, environment.SdkVersion);
+            if (!enumeration.IsComplete)
+                throw new StrictExecutionRefusalException(enumeration.Reasons.FirstOrDefault() ??
+                    new EvaluationReason("ENUMERATION_CONTEXT_UNSUPPORTED",
+                        "Strict semantic enumeration could not prove one complete candidate set."),
+                    enumeration.Reasons);
+            var semanticContext = enumeration.SemanticContextIdentity ??
+                throw new EvaluationContractException("Complete semantic enumeration requires one context identity.");
+            baselines = await new SuiteCoordinator(new VstestSuiteExecutor(snapshot, environment,
+                    beforeCoverageParsing: beforeCoverageParsing, resolvedGraph: configuration.IsResolvedGraph, originalBudget: graphBudget),
+                Clock).RunBaselinesAsync(snapshotId, configuration.ExecutionSuites,
+                TimeSpan.FromSeconds(policy.BaselineTimeoutSeconds), deadline, cancellationToken);
+            var aliases = MapBaselineExecutions(configuration.ExecutionSuites, baselines.Executions);
+            var suiteEvidence = ToSuiteEvidence(configuration.ExecutionSuites, aliases, runId, snapshotId);
+            var material = EvaluationCoordinator.BuildEvaluationFingerprintMaterial(snapshot, snapshotId,
+                scopePlan, policy, semanticContext, environment.SdkVersion, environment,
+                configuration.ExecutionSuites, aliases, enumeration.Candidates);
+            BoundMutationPlan bound;
+            try { bound = MutationSelection.Bind(enumeration.Candidates, material); }
+            catch (Exception ex) when (ex is EvaluationContractException or ArgumentException)
+            {
+                throw new StrictExecutionRefusalException(new("ENUMERATION_FINGERPRINT_INVALID",
+                    "Fresh semantic enumeration could not bind to the current evaluation fingerprint."),
+                    [new("ENUMERATION_FINGERPRINT_INVALID", ex.Message)]);
+            }
+            var targeted = exactMutationIds.Count > 0;
+            MutationSelectionPlan plan;
+            try
+            {
+                plan = targeted
+                    ? MutationSelection.PlanTargeted(bound, exactMutationIds,
+                        expectedPlanFingerprint ?? string.Empty, material)
+                    : MutationSelection.Plan(bound, material);
+            }
+            catch (EvaluationContractException ex) when (targeted)
+            {
+                throw new StrictExecutionRefusalException(new("TARGET_SELECTION_INVALID",
+                    "The exact-ID diagnostic request did not match the freshly bound mutation plan."),
+                    [new("TARGET_SELECTION_INVALID", ex.Message)]);
+            }
+            var issued = plan.CreatePendingLedger();
+            var pending = issued.Where(item => item.Disposition == UnitDisposition.Pending)
+                .ToDictionary(item => item.EvaluationUnitId, StringComparer.Ordinal);
+            var completed = issued.Where(item => item.Disposition != UnitDisposition.Pending).ToList();
 
-        var evidence = new List<EvaluationEvidence>
+            var evidence = new List<EvaluationEvidence>
         {
             new("DEPENDENCY_INPUT", "Prepared one frozen package graph and run-private worker caches.",
                 [$"dependencyFingerprint={environment.Fingerprint}",
@@ -142,98 +142,98 @@ internal static class StrictExecutionPipeline
                  $"selectionFingerprint={plan.PlanFingerprint}",
                  $"configuredWorkers={policy.MaxWorkers};effectiveWorkers={MaxStrictWorkers}"])
         };
-        var conditions = plan.IncompleteConditions.Concat(baselines.IncompleteConditions).ToList();
-        if (baselines.Status == BaselineStatus.Green && !material.ProvenanceComplete)
-            conditions.Add(new("COVERAGE_PROVENANCE_INCOMPLETE",
-                "Every configured suite must provide fresh valid coverage and exact baseline member accounting."));
+            var conditions = plan.IncompleteConditions.Concat(baselines.IncompleteConditions).ToList();
+            if (baselines.Status == BaselineStatus.Green && !material.ProvenanceComplete)
+                conditions.Add(new("COVERAGE_PROVENANCE_INCOMPLETE",
+                    "Every configured suite must provide fresh valid coverage and exact baseline member accounting."));
 
-        recoverInterruptedExecution = error =>
-        {
-            var recovered = CompleteInterruptedLedger(plan, issued, completed, error);
-            var code = error is OperationCanceledException ? "EXECUTION_CANCELLED" : "MUTATION_EXECUTION_FAILED";
-            var interrupted = new EvaluationReason(code, "Mutation execution stopped before the complete ledger finished.");
-            var preserved = error is StrictExecutionRefusalException refusal ? refusal.Reasons : [];
-            return new(material, plan, semanticContext, environment.SdkVersion, issued.Count,
-                recovered, baselines.Status, suiteEvidence,
-                ToCoverageProvenance(runId, snapshotId, material, configuration.ExecutionSuites, aliases),
-                conditions.Concat(preserved).Append(interrupted).Distinct().ToArray(), null,
-                evidence.Append(new EvaluationEvidence("MUTATION_EXECUTION_INTERRUPTED",
-                    EvaluationTextBounds.Prefix($"{error.GetType().Name}: {error.Message}",
-                        EvaluationReason.MaxMessageLength))).ToArray());
-        };
-
-        if (baselines.Status != BaselineStatus.Green)
-        {
-            foreach (var candidate in plan.Selected)
-                completed.Add(plan.CompleteWithoutExecution(pending[candidate.EvaluationUnitId],
-                    UnitDisposition.Omitted,
-                    [new("BASELINE_NOT_GREEN",
-                        $"Mutation execution was not started because baseline status was {baselines.Status}.")]));
-        }
-        else
-        {
-            if (aliases.Count != configuration.ExecutionSuites.Count)
-                throw new StrictExecutionRefusalException(new("BASELINE_ACCOUNTING_INCOMPLETE",
-                    "A green baseline omitted one or more configured suite executions."),
-                    [new("BASELINE_ACCOUNTING_INCOMPLETE",
-                        $"completed={aliases.Count};required={configuration.ExecutionSuites.Count}")]);
-            var mappedSuites = plan.Selected.ToDictionary(item => item.EvaluationUnitId,
-                item => MapCandidateSuites(configuration, item), StringComparer.Ordinal);
-            var scheduled = new List<ScheduledMutation>();
-            foreach (var candidate in plan.Selected)
+            recoverInterruptedExecution = error =>
             {
-                var suites = mappedSuites[candidate.EvaluationUnitId];
-                var coverage = suites.Select(item => aliases[item.Identity].Result.CoverageMap?
-                        .GetState(candidate.Material.RepositoryPath, candidate.SourceLine,
-                            candidate.SourceColumn, candidate.SourceEndLine, candidate.SourceEndColumn) ??
-                    CoverageState.Unknown)
-                    .ToArray();
-                if (coverage.All(item => item == CoverageState.Uncovered))
-                {
+                var recovered = CompleteInterruptedLedger(plan, issued, completed, error);
+                var code = error is OperationCanceledException ? "EXECUTION_CANCELLED" : "MUTATION_EXECUTION_FAILED";
+                var interrupted = new EvaluationReason(code, "Mutation execution stopped before the complete ledger finished.");
+                var preserved = error is StrictExecutionRefusalException refusal ? refusal.Reasons : [];
+                return new(material, plan, semanticContext, environment.SdkVersion, issued.Count,
+                    recovered, baselines.Status, suiteEvidence,
+                    ToCoverageProvenance(runId, snapshotId, material, configuration.ExecutionSuites, aliases),
+                    conditions.Concat(preserved).Append(interrupted).Distinct().ToArray(), null,
+                    evidence.Append(new EvaluationEvidence("MUTATION_EXECUTION_INTERRUPTED",
+                        EvaluationTextBounds.Prefix($"{error.GetType().Name}: {error.Message}",
+                            EvaluationReason.MaxMessageLength))).ToArray());
+            };
+
+            if (baselines.Status != BaselineStatus.Green)
+            {
+                foreach (var candidate in plan.Selected)
                     completed.Add(plan.CompleteWithoutExecution(pending[candidate.EvaluationUnitId],
-                        UnitDisposition.Uncovered,
-                        [new("FRESH_COVERAGE_UNCOVERED",
+                        UnitDisposition.Omitted,
+                        [new("BASELINE_NOT_GREEN",
+                        $"Mutation execution was not started because baseline status was {baselines.Status}.")]));
+            }
+            else
+            {
+                if (aliases.Count != configuration.ExecutionSuites.Count)
+                    throw new StrictExecutionRefusalException(new("BASELINE_ACCOUNTING_INCOMPLETE",
+                        "A green baseline omitted one or more configured suite executions."),
+                        [new("BASELINE_ACCOUNTING_INCOMPLETE",
+                        $"completed={aliases.Count};required={configuration.ExecutionSuites.Count}")]);
+                var mappedSuites = plan.Selected.ToDictionary(item => item.EvaluationUnitId,
+                    item => MapCandidateSuites(configuration, item), StringComparer.Ordinal);
+                var scheduled = new List<ScheduledMutation>();
+                foreach (var candidate in plan.Selected)
+                {
+                    var suites = mappedSuites[candidate.EvaluationUnitId];
+                    var coverage = suites.Select(item => aliases[item.Identity].Result.CoverageMap?
+                            .GetState(candidate.Material.RepositoryPath, candidate.SourceLine,
+                                candidate.SourceColumn, candidate.SourceEndLine, candidate.SourceEndColumn) ??
+                        CoverageState.Unknown)
+                        .ToArray();
+                    if (coverage.All(item => item == CoverageState.Uncovered))
+                    {
+                        completed.Add(plan.CompleteWithoutExecution(pending[candidate.EvaluationUnitId],
+                            UnitDisposition.Uncovered,
+                            [new("FRESH_COVERAGE_UNCOVERED",
                             "Every mapped fresh baseline reported the mutation span uncovered in its collector session.",
                             suites.Select((suite, index) =>
                                 $"suite={suite.Identity};state={coverage[index]}")
                                 .Append("coverageProfile=coverlet-6.0.4-vstest-in-process")
                                 .Append("projection=verified-pdb-aggregate-zero").ToArray())]));
-                    continue;
+                        continue;
+                    }
+                    scheduled.Add(new(candidate.MutationId, candidate.EvaluationUnitId,
+                        suites.Select(item => item.Identity).ToArray()));
                 }
-                scheduled.Add(new(candidate.MutationId, candidate.EvaluationUnitId,
-                    suites.Select(item => item.Identity).ToArray()));
-            }
 
-            var controls = configuration.ExecutionSuites.ToDictionary(item => item.Identity,
-                item => aliases[item.Identity].Result.HealthyControl, StringComparer.Ordinal);
-            var executor = new StrictMutationExecutor(snapshot, environment, plan.Selected,
-                configuration.ExecutionSuites, controls, Clock, resolvedGraph: configuration.IsResolvedGraph, originalBudget: graphBudget);
-            var batch = await RunContiguousAttemptsAsync(executor, scheduled,
-                policy.StabilityRepetitions, TimeSpan.FromSeconds(policy.MutantTimeoutSeconds), deadline,
-                Clock, cancellationToken);
-            conditions.AddRange(batch.IncompleteConditions);
-            foreach (var mutation in scheduled)
-            {
-                var results = batch.Attempts[mutation.EvaluationUnitId];
-                if (results.Any(item => item.Disposition == UnitDisposition.Omitted))
+                var controls = configuration.ExecutionSuites.ToDictionary(item => item.Identity,
+                    item => aliases[item.Identity].Result.HealthyControl, StringComparer.Ordinal);
+                var executor = new StrictMutationExecutor(snapshot, environment, plan.Selected,
+                    configuration.ExecutionSuites, controls, Clock, resolvedGraph: configuration.IsResolvedGraph, originalBudget: graphBudget);
+                var batch = await RunContiguousAttemptsAsync(executor, scheduled,
+                    policy.StabilityRepetitions, TimeSpan.FromSeconds(policy.MutantTimeoutSeconds), deadline,
+                    Clock, cancellationToken);
+                conditions.AddRange(batch.IncompleteConditions);
+                foreach (var mutation in scheduled)
                 {
-                    completed.Add(plan.CompleteWithoutExecution(pending[mutation.EvaluationUnitId],
-                        UnitDisposition.Omitted, BuildPartialEvidence(results)));
-                    conditions.Add(new("MUTATION_ATTEMPT_OMITTED",
-                        "At least one configured stability attempt was not assigned."));
-                    continue;
+                    var results = batch.Attempts[mutation.EvaluationUnitId];
+                    if (results.Any(item => item.Disposition == UnitDisposition.Omitted))
+                    {
+                        completed.Add(plan.CompleteWithoutExecution(pending[mutation.EvaluationUnitId],
+                            UnitDisposition.Omitted, BuildPartialEvidence(results)));
+                        conditions.Add(new("MUTATION_ATTEMPT_OMITTED",
+                            "At least one configured stability attempt was not assigned."));
+                        continue;
+                    }
+                    completed.Add(plan.Reduce(pending[mutation.EvaluationUnitId],
+                        results.Select((item, index) => new StabilityAttempt(index + 1,
+                            item.Disposition, item.Evidence)).ToArray()));
                 }
-                completed.Add(plan.Reduce(pending[mutation.EvaluationUnitId],
-                    results.Select((item, index) => new StabilityAttempt(index + 1,
-                        item.Disposition, item.Evidence)).ToArray()));
             }
-        }
 
-        var coverageProvenance = ToCoverageProvenance(runId, snapshotId, material,
-            configuration.ExecutionSuites, aliases);
-        outcome = new(material, plan, semanticContext, environment.SdkVersion, issued.Count,
-            plan.OrderResults(completed), baselines.Status, suiteEvidence, coverageProvenance,
-            conditions.Distinct().ToArray(), null, evidence);
+            var coverageProvenance = ToCoverageProvenance(runId, snapshotId, material,
+                configuration.ExecutionSuites, aliases);
+            outcome = new(material, plan, semanticContext, environment.SdkVersion, issued.Count,
+                plan.OrderResults(completed), baselines.Status, suiteEvidence, coverageProvenance,
+                conditions.Distinct().ToArray(), null, evidence);
         }
         catch (Exception ex) when (recoverInterruptedExecution is not null &&
             ex is not (SnapshotCaptureException or OutOfMemoryException or StackOverflowException or AccessViolationException))

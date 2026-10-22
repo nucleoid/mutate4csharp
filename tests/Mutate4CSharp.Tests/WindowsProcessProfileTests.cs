@@ -29,9 +29,13 @@ public sealed class WindowsProcessProfileTests
         if (!OperatingSystem.IsWindows()) return;
         await using var owned = OwnedDirectory.Create(OwnedDirectory.PrivateParent("windows-wide-env"), "fixture");
         var nonce = Guid.NewGuid().ToString("N");
-        var environment = new Dictionary<string, string?> {
-            ["MUTATE_WIDE_ENV_A"] = new('a', 20_000), ["MUTATE_WIDE_ENV_B"] = new('b', 20_000),
-            ["MUTATE_WIDE_ENV_SENTINEL"] = nonce, ["ComSpec"] = null };
+        var environment = new Dictionary<string, string?>
+        {
+            ["MUTATE_WIDE_ENV_A"] = new('a', 20_000),
+            ["MUTATE_WIDE_ENV_B"] = new('b', 20_000),
+            ["MUTATE_WIDE_ENV_SENTINEL"] = nonce,
+            ["ComSpec"] = null
+        };
         Assert.False(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ComSpec")), "The actual closed Windows fixture requires inherited ComSpec before its explicit clear.");
         var shell = PowerShellExecutable();
         var observe = """
