@@ -13,6 +13,8 @@ internal sealed class ResolvedGraphBudget
     private readonly TimeSpan _whole;
     private readonly TimeSpan _work;
     private long? _cleanup;
+    // Private live-owner cause only. Observations never export or import it.
+    private bool _workExpired;
     internal ResolvedGraphResources Resources { get; }
 
     internal ResolvedGraphBudget(TimeSpan enclosingRemaining, CancellationToken token)
@@ -63,7 +65,11 @@ internal sealed class ResolvedGraphBudget
                 enclosing.WholeTicks != own.WholeTicks || enclosing.WorkTicks != own.WorkTicks ||
                 enclosing.Cleanup is { } invalid && (invalid < _original || invalid > Stopwatch.GetTimestamp()))
                 throw new EvaluationContractException("Cleanup observation belongs to a different original graph budget.");
-            if (enclosing.Cleanup is { } earlier && (_cleanup is null || earlier < _cleanup.Value)) _cleanup = earlier;
+            if (enclosing.Cleanup is { } earlier && (_cleanup is null || earlier < _cleanup.Value))
+            {
+                _cleanup = earlier;
+                _workExpired = false; // An earlier imported cleanup has no known WORK cause.
+            }
         }
     }
 
@@ -76,13 +82,32 @@ internal sealed class ResolvedGraphBudget
     {
         lock (_gate)
         {
-            if (_cleanup is not null) throw new EvaluationContractException("Actual graph owner has entered terminal cleanup; no further work.");
+            if (_cleanup is not null)
+            {
+                if (_workExpired) throw new ResolvedGraphWorkExpiredException();
+                throw new EvaluationContractException("Actual graph owner has entered terminal cleanup; no further work.");
+            }
             _token.ThrowIfCancellationRequested();
             if (Stopwatch.GetElapsedTime(_original) >= _work)
             {
-                _cleanup ??= Stopwatch.GetTimestamp();
+                _cleanup = Stopwatch.GetTimestamp();
+                _workExpired = true;
                 throw new ResolvedGraphWorkExpiredException();
             }
+        }
+    }
+
+    // Classify a native interruption under the SAME owner lock. Neither a local
+    // timeout nor clock observation can overwrite prior unknown cleanup/cancel.
+    internal bool TryBeginWorkExpiry()
+    {
+        lock (_gate)
+        {
+            if (_cleanup is not null) return _workExpired;
+            if (_token.IsCancellationRequested || Stopwatch.GetElapsedTime(_original) < _work) return false;
+            _cleanup = Stopwatch.GetTimestamp();
+            _workExpired = true;
+            return true;
         }
     }
 

@@ -305,13 +305,26 @@ internal static class StrictExecutionPipeline
             _ => new List<ScheduledMutationResult>(), StringComparer.Ordinal);
         var conditions = new List<EvaluationReason>();
         var scheduler = new EvaluationScheduler(executor, timeProvider);
+        var overallDeadlineStopped = false;
         foreach (var mutation in ordered)
         {
+            if (overallDeadlineStopped)
+            {
+                var cancelled = cancellationToken.IsCancellationRequested ||
+                    conditions.Any(item => item.Code == "EXECUTION_CANCELLED");
+                if (cancelled) conditions.Add(new("EXECUTION_CANCELLED",
+                    "Cancellation stopped new mutant assignment; all units were reconciled."));
+                attempts[mutation.EvaluationUnitId].Add(new(mutation.EvaluationUnitId, UnitDisposition.Omitted,
+                    [new(cancelled ? "CANCELLED_BEFORE_ASSIGNMENT" : "DEADLINE_BEFORE_ASSIGNMENT",
+                        "The bounded scheduler did not assign this evaluation unit.")]));
+                continue;
+            }
             for (var repetition = 1; repetition <= repetitions; repetition++)
             {
                 var run = await scheduler.RunAsync([mutation], MaxStrictWorkers, mutantTimeout,
                     deadline, cancellationToken);
                 conditions.AddRange(run.IncompleteConditions);
+                overallDeadlineStopped |= run.IncompleteConditions.Any(item => item.Code == "OVERALL_DEADLINE_EXCEEDED");
                 var result = AssertSingleResult(run.Results, mutation.EvaluationUnitId);
                 attempts[mutation.EvaluationUnitId].Add(result);
                 if (result.Disposition == UnitDisposition.Omitted) break;

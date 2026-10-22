@@ -103,6 +103,7 @@ internal static class ProcessTree
         using var legacyLinked = originalBudget is null ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token) : null;
         var linked = legacyLinked ?? originalProcess!.Own(CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token));
         var timedOut = false;
+        ResolvedGraphWorkExpiredException? workExpiry = null;
         int? strictExitCode = null;
         Task? completionTask = null;
         try
@@ -150,9 +151,11 @@ internal static class ProcessTree
         catch (Exception interruption) when (interruption is OperationCanceledException ||
             interruption is TimeoutException && originalBudget is not null)
         {
-            timedOut = interruption is TimeoutException || originalBudget?.WorkEndpointExpired == true ||
+            if (originalBudget?.TryBeginWorkExpiry() == true)
+                workExpiry = interruption as ResolvedGraphWorkExpiredException ?? new ResolvedGraphWorkExpiredException();
+            timedOut = workExpiry is not null || interruption is TimeoutException ||
                 timeoutSource.IsCancellationRequested && !cancellationToken.IsCancellationRequested;
-            Exception primaryFailure = timedOut
+            Exception primaryFailure = workExpiry is not null ? workExpiry : timedOut
                 ? interruption is TimeoutException ? interruption : new TimeoutException(originalBudget is null
                     ? $"Process exceeded its {timeout.TotalSeconds:g}-second timeout."
                     : "Process exceeded its original or per-call work endpoint.", interruption)
@@ -160,7 +163,7 @@ internal static class ProcessTree
             // The scheduler's per-mutant timeout is a subordinate caller token,
             // not the aggregate owner's cancellation. Retire known local stops
             // without poisoning the SAME original; unknown retention below is terminal.
-            if (originalBudget is not null && (originalBudget.CancellationRequested || originalBudget.WorkEndpointExpired))
+            if (originalBudget is not null && (originalBudget.CancellationRequested || workExpiry is not null))
                 originalBudget.BeginFailureCleanup();
             try { await StopRootForCleanup(); }
             catch (Exception cleanup) { throw CreateCleanupFailure(primaryFailure, cleanup); }
@@ -176,8 +179,18 @@ internal static class ProcessTree
                     if (originalProcess is not null) await originalProcess.JoinObserversAsync();
                     originalProcess?.CloseSettled();
                     originalProcess?.PreserveObserverFailures(primaryFailure);
+                    // Local cancellation can cross the original WORK endpoint
+                    // during known retirement. Actual capture/first-close faults
+                    // must remain failures, never disappear behind typed expiry.
+                    if (originalBudget?.TryBeginWorkExpiry() == true)
+                    {
+                        originalProcess?.ThrowObserverFailures();
+                        strictLaunch?.MarkSettled();
+                        workExpiry = new ResolvedGraphWorkExpiredException();
+                    }
                 }
                 catch (Exception cleanup) { throw CreateCleanupFailure(primaryFailure, cleanup); }
+                if (workExpiry is not null) throw workExpiry;
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(interruption).Throw();
             }
         }
@@ -211,6 +224,8 @@ internal static class ProcessTree
             originalProcess?.CloseSettled();
             originalProcess?.ThrowObserverFailures();
             strictLaunch!.MarkSettled();
+            if (originalBudget?.TryBeginWorkExpiry() == true)
+                throw workExpiry ?? new ResolvedGraphWorkExpiredException();
             return new(strictExitCode ?? -1, timedOut, strictOutput.Output, strictOutput.Error, watch.Elapsed);
         }
         var (output, error) = await AwaitOutputsAsync(outputTask, errorTask, drainCancellation, originalBudget, originalProcess);
@@ -218,6 +233,8 @@ internal static class ProcessTree
         if (originalProcess is not null) await originalProcess.JoinObserversAsync();
         originalProcess?.CloseSettled();
         originalProcess?.ThrowObserverFailures();
+        if (originalBudget?.TryBeginWorkExpiry() == true)
+            throw workExpiry ?? new ResolvedGraphWorkExpiredException();
         return result;
 
         void CheckWork() { originalBudget?.CheckWork(); cancellationToken.ThrowIfCancellationRequested(); }
@@ -833,7 +850,8 @@ internal static class ProcessTree
                 // This is only a restriction on this already-owned process,
                 // never another aggregate cleanup interval or a native grant.
                 retirementStarted ??= Stopwatch.GetTimestamp();
-                if (budget.CancellationRequested || budget.WorkEndpointExpired) budget.BeginFailureCleanup();
+                if (budget.CancellationRequested) budget.BeginFailureCleanup();
+                else _ = budget.TryBeginWorkExpiry();
                 var local = TimeSpan.FromSeconds(60) - Stopwatch.GetElapsedTime(retirementStarted.Value);
                 if (local <= TimeSpan.Zero)
                 {

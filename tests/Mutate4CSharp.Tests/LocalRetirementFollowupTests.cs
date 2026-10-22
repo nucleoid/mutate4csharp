@@ -5,6 +5,24 @@ namespace Mutate4CSharp.Tests;
 public sealed class LocalRetirementFollowupTests
 {
     [Fact]
+    public async Task Actual_frame_first_retirement_observation_keeps_work_cause_before_known_first_close()
+    {
+        var original = new ResolvedGraphBudget(TimeSpan.FromSeconds(2), CancellationToken.None);
+        using var frame = new ProcessTree.LinuxOriginalProcessFrame(new Process
+        {
+            StartInfo = new ProcessStartInfo { WorkingDirectory = Path.Combine(Path.GetTempPath(), "mutate-retirement-work-cause-" + Guid.NewGuid().ToString("N")) }
+        }, original);
+        frame.Track(Task.CompletedTask);
+        while (!original.WorkEndpointExpired) await Task.Delay(5, TestContext.Current.CancellationToken);
+        // No CheckWork/TryBeginWorkExpiry first: the actual retirement accessor
+        // must preserve the cause itself instead of latching generic cleanup.
+        Assert.True(frame.RemainingRetirement > TimeSpan.Zero);
+        await frame.JoinObserversAsync();
+        frame.CloseSettled();
+        Assert.Throws<ResolvedGraphWorkExpiredException>(original.CheckWork);
+    }
+
+    [Fact]
     public async Task Actual_frame_observer_join_uses_one_declining_local_cap_without_ending_live_original()
     {
         var original = new ResolvedGraphBudget(TimeSpan.FromMinutes(3), CancellationToken.None);
@@ -87,7 +105,7 @@ public sealed class LocalRetirementFollowupTests
         Assert.DoesNotContain(result.Results.SelectMany(row => row.Evidence), row => row.Kind == "MUTANT_TIMEOUT");
         Assert.Contains(result.IncompleteConditions, row => row.Code == "OVERALL_DEADLINE_EXCEEDED");
         Assert.NotNull(original.Observe().Cleanup);
-        Assert.Throws<EvaluationContractException>(original.CheckWork);
+        Assert.Throws<ResolvedGraphWorkExpiredException>(original.CheckWork);
     }
     private sealed class DelegateMutationExecutor(
         Func<ScheduledMutation, TimeSpan, CancellationToken, Task<ScheduledMutationResult>> execute)

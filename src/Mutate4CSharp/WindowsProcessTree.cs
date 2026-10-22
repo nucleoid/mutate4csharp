@@ -66,6 +66,7 @@ internal sealed class WindowsProcessTree
         if (maxOutputBytes < 1) throw new ArgumentOutOfRangeException(nameof(maxOutputBytes));
         var owner = new WindowsProcessTree(started, timeout, caller, directory, originalBudget);
         Exception? primary = null;
+        ResolvedGraphWorkExpiredException? workExpiry = null;
         var timedOut = false;
         var exitCode = -1;
         try
@@ -90,13 +91,16 @@ internal sealed class WindowsProcessTree
         {
             // A linked graph work timer must not masquerade as user cancellation.
             // This observation never supplies more work or cleanup authority.
-            timedOut = originalBudget?.WorkEndpointExpired == true;
-            primary = timedOut ? new TimeoutException("Actual graph original work endpoint expired.", failure) : failure;
+            if (originalBudget?.TryBeginWorkExpiry() == true) workExpiry = new ResolvedGraphWorkExpiredException();
+            timedOut = workExpiry is not null;
+            primary = workExpiry is not null ? workExpiry : failure;
         }
         catch (TimeoutException failure)
         {
-            timedOut = originalBudget?.WorkEndpointExpired == true || !caller.IsCancellationRequested;
-            primary = timedOut ? failure : new OperationCanceledException(caller);
+            if (originalBudget?.TryBeginWorkExpiry() == true)
+                workExpiry = failure as ResolvedGraphWorkExpiredException ?? new ResolvedGraphWorkExpiredException();
+            timedOut = workExpiry is not null || !caller.IsCancellationRequested;
+            primary = workExpiry is not null ? workExpiry : timedOut ? failure : new OperationCanceledException(caller);
         }
         catch (Exception failure) { primary = failure; }
 
@@ -104,7 +108,7 @@ internal sealed class WindowsProcessTree
         // the SAME original's cancellation/WORK expiry, or a non-timeout fault,
         // ends aggregate work. Physical retirement still uses its unchanged MIN.
         var localInterruption = originalBudget is not null && !originalBudget.CancellationRequested &&
-            !originalBudget.WorkEndpointExpired && (primary is OperationCanceledException or TimeoutException);
+            workExpiry is null && (primary is OperationCanceledException or TimeoutException);
         if (primary is not null && !localInterruption) originalBudget?.BeginFailureCleanup();
         Exception? cleanupFailure = null;
         try { await owner.SettleAsync(); }
@@ -119,6 +123,13 @@ internal sealed class WindowsProcessTree
                 ? new SnapshotCleanupException(cleanupFailure ?? new IOException("Windows process boundary is unsettled."))
                 : new SnapshotCleanupException(primary, cleanupFailure ?? new IOException("Windows process boundary is unsettled."));
         }
+        // An independent native/capture fault remains first even if a peer
+        // latched WORK during retirement. A subordinate OCE may cross WORK;
+        // only the locked owner classifier can promote it after known closure.
+        if (primary is not null && !timedOut && primary is not OperationCanceledException)
+            ExceptionDispatchInfo.Capture(primary).Throw();
+        if (originalBudget?.TryBeginWorkExpiry() == true)
+            ExceptionDispatchInfo.Capture(workExpiry ?? new ResolvedGraphWorkExpiredException()).Throw();
         if (primary is not null && !timedOut) ExceptionDispatchInfo.Capture(primary).Throw();
         return new(exitCode, timedOut, owner._output is null ? "" : await owner._output,
             owner._error is null ? "" : await owner._error, Stopwatch.GetElapsedTime(owner._started));
@@ -139,6 +150,7 @@ internal sealed class WindowsProcessTree
         if (Stopwatch.GetElapsedTime(_cleanupStarted.Value) >= limit ||
             _originalBudget is null && Stopwatch.GetElapsedTime(_started) >= _whole)
             throw new TimeoutException("Original Windows process cleanup endpoint expired; no deadline reset.");
+        _ = _originalBudget?.TryBeginWorkExpiry();
         _originalBudget?.CheckDisposition();
     }
 

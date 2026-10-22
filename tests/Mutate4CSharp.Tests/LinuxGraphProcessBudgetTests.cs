@@ -251,14 +251,14 @@ public sealed class LinuxGraphProcessBudgetTests : IDisposable
             _ = actualChild.SafeHandle; _ = actualChild.StartTime;
             Assert.False(actualChild.HasExited);
             var originalChild = ReadOriginalLinuxIdentity(actualChild.Id);
-            var timedOut = await run;
-            Assert.True(timedOut.TimedOut); AssertOriginalLinuxProcessTerminated(originalChild);
+            await Assert.ThrowsAsync<ResolvedGraphWorkExpiredException>(() => run);
+            AssertOriginalLinuxProcessTerminated(originalChild);
             Assert.Equal(origin.Original, budget.Observe().Original);
             Assert.Equal(origin.WholeTicks, budget.Observe().WholeTicks);
             Assert.True(Stopwatch.GetElapsedTime(origin.Original) >= TimeSpan.FromTicks(origin.WorkTicks));
             Assert.NotNull(budget.Observe().Cleanup);
             Assert.True(budget.RemainingDisposition > TimeSpan.Zero);
-            Assert.Throws<EvaluationContractException>(budget.CheckWork);
+            Assert.Throws<ResolvedGraphWorkExpiredException>(budget.CheckWork);
         }
         finally
         {

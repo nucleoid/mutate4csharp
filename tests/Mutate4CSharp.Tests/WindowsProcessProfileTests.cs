@@ -224,13 +224,12 @@ public sealed class WindowsProcessProfileTests
         await using var owned = OwnedDirectory.Create(OwnedDirectory.PrivateParent("windows-work-timer"), "fixture");
         var budget = new ResolvedGraphBudget(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
         var original = budget.Observe();
-        using var workTimer = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        workTimer.CancelAfter(budget.RemainingWork);
-        var actual = await ProcessTree.RunAsync(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe"),
+        await Assert.ThrowsAsync<ResolvedGraphWorkExpiredException>(() => ProcessTree.RunAsync(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe"),
             ["/d", "/c", "echo born>actual-born.txt & ping -n 60 127.0.0.1 > nul"], owned.Root,
-            TimeSpan.FromSeconds(30), workTimer.Token, originalBudget: budget);
+            TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken, originalBudget: budget));
         Assert.True(File.Exists(Path.Combine(owned.Root, "actual-born.txt")));
-        Assert.True(actual.TimedOut); Assert.True(budget.WorkEndpointExpired);
+        Assert.True(budget.WorkEndpointExpired);
+        Assert.Throws<ResolvedGraphWorkExpiredException>(budget.CheckWork);
         Assert.Equal(original.Original, budget.Observe().Original); Assert.Equal(original.WholeTicks, budget.Observe().WholeTicks);
         Assert.NotNull(budget.Observe().Cleanup); Assert.True(budget.RemainingDisposition > TimeSpan.Zero);
         WindowsProcessTree.AssertDirectoryMayBeRemoved(owned.Root);

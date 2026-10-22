@@ -6,6 +6,39 @@ namespace Mutate4CSharp.Tests;
 // object is a native scope or producer authority. All cases remain UNEXECUTED.
 public sealed class ResolvedGraphBudgetTests
 {
+
+    [Theory]
+    [InlineData("unknown")]
+    [InlineData("imported")]
+    [InlineData("cancelled")]
+    public async Task Earlier_unknown_cleanup_or_cancellation_never_becomes_work_expiry(string mode)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var owner = new ResolvedGraphBudget(TimeSpan.FromMilliseconds(100), cancellation.Token);
+        var original = owner.Observe();
+        if (mode == "unknown") owner.BeginFailureCleanup();
+        else if (mode == "imported") owner.ImportEarlierCleanup(original with { Cleanup = original.Original });
+        else cancellation.Cancel();
+        while (!owner.WorkEndpointExpired) await Task.Delay(5, TestContext.Current.CancellationToken);
+        Assert.False(owner.TryBeginWorkExpiry());
+        if (mode == "cancelled") Assert.Throws<OperationCanceledException>(owner.CheckWork);
+        else Assert.Throws<EvaluationContractException>(owner.CheckWork);
+    }
+
+    [Fact]
+    public async Task Actual_work_cause_is_sticky_but_is_not_exported_as_observation_authority()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var owner = new ResolvedGraphBudget(TimeSpan.FromMilliseconds(100), cancellation.Token);
+        while (!owner.WorkEndpointExpired) await Task.Delay(5, TestContext.Current.CancellationToken);
+        Assert.True(owner.TryBeginWorkExpiry());
+        var cleanup = owner.Observe();
+        owner.BeginFailureCleanup(); cancellation.Cancel();
+        Assert.Throws<ResolvedGraphWorkExpiredException>(owner.CheckWork);
+        Assert.True(owner.TryBeginWorkExpiry()); Assert.Equal(cleanup, owner.Observe());
+        Assert.Throws<EvaluationContractException>(() => new ResolvedGraphBudget(cleanup, CancellationToken.None));
+    }
+
     [Fact]
     public void Worker_view_retains_same_running_original_and_cannot_renew_it()
     {
@@ -60,7 +93,7 @@ public sealed class ResolvedGraphBudgetTests
                 await Task.Delay(5, TestContext.Current.CancellationToken);
             Assert.Throws<ResolvedGraphWorkExpiredException>(owner.CheckWork);
             Assert.NotNull(owner.Observe().Cleanup);
-            Assert.Throws<EvaluationContractException>(() => inputs.Read(path + "-never-opened", "source"));
+            Assert.Throws<ResolvedGraphWorkExpiredException>(() => inputs.Read(path + "-never-opened", "source"));
             Assert.Throws<ResolvedGraphWorkExpiredException>(() => new ResolvedGraphBudget(observation, CancellationToken.None));
             owner.BeginFailureCleanup();
             owner.CheckDisposition();

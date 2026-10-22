@@ -9,6 +9,86 @@ public sealed class StrictMutationExecutorTests : IDisposable
     private readonly SnapshotTestRepository _repository = new();
 
     [Fact(Timeout = 420_000)]
+    public async Task Actual_two_worker_executor_work_expiry_retires_then_omits_remaining_units()
+    {
+        Assert.SkipWhen(!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux(), "Actual supported native graph owners.");
+        var cancellation = TestContext.Current.CancellationToken;
+        await using var markers = OwnedDirectory.Create(OwnedDirectory.PrivateParent("actual-expiry-markers"), "fixture");
+        WriteFixture();
+        var literal = System.Text.Json.JsonSerializer.Serialize(markers.Root);
+        _repository.WriteText("src/App/Flag.cs", $$"""
+            namespace App;
+            public static class Flag
+            {
+                public static bool Value()
+                {
+                    bool first = false, second = false, third = false, fourth = false;
+                    bool stay = first || second || third || fourth;
+                    if (stay) System.IO.File.WriteAllText(System.IO.Path.Combine({{literal}}, System.Environment.ProcessId + ".data"), "actual-loop-entered");
+                    while (stay) System.Threading.Thread.Sleep(10);
+                    return true;
+                }
+            }
+            """);
+        _repository.Git("add", "."); _repository.Git("commit", "-m", "real aggregate work expiry fixture");
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [], SnapshotCaptureOptions.Default, cancellation);
+        await using var environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
+            ["tests/App.Tests/App.Tests.csproj"], DependencyPreparationOptions.Default with { Timeout = TimeSpan.FromMinutes(2) }, cancellation);
+        var suite = new SuiteExecution("suite-identity", ["unit"], "tests/App.Tests/App.Tests.csproj", "vstest", "net10.0", "Release", ["App.Tests.dll"]);
+        await using var baseline = await new VstestSuiteExecutor(snapshot, environment).RunBaselineAsync(suite, TimeSpan.FromMinutes(2), cancellation);
+        Assert.Equal(SuiteRunDisposition.Passed, baseline.Disposition);
+        var source = File.ReadAllText(Path.Combine(_repository.Root, "src/App/Flag.cs"));
+        var tree = CSharpSyntaxTree.ParseText(SourceText.From(source), path: "src/App/Flag.cs", cancellationToken: cancellation);
+        var syntax = tree.GetRoot(cancellation);
+        var candidates = syntax.DescendantTokens().Where(token => token.ValueText == "false").Select(token =>
+        {
+            var mutation = MutationIdentity.Create("src/App/Flag.cs", syntax, token.Span, "literal.boolean", MutationIdentity.OperatorContractVersion, "true");
+            var unit = EvaluationUnitIdentity.Compute(new(mutation.MutationId, "src/App/App.csproj", "net10.0", "net10-csharp14"));
+            return new MutationCandidate(mutation.MutationId, unit, mutation.Material, "src/App/App.csproj", "net10.0", "net10-csharp14",
+                token.SpanStart, token.Span.Length, token.Text, tree.GetLineSpan(token.Span, cancellation).StartLinePosition.Line + 1);
+        }).ToArray();
+        Assert.Equal(4, candidates.Length);
+        // Existing real-loop fixture's four-minute original and 420s test limit.
+        // Two workers are the direct Scheduler API control, not the production
+        // strict pipeline's deliberately single-worker scheduling policy.
+        var original = new ResolvedGraphBudget(TimeSpan.FromMinutes(4), cancellation);
+        var before = original.Observe();
+        var actual = new StrictMutationExecutor(snapshot, environment, candidates, [suite],
+            new Dictionary<string, bool> { [suite.Identity] = true }, resolvedGraph: true, originalBudget: original);
+        var observed = new CountingActualExecutor(actual);
+        var scheduled = candidates.Select(candidate => new ScheduledMutation(candidate.MutationId, candidate.EvaluationUnitId, [suite.Identity])).ToArray();
+        var result = await new EvaluationScheduler(observed, TimeProvider.System).RunAsync(scheduled, 2,
+            TimeSpan.FromMinutes(4), DateTimeOffset.UtcNow.AddMinutes(5), cancellation);
+        Assert.Equal(2, observed.Calls);
+        var born = Directory.GetFiles(markers.Root, "*.data");
+        Assert.Equal(2, born.Length); // Both actual mutated test bodies reached the loop.
+        Assert.All(born, path => Assert.Equal("actual-loop-entered", File.ReadAllText(path)));
+        Assert.All(result.Results, row => Assert.Equal(UnitDisposition.Omitted, row.Disposition));
+        Assert.Contains(result.IncompleteConditions, row => row.Code == "OVERALL_DEADLINE_EXCEEDED");
+        Assert.Equal(2, result.Results.Count(row => row.Evidence.Any(item => item.Kind == "DEADLINE_BEFORE_ASSIGNMENT")));
+        Assert.DoesNotContain(result.Results.SelectMany(row => row.Evidence), row => row.Kind is "MUTANT_EXECUTION_INCOMPLETE" or "MUTANT_TIMEOUT");
+        Assert.Throws<ResolvedGraphWorkExpiredException>(original.CheckWork);
+        Assert.Equal(before.Original, original.Observe().Original);
+        Assert.Equal(before.WholeTicks, original.Observe().WholeTicks);
+        Assert.True(original.RemainingDisposition > TimeSpan.Zero);
+        Assert.Equal(source, File.ReadAllText(Path.Combine(_repository.Root, "src/App/Flag.cs")));
+        // Returning the actual executor proves its normal native first-retirement
+        // and owned worker/cache dispositions returned. No PID reuse/adoption or
+        // fixture DTO asserts native authority; existing unknown-owner controls remain.
+    }
+
+    private sealed class CountingActualExecutor(IIsolatedMutationExecutor actual) : IIsolatedMutationExecutor
+    {
+        private int calls;
+        internal int Calls => Volatile.Read(ref calls);
+        public Task<ScheduledMutationResult> ExecuteAsync(ScheduledMutation mutation, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref calls);
+            return actual.ExecuteAsync(mutation, timeout, cancellationToken);
+        }
+    }
+
+    [Fact(Timeout = 420_000)]
     public async Task Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant()
     {
         Assert.SkipWhen(!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux(), "Actual supported native graph process owners.");

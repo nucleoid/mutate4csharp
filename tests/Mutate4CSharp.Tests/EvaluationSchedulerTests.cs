@@ -2,6 +2,37 @@ namespace Mutate4CSharp.Tests;
 
 public sealed class EvaluationSchedulerTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Contiguous_outer_units_stop_after_actual_owner_expiry_without_calling_executor_again(bool cancelAfterExpiry)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var original = new ResolvedGraphBudget(TimeSpan.FromMilliseconds(100), CancellationToken.None);
+        while (!original.WorkEndpointExpired) await Task.Delay(5, TestContext.Current.CancellationToken);
+        var calls = 0;
+        var executor = new DelegateMutationExecutor((_, _, _) =>
+        {
+            Interlocked.Increment(ref calls);
+            try { original.CheckWork(); }
+            finally { if (cancelAfterExpiry) cancellation.Cancel(); }
+            throw new InvalidOperationException("Expired owner cannot return.");
+        });
+        var units = new[] { 'a', 'b', 'c' }.Select(value => new ScheduledMutation(
+            "mutation:v1:" + new string(value, 64), "evaluation:v1:" + new string(value, 64), ["unit"])).ToArray();
+        var batch = await StrictExecutionPipeline.RunContiguousAttemptsAsync(executor, units, 2,
+            TimeSpan.FromSeconds(10), DateTimeOffset.UtcNow.AddMinutes(1), TimeProvider.System, cancellation.Token);
+        Assert.Equal(1, calls);
+        Assert.All(batch.Attempts.Values, rows => Assert.Equal(UnitDisposition.Omitted, Assert.Single(rows).Disposition));
+        Assert.Contains(batch.IncompleteConditions, row => row.Code == "OVERALL_DEADLINE_EXCEEDED");
+        foreach (var unit in units.Skip(1))
+            Assert.Contains(Assert.Single(batch.Attempts[unit.EvaluationUnitId]).Evidence,
+                row => row.Kind == (cancelAfterExpiry ? "CANCELLED_BEFORE_ASSIGNMENT" : "DEADLINE_BEFORE_ASSIGNMENT"));
+        Assert.Equal(cancelAfterExpiry, batch.IncompleteConditions.Any(row => row.Code == "EXECUTION_CANCELLED"));
+        Assert.DoesNotContain(batch.Attempts.Values.SelectMany(rows => rows).SelectMany(row => row.Evidence),
+            row => row.Kind is "MUTANT_EXECUTION_INCOMPLETE" or "MUTANT_TIMEOUT");
+    }
+
     [Fact]
     public async Task SchedulerBoundsEvidenceWithoutSplittingSurrogatePairs()
     {
