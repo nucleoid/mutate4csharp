@@ -43,7 +43,7 @@ internal static class ProcessTree
         long maxOutputBytes = DefaultMaxOutputBytes, bool requireLinuxSessionIsolation = false,
         ResolvedGraphBudget? originalBudget = null)
     {
-        if (OperatingSystem.IsWindows() && originalBudget is not null)
+        if (OperatingSystem.IsWindows())
             return await WindowsProcessTree.RunAsync(executable, arguments, workingDirectory, timeout,
                 cancellationToken, environment, maxOutputBytes, originalBudget);
         CheckWork();

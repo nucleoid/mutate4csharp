@@ -86,6 +86,9 @@ internal sealed class WindowsProcessTree
             owner.CheckWork();
             if (!GetExitCodeProcess(owner._process!, out var actualExit)) throw Native("root-exit-code");
             exitCode = unchecked((int)actualExit);
+            // Legacy success does not acquire graph success-time descendant kill.
+            // Share the original five-second cleanup endpoint with later settlement.
+            if (originalBudget is null) await owner.WaitForLegacySuccessAsync();
         }
         catch (OperationCanceledException failure)
         {
@@ -233,6 +236,29 @@ internal sealed class WindowsProcessTree
         if (!_created) return true;
         var wait = WaitForSingleObject(_process!, 0);
         return wait == 0 ? true : wait == 258 ? false : throw Native("observe-original-root");
+    }
+
+    private async Task WaitForLegacySuccessAsync()
+    {
+        while (true)
+        {
+            CheckCleanup(); // Starts once; clipped to original timeout + five seconds.
+            _caller.ThrowIfCancellationRequested();
+            if (_output!.IsFaulted || _output.IsCanceled) await _output;
+            if (_error!.IsFaulted || _error.IsCanceled) await _error;
+            if (!QueryInformationJobObject(_job!, 1, out var accounting,
+                    (uint)Marshal.SizeOf<BasicAccounting>(), IntPtr.Zero))
+                throw Native("observe-legacy-success-job");
+            // EOF alone cannot license disposal while an original member remains.
+            if (accounting.ActiveProcesses == 0 && _output.IsCompleted && _error.IsCompleted)
+            {
+                await Task.WhenAll(_output, _error);
+                CheckCleanup();
+                _caller.ThrowIfCancellationRequested();
+                return;
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(10), _caller);
+        }
     }
 
     private async Task SettleAsync()

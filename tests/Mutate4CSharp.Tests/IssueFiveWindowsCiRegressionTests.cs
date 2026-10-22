@@ -41,8 +41,9 @@ public sealed class IssueFiveWindowsCiRegressionTests
             {{(cancel ? "Start-Sleep -Seconds 60" : "exit 0")}}
             """;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var original = new ResolvedGraphBudget(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
         var run = ProcessTree.RunAsync(shell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Encoded(root)],
-            directory.Root, TimeSpan.FromSeconds(30), cancellation.Token);
+            directory.Root, TimeSpan.FromSeconds(30), cancellation.Token, originalBudget: original);
         System.Diagnostics.Process? actualChild = null;
         DateTime? actualStart = null;
         try
