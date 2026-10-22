@@ -58,9 +58,10 @@ public sealed class ResolvedGraphBudgetTests
             stream.WriteByte(42); stream.Flush(true);
             while (System.Diagnostics.Stopwatch.GetElapsedTime(observation.Original).Ticks < observation.WorkTicks)
                 await Task.Delay(5, TestContext.Current.CancellationToken);
-            Assert.Throws<TimeoutException>(owner.CheckWork);
-            Assert.Throws<TimeoutException>(() => inputs.Read(path + "-never-opened", "source"));
-            Assert.Throws<TimeoutException>(() => new ResolvedGraphBudget(observation, CancellationToken.None));
+            Assert.Throws<ResolvedGraphWorkExpiredException>(owner.CheckWork);
+            Assert.NotNull(owner.Observe().Cleanup);
+            Assert.Throws<EvaluationContractException>(() => inputs.Read(path + "-never-opened", "source"));
+            Assert.Throws<ResolvedGraphWorkExpiredException>(() => new ResolvedGraphBudget(observation, CancellationToken.None));
             owner.BeginFailureCleanup();
             owner.CheckDisposition();
             Assert.InRange(owner.RemainingDisposition.Ticks, 1, observation.WholeTicks - observation.WorkTicks);
@@ -117,7 +118,7 @@ public sealed class ResolvedGraphBudgetTests
     {
         var owner = new ResolvedGraphBudget(TimeSpan.FromSeconds(30), CancellationToken.None);
         var actual = owner.Observe();
-        Assert.Throws<TimeoutException>(() => new ResolvedGraphBudget(actual with {
+        Assert.Throws<ResolvedGraphWorkExpiredException>(() => new ResolvedGraphBudget(actual with {
             Original = Stopwatch.GetTimestamp() - Math.Max(1, Stopwatch.Frequency / 1000), WorkTicks = 1
         }, CancellationToken.None));
         using var cancellation = new CancellationTokenSource();

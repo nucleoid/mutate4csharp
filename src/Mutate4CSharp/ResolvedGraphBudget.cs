@@ -78,9 +78,11 @@ internal sealed class ResolvedGraphBudget
         {
             if (_cleanup is not null) throw new EvaluationContractException("Actual graph owner has entered terminal cleanup; no further work.");
             _token.ThrowIfCancellationRequested();
-            CheckWhole();
             if (Stopwatch.GetElapsedTime(_original) >= _work)
-                throw new TimeoutException("Actual graph original work endpoint expired.");
+            {
+                _cleanup ??= Stopwatch.GetTimestamp();
+                throw new ResolvedGraphWorkExpiredException();
+            }
         }
     }
 
@@ -139,3 +141,6 @@ internal sealed class ResolvedGraphBudget
 
 internal sealed record ResolvedGraphBudgetObservation(long Original, long Frequency,
     long WholeTicks, long WorkTicks, long? Cleanup);
+
+// Exact owner-issued WORK expiry; a subordinate timer never creates this cause.
+internal sealed class ResolvedGraphWorkExpiredException() : TimeoutException("Actual graph original work endpoint expired.");

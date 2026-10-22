@@ -160,9 +160,9 @@ internal static class ProcessTree
             try { await StopRootForCleanup(); }
             catch (Exception cleanup) { throw CreateCleanupFailure(primaryFailure, cleanup); }
             await CompleteCancellationCleanupAsync(primaryFailure,
-                async () => { _ = await AwaitOutputsAsync(outputTask, errorTask, drainCancellation, originalBudget); },
+                async () => { _ = await AwaitOutputsAsync(outputTask, errorTask, drainCancellation, originalBudget, originalProcess); },
                 () => linuxBoundary.Isolated
-                    ? TerminateAndReapLinuxBoundaryAsync(linuxBoundary, originalBudget)
+                    ? TerminateAndReapLinuxBoundaryAsync(linuxBoundary, originalBudget, originalProcess)
                     : Task.CompletedTask);
             if (!timedOut)
             {
@@ -184,7 +184,7 @@ internal static class ProcessTree
             CancelAndObserveOutputs(outputTask, errorTask, drainCancellation);
             try
             {
-                if (linuxBoundary.Isolated) await TerminateAndReapLinuxBoundaryAsync(linuxBoundary, originalBudget);
+                if (linuxBoundary.Isolated) await TerminateAndReapLinuxBoundaryAsync(linuxBoundary, originalBudget, originalProcess);
                 if (originalProcess is not null)
                 {
                     // Cancellation requests are not task-completion observations.
@@ -201,14 +201,14 @@ internal static class ProcessTree
         if (useStrictLinuxBoundary)
         {
             var strictOutput = await CompleteStrictSuccessAsync(process, linuxBoundary, outputTask, errorTask,
-                drainCancellation, originalBudget);
+                drainCancellation, originalBudget, originalProcess);
             if (originalProcess is not null) await originalProcess.JoinObserversAsync();
             originalProcess?.CloseSettled();
             originalProcess?.ThrowObserverFailures();
             strictLaunch!.MarkSettled();
             return new(strictExitCode ?? -1, timedOut, strictOutput.Output, strictOutput.Error, watch.Elapsed);
         }
-        var (output, error) = await AwaitOutputsAsync(outputTask, errorTask, drainCancellation, originalBudget);
+        var (output, error) = await AwaitOutputsAsync(outputTask, errorTask, drainCancellation, originalBudget, originalProcess);
         var result = new ProcessTreeResult(process.HasExited ? process.ExitCode : -1, timedOut, output, error, watch.Elapsed);
         if (originalProcess is not null) await originalProcess.JoinObserversAsync();
         originalProcess?.CloseSettled();
@@ -218,26 +218,46 @@ internal static class ProcessTree
         void CheckWork() { originalBudget?.CheckWork(); cancellationToken.ThrowIfCancellationRequested(); }
         async Task WaitForRootCleanup()
         {
+            _ = originalProcess?.RemainingRetirement;
             originalBudget?.CheckDisposition();
             var exit = process.WaitForExitAsync(CancellationToken.None);
             originalProcess?.Track(exit);
             if (originalBudget is null) await exit;
-            else await exit.WaitAsync(originalBudget.RemainingDisposition);
+            else await exit.WaitAsync(originalProcess!.RemainingRetirement);
+            _ = originalProcess?.RemainingRetirement;
             originalBudget?.CheckDisposition();
         }
         async Task StopRootForCleanup()
         {
+            // One local first-retirement endpoint, clipped to the SAME original.
+            _ = originalProcess?.RemainingRetirement;
             originalBudget?.CheckDisposition();
             linked.Cancel(); // The original completion observer must also become terminal.
-            KillLinuxBoundaryForFailure(linuxBoundary, originalBudget);
+            KillLinuxBoundaryForFailure(linuxBoundary, originalBudget, originalProcess);
             originalBudget?.CheckDisposition();
-            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+            if (originalProcess is null)
+            {
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+            }
+            else
+            {
+                var exited = process.HasExited;
+                _ = originalProcess.RemainingRetirement;
+                originalBudget!.CheckDisposition();
+                if (!exited)
+                {
+                    // Endpoint checks stay outside the legacy best-effort catch.
+                    try { process.Kill(entireProcessTree: true); } catch { }
+                }
+                _ = originalProcess.RemainingRetirement;
+            }
             if (originalBudget is null) { try { await WaitForRootCleanup(); } catch { } }
             else await WaitForRootCleanup();
             if (completionTask is not null)
             {
-                try { await completionTask.WaitAsync(originalBudget?.RemainingDisposition ?? OutputDrainTimeout); }
+                try { await completionTask.WaitAsync(originalProcess?.RemainingRetirement ?? OutputDrainTimeout); }
                 catch (OperationCanceledException) { } // Cancellation is an observed terminal observer state.
+                _ = originalProcess?.RemainingRetirement;
                 originalBudget?.CheckDisposition();
             }
         }
@@ -270,43 +290,57 @@ internal static class ProcessTree
         }
     }
 
-    private static void KillLinuxBoundaryForFailure(LinuxProcessBoundary boundary, ResolvedGraphBudget? originalBudget = null)
+    private static void KillLinuxBoundaryForFailure(LinuxProcessBoundary boundary, ResolvedGraphBudget? originalBudget = null,
+        LinuxOriginalProcessFrame? originalProcess = null)
     {
+        _ = originalProcess?.RemainingRetirement;
         originalBudget?.CheckDisposition();
         if (boundary.Isolated)
         {
             CaptureLinuxOwnedProcesses(boundary);
-            TryKillLinuxProcessGroups(boundary, originalBudget);
-            TryKillLinuxProcesses(boundary.Owned, originalBudget);
+            _ = originalProcess?.RemainingRetirement;
+            originalBudget?.CheckDisposition();
+            TryKillLinuxProcessGroups(boundary, originalBudget, originalProcess);
+            TryKillLinuxProcesses(boundary.Owned, originalBudget, originalProcess);
             return;
         }
-        if (boundary.Launched is not { } launched || !IsSameLinuxProcess(launched)) return;
-        TryKillLinuxProcesses(CaptureLinuxDescendants(launched.Pid), originalBudget);
+        if (boundary.Launched is not { } launched) return;
+        var same = IsSameLinuxProcess(launched);
+        _ = originalProcess?.RemainingRetirement;
+        originalBudget?.CheckDisposition();
+        if (!same) return;
+        var descendants = CaptureLinuxDescendants(launched.Pid);
+        _ = originalProcess?.RemainingRetirement;
+        originalBudget?.CheckDisposition();
+        TryKillLinuxProcesses(descendants, originalBudget, originalProcess);
     }
 
     private static async Task<(string Output, string Error)> CompleteStrictSuccessAsync(Process process,
         LinuxProcessBoundary boundary, Task<string> output, Task<string> error,
-        CancellationTokenSource drainCancellation, ResolvedGraphBudget? originalBudget = null)
+        CancellationTokenSource drainCancellation, ResolvedGraphBudget? originalBudget = null,
+        LinuxOriginalProcessFrame? originalProcess = null)
     {
         var failures = new List<Exception>();
-        try { await TerminateAndReapLinuxBoundaryAsync(boundary, originalBudget); }
+        try { await TerminateAndReapLinuxBoundaryAsync(boundary, originalBudget, originalProcess); }
         catch (Exception ex) { failures.Add(ex); }
         try
         {
+            _ = originalProcess?.RemainingRetirement;
             originalBudget?.CheckDisposition();
             var exit = process.WaitForExitAsync(CancellationToken.None);
             if (originalBudget is null) await exit;
-            else await exit.WaitAsync(originalBudget.RemainingDisposition);
+            else await exit.WaitAsync(originalProcess?.RemainingRetirement ?? originalBudget.RemainingDisposition);
+            _ = originalProcess?.RemainingRetirement;
             originalBudget?.CheckDisposition();
         }
         catch (Exception ex) { failures.Add(ex); }
         (string Output, string Error) drained = default;
-        try { drained = await AwaitOutputsAsync(output, error, drainCancellation, originalBudget); }
+        try { drained = await AwaitOutputsAsync(output, error, drainCancellation, originalBudget, originalProcess); }
         catch (Exception ex) { failures.Add(ex); }
         if (failures.Count == 0) return drained;
 
         CancelAndObserveOutputs(output, error, drainCancellation);
-        try { await TerminateAndReapLinuxBoundaryAsync(boundary, originalBudget); }
+        try { await TerminateAndReapLinuxBoundaryAsync(boundary, originalBudget, originalProcess); }
         catch (Exception ex) { failures.Add(ex); }
         var cleanupFailure = failures.Count == 1
             ? failures[0]
@@ -475,15 +509,20 @@ internal static class ProcessTree
     }
 
     private static async Task<(string Output, string Error)> AwaitOutputsAsync(Task<string> output,
-        Task<string> error, CancellationTokenSource drainCancellation, ResolvedGraphBudget? originalBudget = null)
+        Task<string> error, CancellationTokenSource drainCancellation, ResolvedGraphBudget? originalBudget = null,
+        LinuxOriginalProcessFrame? originalProcess = null)
     {
         try
         {
             originalBudget?.CheckDisposition();
             var remaining = OutputDrainTimeout;
-            if (originalBudget is not null && originalBudget.RemainingDisposition < remaining)
-                remaining = originalBudget.RemainingDisposition;
+            if (originalBudget is not null)
+            {
+                var existing = originalProcess?.RemainingRetirement ?? originalBudget.RemainingDisposition;
+                if (existing < remaining) remaining = existing;
+            }
             await Task.WhenAll(output, error).WaitAsync(remaining);
+            _ = originalProcess?.RemainingRetirement;
             originalBudget?.CheckDisposition();
             return (await output, await error);
         }
@@ -593,25 +632,35 @@ internal static class ProcessTree
         return false;
     }
 
-    private static void TryKillLinuxProcesses(IEnumerable<LinuxProcessIdentity> processes, ResolvedGraphBudget? originalBudget = null)
+    private static void TryKillLinuxProcesses(IEnumerable<LinuxProcessIdentity> processes, ResolvedGraphBudget? originalBudget = null,
+        LinuxOriginalProcessFrame? originalProcess = null)
     {
         foreach (var identity in processes)
         {
+            _ = originalProcess?.RemainingRetirement;
             originalBudget?.CheckDisposition();
-            if (!IsSameLinuxProcess(identity)) continue;
+            var same = IsSameLinuxProcess(identity);
+            _ = originalProcess?.RemainingRetirement;
+            originalBudget?.CheckDisposition();
+            if (!same) continue;
             try
             {
                 using var process = Process.GetProcessById(identity.Pid);
+                _ = originalProcess?.RemainingRetirement;
+                originalBudget?.CheckDisposition();
                 process.Kill(entireProcessTree: true);
             }
             catch (ArgumentException) { }
             catch (InvalidOperationException) { }
             catch (System.ComponentModel.Win32Exception) { }
             catch (NotSupportedException) { }
+            _ = originalProcess?.RemainingRetirement;
+            originalBudget?.CheckDisposition();
         }
     }
 
-    private static async Task TerminateAndReapLinuxBoundaryAsync(LinuxProcessBoundary boundary, ResolvedGraphBudget? originalBudget = null)
+    private static async Task TerminateAndReapLinuxBoundaryAsync(LinuxProcessBoundary boundary, ResolvedGraphBudget? originalBudget = null,
+        LinuxOriginalProcessFrame? originalProcess = null)
     {
         if (!OperatingSystem.IsLinux() || boundary.Launched is null) return;
         var watch = Stopwatch.StartNew();
@@ -619,9 +668,12 @@ internal static class ProcessTree
         var nextGroupScan = TimeSpan.Zero;
         while (true)
         {
+            _ = originalProcess?.RemainingRetirement;
             originalBudget?.CheckDisposition();
             var includeGroupScan = watch.Elapsed >= nextGroupScan;
             CaptureLinuxOwnedProcesses(boundary, includeGroupScan);
+            _ = originalProcess?.RemainingRetirement;
+            originalBudget?.CheckDisposition();
             if (includeGroupScan)
             {
                 groupScanDelay = TimeSpan.FromMilliseconds(Math.Min(
@@ -630,15 +682,20 @@ internal static class ProcessTree
             }
             var remaining = boundary.Owned.Where(identity => identity.Pid != Environment.ProcessId)
                 .Where(IsSameLinuxProcess).ToArray();
+            _ = originalProcess?.RemainingRetirement;
+            originalBudget?.CheckDisposition();
             if (remaining.Length == 0) return;
-            TryKillLinuxProcessGroups(boundary, originalBudget);
-            TryKillLinuxProcesses(remaining, originalBudget);
+            TryKillLinuxProcessGroups(boundary, originalBudget, originalProcess);
+            TryKillLinuxProcesses(remaining, originalBudget, originalProcess);
             if (watch.Elapsed >= LinuxDescendantReapingTimeout)
                 throw new IOException("Timed out waiting for the owned Linux process boundary to become empty: " +
                     string.Join(", ", remaining.Select(item => item.Pid)));
             var delay = LinuxObservationInitialDelay;
-            if (originalBudget is not null && originalBudget.RemainingDisposition < delay)
-                delay = originalBudget.RemainingDisposition;
+            if (originalBudget is not null)
+            {
+                var existing = originalProcess?.RemainingRetirement ?? originalBudget.RemainingDisposition;
+                if (existing < delay) delay = existing;
+            }
             await Task.Delay(delay, CancellationToken.None);
         }
     }
@@ -671,15 +728,19 @@ internal static class ProcessTree
         return true;
     }
 
-    private static void TryKillLinuxProcessGroups(LinuxProcessBoundary boundary, ResolvedGraphBudget? originalBudget = null)
+    private static void TryKillLinuxProcessGroups(LinuxProcessBoundary boundary, ResolvedGraphBudget? originalBudget = null,
+        LinuxOriginalProcessFrame? originalProcess = null)
     {
         if (!OperatingSystem.IsLinux() || !boundary.Isolated) return;
         var groups = new HashSet<int>();
         foreach (var expected in boundary.Owned)
         {
+            _ = originalProcess?.RemainingRetirement;
             originalBudget?.CheckDisposition();
-            if (!TryReadLinuxIdentity(expected.Pid, out var current) || current.IsZombie ||
-                !HasContinuousLinuxIdentity(expected, current)) continue;
+            var observed = TryReadLinuxIdentity(expected.Pid, out var current);
+            _ = originalProcess?.RemainingRetirement;
+            originalBudget?.CheckDisposition();
+            if (!observed || current.IsZombie || !HasContinuousLinuxIdentity(expected, current)) continue;
             if (current.ProcessGroupId == boundary.ProcessGroupId)
                 groups.Add(boundary.ProcessGroupId);
             if (current.Pid == current.ProcessGroupId && current.Pid == current.SessionId)
@@ -687,12 +748,15 @@ internal static class ProcessTree
         }
         foreach (var group in groups)
         {
+            _ = originalProcess?.RemainingRetirement;
             originalBudget?.CheckDisposition();
             try { _ = Kill(-group, 9); }
             catch (DllNotFoundException) { }
             catch (EntryPointNotFoundException) { }
             catch (BadImageFormatException) { }
             catch (MarshalDirectiveException) { }
+            _ = originalProcess?.RemainingRetirement;
+            originalBudget?.CheckDisposition();
         }
     }
 
@@ -716,6 +780,7 @@ internal static class ProcessTree
         private readonly Action? settled;
         private bool birthEntered, birthReturned, born, closeRequested, closeReturned, retained;
         private Exception? closeFailure;
+        private long? retirementStarted;
         internal Process Process { get; }
         internal object? Boundary { get; set; } // Retain observed identities only; never adopt or reconstruct them.
         internal LinuxOriginalProcessFrame(Process process, ResolvedGraphBudget original,
@@ -754,15 +819,34 @@ internal static class ProcessTree
                 left.StartsWith(right + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
                 right.StartsWith(left + Path.DirectorySeparatorChar, StringComparison.Ordinal);
         }
+        internal TimeSpan RemainingRetirement
+        {
+            get
+            {
+                // This is only a restriction on this already-owned process,
+                // never another aggregate cleanup interval or a native grant.
+                retirementStarted ??= Stopwatch.GetTimestamp();
+                if (budget.CancellationRequested || budget.WorkEndpointExpired) budget.BeginFailureCleanup();
+                var local = TimeSpan.FromSeconds(60) - Stopwatch.GetElapsedTime(retirementStarted.Value);
+                if (local <= TimeSpan.Zero)
+                {
+                    budget.BeginFailureCleanup();
+                    throw new TimeoutException("Original Linux process local retirement endpoint expired; no extension.");
+                }
+                var original = budget.RemainingDisposition;
+                return local < original ? local : original;
+            }
+        }
         internal T Own<T>(T resource) where T : IDisposable { resources.Add(resource); return resource; }
         internal void Track(Task observer) => observers.Add(observer);
         internal async Task JoinObserversAsync()
         {
             if (closeRequested) throw new EvaluationContractException("Original observer join cannot follow first-close.");
-            budget.CheckDisposition();
-            try { await Task.WhenAll(observers).WaitAsync(budget.RemainingDisposition).ConfigureAwait(false); }
+            _ = RemainingRetirement;
+            try { await Task.WhenAll(observers).WaitAsync(RemainingRetirement).ConfigureAwait(false); }
             catch when (observers.All(task => task.IsCompleted)) { } // Faults remain on these SAME tasks.
-            budget.CheckDisposition();
+            catch { budget.BeginFailureCleanup(); throw; }
+            _ = RemainingRetirement;
         }
         private Exception[] ObserverFailures() => observers.Where(task => task.IsFaulted).Select(task => (Exception)task.Exception!).ToArray();
         internal void PreserveObserverFailures(Exception primary)
@@ -781,17 +865,17 @@ internal static class ProcessTree
             closeRequested = true;
             try
             {
-                budget.CheckDisposition();
+                _ = RemainingRetirement;
                 if (birthEntered && !birthReturned || observers.Any(task => !task.IsCompleted) || born && !Process.HasExited)
                     throw new IOException("Actual Linux process/observers remain unsettled; retain original handles.");
                 foreach (var resource in resources.AsEnumerable().Reverse())
                 {
-                    budget.CheckDisposition();
+                    _ = RemainingRetirement;
                     resource.Dispose();
-                    budget.CheckDisposition();
+                    _ = RemainingRetirement;
                 }
                 closeReturned = true;
-                budget.CheckDisposition(); settled?.Invoke();
+                _ = RemainingRetirement; settled?.Invoke();
             }
             catch (Exception failure)
             {

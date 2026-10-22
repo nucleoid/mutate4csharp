@@ -23,6 +23,7 @@ internal sealed class ResolvedGraphCoverletMapping
     {
         original.CheckWork();
         inputs.RequireOriginal(original);
+        var knownLocalCancellation = false;
         try
         {
             ValidateRoots(sourceRoot, project, packageRoot);
@@ -37,16 +38,22 @@ internal sealed class ResolvedGraphCoverletMapping
                 "-getResultOutputFile:" + query,
                 "-getProperty:MSBuildProjectFullPath,TargetFramework,Configuration,TargetPath,AssemblyName" };
             if (noRestore) args.Add("--no-restore");
-            var built = await ProcessTree.RunAsync(dotnet, args, sourceRoot, timeout, token, environment,
-                requireLinuxSessionIsolation: true, originalBudget: original);
-            if (built.TimedOut || built.ExitCode != 0)
+            ProcessTreeResult built;
+            try
             {
-                Exception failure = built.TimedOut
-                    ? new TimeoutException("Actual graph coverage build exceeded its timeout.")
-                    : new SnapshotCaptureException("Actual graph coverage build did not complete successfully.");
-                failure.Data["ResolvedGraphCoverage.ActualBuild"] = built;
-                throw failure;
+                built = await ProcessTree.RunAsync(dotnet, args, sourceRoot, timeout, token, environment,
+                    requireLinuxSessionIsolation: true, originalBudget: original);
             }
+            catch (OperationCanceledException) when (token.IsCancellationRequested &&
+                       !original.CancellationRequested && !original.WorkEndpointExpired && original.Observe().Cleanup is null)
+            {
+                // Only this actual launcher await: it either refused before birth
+                // or retired its exact process/observers before rethrowing OCE.
+                // An unknown native/IO close throws SnapshotCleanupException instead.
+                knownLocalCancellation = true;
+                throw;
+            }
+            RequireSuccessfulBuild(built, original);
             original.CheckWork();
             var actualQuery = inputs.Read(query, "config", MaximumMappingBytes);
             inputs.ReserveAllocation(checked(8L * actualQuery.Bytes.LongLength + 8192));
@@ -74,11 +81,43 @@ internal sealed class ResolvedGraphCoverletMapping
             inputs.Recheck(after, MaximumMappingBytes);
             return new(inputs, [actualQuery, assembly, after], built);
         }
+        catch (OperationCanceledException) when (knownLocalCancellation && !original.CancellationRequested &&
+                   !original.WorkEndpointExpired && original.Observe().Cleanup is null)
+        {
+            throw; // Preserve exact subordinate cancellation, not aggregate failure.
+        }
+        catch (KnownLocalBuildTimeoutException) when (!original.CancellationRequested && !original.WorkEndpointExpired &&
+                   original.Observe().Cleanup is null)
+        {
+            throw; // Known returned/settled local timer; keep the SAME original available.
+        }
         catch
         {
             original.BeginFailureCleanup();
             throw;
         }
+    }
+
+    internal static void RequireSuccessfulBuild(ProcessTreeResult built, ResolvedGraphBudget original)
+    {
+        if (built.TimedOut)
+        {
+            original.CheckWork(); // Cancellation/expiry/terminal cleanup is never a local timeout.
+            throw new KnownLocalBuildTimeoutException(built);
+        }
+        if (built.ExitCode != 0)
+        {
+            var failure = new SnapshotCaptureException("Actual graph coverage build did not complete successfully.");
+            failure.Data["ResolvedGraphCoverage.ActualBuild"] = built;
+            throw failure;
+        }
+    }
+
+    private sealed class KnownLocalBuildTimeoutException : TimeoutException
+    {
+        internal KnownLocalBuildTimeoutException(ProcessTreeResult built)
+            : base("Actual graph coverage build exceeded its timeout.")
+        { Data["ResolvedGraphCoverage.ActualBuild"] = built; }
     }
 
     internal void Recheck()

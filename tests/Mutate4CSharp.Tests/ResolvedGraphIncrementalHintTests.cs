@@ -274,7 +274,19 @@ public sealed class ResolvedGraphIncrementalHintTests
         // failed input owner or interpret this DATA refusal as native proof.
         var failure = Record.Exception(() => fixture.Identity(fixture.Context(fixture.Props)));
         Assert.NotNull(failure);
-        Assert.True(change == "malformed-utf8" ? failure is DecoderFallbackException : failure is AggregateException);
+        if (change == "malformed-utf8")
+        {
+            var typed = Assert.IsType<SnapshotCaptureException>(failure);
+            Assert.IsType<DecoderFallbackException>(typed.InnerException);
+        }
+        else
+        {
+            // The SAME failed owner disposal retains its original typed causes,
+            // so do not replace its independent first-close aggregate.
+            var retained = Assert.IsType<AggregateException>(failure).Flatten().InnerExceptions;
+            Assert.All(retained, cause => Assert.True(change == "over-bound"
+                ? cause is SnapshotLimitException : cause is FileNotFoundException or DirectoryNotFoundException));
+        }
     }
 
     private static ResolvedProjectCapture Properties(ResolvedProjectCapture value, string key, string text)

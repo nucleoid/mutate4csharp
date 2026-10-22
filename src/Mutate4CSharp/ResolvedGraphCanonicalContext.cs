@@ -202,7 +202,10 @@ internal sealed class ResolvedGraphCanonicalContext
         // owned source/package roots in complete throwing-UTF8 text become
         // roles; no XML parse, list sorting, omission or generic path redaction.
         inputs.ReserveAllocation(checked(8L * file.Bytes.LongLength + 256));
-        var text = new UTF8Encoding(false, true).GetString(file.Bytes);
+        string text;
+        try { text = new UTF8Encoding(false, true).GetString(file.Bytes); }
+        catch (DecoderFallbackException failure)
+        { throw new SnapshotCaptureException("Generated NuGet import pair must be complete strict UTF8.", failure); }
         // The exact generated pair also has XML element-text/single-quoted
         // attribute boundaries. This only extends root-token boundaries for
         // these two complete files; all other canonical strings keep Value's
