@@ -67,6 +67,46 @@ public sealed class WindowsProcessProfileTests
         WindowsProcessTree.AssertDirectoryMayBeRemoved(owned.Root);
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task Actual_subordinate_scheduler_cancel_retires_then_admits_second_command_on_same_original()
+    {
+        Assert.SkipWhen(!OperatingSystem.IsWindows(), "Actual Windows subordinate cancellation and same-original subsequent birth.");
+        await using var owned = OwnedDirectory.Create(OwnedDirectory.PrivateParent("windows-local-stop"), "fixture");
+        var shell = PowerShellExecutable(); var ready = Path.Combine(owned.Root, "ready.data");
+        var original = new ResolvedGraphBudget(TimeSpan.FromSeconds(25), TestContext.Current.CancellationToken);
+        var before = original.Observe();
+        using var local = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var script = "[IO.File]::WriteAllText('" + ready.Replace("'", "''", StringComparison.Ordinal) + "','ready'); while($true){Start-Sleep -Milliseconds 100}";
+        var first = WindowsProcessTree.RunAsync(shell, ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+            Convert.ToBase64String(Encoding.Unicode.GetBytes(script))], owned.Root, TimeSpan.FromSeconds(15), local.Token, null, 65536, original);
+        try
+        {
+            var watch = Stopwatch.StartNew();
+            while (!File.Exists(ready))
+            {
+                if (first.IsCompleted) await first;
+                Assert.True(watch.Elapsed < TimeSpan.FromSeconds(8), "Actual first child did not signal readiness.");
+                await Task.Delay(10, TestContext.Current.CancellationToken);
+            }
+            local.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+            Assert.Equal(before, original.Observe()); original.CheckWork();
+            WindowsProcessTree.AssertDirectoryMayBeRemoved(owned.Root);
+            var second = await WindowsProcessTree.RunAsync(shell,
+                ["-NoProfile", "-NonInteractive", "-Command", "[Console]::WriteLine('second-after-local-cancel'); exit 7"],
+                owned.Root, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken, null, 65536, original);
+            Assert.Equal(7, second.ExitCode); Assert.False(second.TimedOut);
+            Assert.Contains("second-after-local-cancel", second.StandardOutput, StringComparison.Ordinal);
+            Assert.Equal(before, original.Observe()); original.CheckWork();
+            WindowsProcessTree.AssertDirectoryMayBeRemoved(owned.Root);
+        }
+        finally
+        {
+            if (!first.IsCompleted) local.Cancel();
+            try { await first; } catch when (!first.IsCompletedSuccessfully) { }
+        }
+    }
+
     [Theory(Timeout = 60_000)]
     [InlineData(false)]
     [InlineData(true)]
@@ -127,8 +167,15 @@ public sealed class WindowsProcessProfileTests
             {
                 var retired = original.Observe();
                 Assert.Equal(origin!.Original, retired.Original); Assert.Equal(origin!.WholeTicks, retired.WholeTicks);
-                Assert.NotNull(retired.Cleanup); Assert.True(original.RemainingDisposition > TimeSpan.Zero);
-                Assert.Throws<EvaluationContractException>(original.CheckWork);
+                Assert.Equal(origin.WorkTicks, retired.WorkTicks); Assert.Null(retired.Cleanup);
+                original.CheckWork();
+                var second = await WindowsProcessTree.RunAsync(shell,
+                    ["-NoProfile", "-NonInteractive", "-Command", "[Console]::WriteLine('second-local-command'); exit 7"],
+                    owned.Root, TimeSpan.FromSeconds(5), cancellation.Token, null, 1024 * 1024, original);
+                Assert.Equal(7, second.ExitCode); Assert.False(second.TimedOut);
+                Assert.Contains("second-local-command", second.StandardOutput, StringComparison.Ordinal);
+                Assert.Equal(origin, original.Observe()); original.CheckWork();
+                WindowsProcessTree.AssertDirectoryMayBeRemoved(owned.Root);
             }
         }
         finally

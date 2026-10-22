@@ -29,6 +29,20 @@ public sealed class ResolvedGraphDeploymentTests : IDisposable
     }
 
     [Fact]
+    public void Installed_tool_without_graph_payload_refuses_external_manifest_before_reading_it()
+    {
+        var installation = Path.Combine(_root, "nongraph-install");
+        Directory.CreateDirectory(installation);
+        File.WriteAllText(Path.Combine(installation, "DotnetToolSettings.xml"), "<DotNetCliTool/>");
+        Select(Path.Combine(_root, "unread-external.json"), new string('0', 64));
+        var failure = Assert.Throws<StrictExecutionRefusalException>(() => ResolvedGraphDeployment.LoadForExecution(
+            new ResolvedGraphBudget(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken), installation));
+        Assert.Equal("GRAPH_DEPLOYMENT_UNAVAILABLE", failure.Reason.Code);
+        Assert.Contains("no packaged graph deployment", failure.InnerException!.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("FileNotFoundException", failure.InnerException.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void HostMismatchHasGraphStaleReasonBeforeAnyHelperCanRun()
     {
         WriteDeployment(ActualRevision());

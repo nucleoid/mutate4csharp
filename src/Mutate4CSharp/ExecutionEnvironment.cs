@@ -152,7 +152,11 @@ internal static class ProcessTree
                     ? $"Process exceeded its {timeout.TotalSeconds:g}-second timeout."
                     : "Process exceeded its original or per-call work endpoint.", interruption)
                 : interruption;
-            originalBudget?.BeginFailureCleanup();
+            // The scheduler's per-mutant timeout is a subordinate caller token,
+            // not the aggregate owner's cancellation. Retire known local stops
+            // without poisoning the SAME original; unknown retention below is terminal.
+            if (originalBudget is not null && (originalBudget.CancellationRequested || originalBudget.WorkEndpointExpired))
+                originalBudget.BeginFailureCleanup();
             try { await StopRootForCleanup(); }
             catch (Exception cleanup) { throw CreateCleanupFailure(primaryFailure, cleanup); }
             await CompleteCancellationCleanupAsync(primaryFailure,
@@ -804,7 +808,7 @@ internal static class ProcessTree
             // No late close, retry or Task replacement after unknown disposition.
             if (!closeReturned || closeFailure is not null) Retain();
         }
-        private void Retain() { if (!retained) { retained = true; Unsettled.Add(this); } }
+        private void Retain() { budget.BeginFailureCleanup(); if (!retained) { retained = true; Unsettled.Add(this); } }
     }
 
     private sealed class LinuxStrictLaunch : IDisposable
@@ -886,14 +890,18 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
     public string SdkVersion { get; } = sdkVersion;
 
     public async Task<OwnedPackageCache> CreateWorkerPackageCacheAsync(string purpose,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, ResolvedGraphBudget? originalBudget = null)
     {
+        originalBudget?.CheckWork(); cancellationToken.ThrowIfCancellationRequested();
         var cacheOwner = OwnedDirectory.Create(OwnedDirectory.PrivateParent("package-caches"), purpose);
         try
         {
+            originalBudget?.CheckWork();
             var root = Path.Combine(cacheOwner.Root, "packages");
             Directory.CreateDirectory(root);
-            await ExecutionEnvironment.CopyTreeAsync(PackageRoot, root, cancellationToken);
+            originalBudget?.CheckWork();
+            await ExecutionEnvironment.CopyTreeAsync(PackageRoot, root, cancellationToken, originalBudget);
+            originalBudget?.CheckWork();
             return new(cacheOwner, root, Fingerprint);
         }
         catch (Exception cacheFailure)
@@ -949,7 +957,7 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
         originalBudget?.CheckWork();
         ExecutionEnvironment.ValidateResolvedPackageRoots(worker.Root, packages.Root, config);
         if (!string.Equals(PackageFingerprint,
-                ExecutionEnvironment.FingerprintPackages(packages.Root, cancellationToken: cancellationToken),
+                ExecutionEnvironment.FingerprintPackages(packages.Root, cancellationToken: cancellationToken, originalBudget: originalBudget),
                 StringComparison.Ordinal))
             throw new ExecutionBoundaryIntegrityException(
                 "Worker restore changed its private frozen package-cache copy.");
@@ -1200,9 +1208,9 @@ internal static class ExecutionEnvironment
                 await SnapshotWorkspace.CopyFileAsync(packageLock, destination, deadline.Token);
             }
             var packageFingerprint = FingerprintPackages(packages, options.MaxFiles, options.MaxBytes,
-                deadline.Token);
+                deadline.Token, originalBudget);
             var graphFingerprint = FingerprintTreeBounded(graphs, options.MaxFiles, options.MaxBytes,
-                deadline.Token);
+                deadline.Token, originalBudget: originalBudget);
             var sdk = await ProcessTree.RunAsync(dotnet, ["--version"], preparation.Root,
                 TimeSpan.FromSeconds(30), deadline.Token, requireLinuxSessionIsolation: true, originalBudget: originalBudget);
             if (sdk.ExitCode != 0 || sdk.TimedOut)
@@ -1301,9 +1309,9 @@ internal static class ExecutionEnvironment
         FingerprintTreeBounded(root, int.MaxValue, long.MaxValue, CancellationToken.None);
 
     internal static string FingerprintPackages(string root, int maxFiles = int.MaxValue,
-        long maxBytes = long.MaxValue, CancellationToken cancellationToken = default) =>
+        long maxBytes = long.MaxValue, CancellationToken cancellationToken = default, ResolvedGraphBudget? originalBudget = null) =>
         FingerprintTreeBounded(root, maxFiles, maxBytes, cancellationToken,
-            path => !Path.GetFileName(path).Equals(".nupkg.metadata", StringComparison.OrdinalIgnoreCase));
+            path => !Path.GetFileName(path).Equals(".nupkg.metadata", StringComparison.OrdinalIgnoreCase), originalBudget);
 
     internal static void ValidateResolvedPackageRoots(string workspaceRoot, string expectedPackageRoot,
         string? selectedConfigPath = null)
@@ -1400,31 +1408,60 @@ internal static class ExecutionEnvironment
             ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
     }
 
-    internal static async Task CopyTreeAsync(string source, string destination, CancellationToken cancellationToken)
+    internal static async Task CopyTreeAsync(string source, string destination, CancellationToken cancellationToken,
+        ResolvedGraphBudget? originalBudget = null)
     {
-        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories).OrderBy(path => path, StringComparer.Ordinal))
+        Check();
+        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories)
+                     .Select(path => { Check(); return path; }).OrderBy(path => path, StringComparer.Ordinal))
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            Check();
             var target = Path.Combine(destination, Path.GetRelativePath(source, file));
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            await SnapshotWorkspace.CopyFileAsync(file, target, cancellationToken);
+            Check();
+            if (originalBudget is null)
+                await SnapshotWorkspace.CopyFileAsync(file, target, cancellationToken);
+            else
+            {
+                // Same existing file-copy operation, now cooperatively bounded
+                // at each actual chunk. No child allowance or retry is created.
+                await using var input = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read, 81920,
+                    FileOptions.Asynchronous | FileOptions.SequentialScan);
+                Check();
+                await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                    81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                Check();
+                var buffer = new byte[81920];
+                while (true)
+                {
+                    Check(); var read = await input.ReadAsync(buffer, cancellationToken); Check();
+                    if (read == 0) break;
+                    await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken); Check();
+                }
+                await output.FlushAsync(cancellationToken); Check();
+            }
+            Check();
         }
+        Check();
+        void Check() { originalBudget?.CheckWork(); cancellationToken.ThrowIfCancellationRequested(); }
     }
 
     private static string FingerprintTreeBounded(string root, int maxFiles, long maxBytes,
-        CancellationToken cancellationToken, Func<string, bool>? include = null)
+        CancellationToken cancellationToken, Func<string, bool>? include = null, ResolvedGraphBudget? originalBudget = null)
     {
+        Check();
         var fullRoot = Path.GetFullPath(root);
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var count = 0;
         long total = 0;
         var buffer = new byte[81920];
-        cancellationToken.ThrowIfCancellationRequested();
+        Check();
         foreach (var file in Directory.EnumerateFiles(fullRoot, "*", SearchOption.AllDirectories)
+                     .Select(path => { Check(); return path; })
                      .Where(path => include?.Invoke(path) != false)
                      .OrderBy(path => Path.GetRelativePath(fullRoot, path), StringComparer.Ordinal))
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            Check();
             if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
                 throw new ExecutionBoundaryIntegrityException(
                     "Resolved dependency content contains a link or reparse point.");
@@ -1433,16 +1470,21 @@ internal static class ExecutionEnvironment
             using var input = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read, buffer.Length,
                 FileOptions.SequentialScan);
             int read;
-            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+            while (true)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                Check(); read = input.Read(buffer, 0, buffer.Length); Check();
+                if (read == 0) break;
                 checked { total += read; }
                 if (total > maxBytes)
                     throw new SnapshotLimitException("Resolved dependency bytes exceed their bound.");
                 hash.AppendData(buffer, 0, read);
+                Check();
             }
         }
-        return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+        Check();
+        var identity = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+        Check(); return identity;
+        void Check() { originalBudget?.CheckWork(); cancellationToken.ThrowIfCancellationRequested(); }
     }
 
     private static string HashStrings(params string[] values)

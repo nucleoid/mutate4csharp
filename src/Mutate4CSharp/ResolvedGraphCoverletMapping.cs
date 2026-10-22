@@ -41,7 +41,9 @@ internal sealed class ResolvedGraphCoverletMapping
                 requireLinuxSessionIsolation: true, originalBudget: original);
             if (built.TimedOut || built.ExitCode != 0)
             {
-                var failure = new SnapshotCaptureException("Actual graph coverage build did not complete successfully.");
+                Exception failure = built.TimedOut
+                    ? new TimeoutException("Actual graph coverage build exceeded its timeout.")
+                    : new SnapshotCaptureException("Actual graph coverage build did not complete successfully.");
                 failure.Data["ResolvedGraphCoverage.ActualBuild"] = built;
                 throw failure;
             }

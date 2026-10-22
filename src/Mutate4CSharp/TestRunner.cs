@@ -200,29 +200,35 @@ internal static class TestRunner
 
     private static string Bound(string value, int maximum) => EvaluationTextBounds.Prefix(value, maximum);
 
-    public static IReadOnlyList<string> FindCoverage(string directory, ResolvedGraphInputs? coverageInputs = null)
+    public static IReadOnlyList<string> FindCoverage(string directory, ResolvedGraphInputs? coverageInputs = null,
+        IDictionary<string, ResolvedGraphFile>? pinnedCoverage = null)
     {
         if (!Directory.Exists(directory)) return [];
         return (coverageInputs is null ? ProjectLocator.EnumerateFilesSafe(directory, "*.xml") : RetainedCoverageFailure.EnumerateResultFiles(directory, coverageInputs))
             .Where(x => x.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
             .Where(x => Path.GetFileName(x).Contains("coverage", StringComparison.OrdinalIgnoreCase))
-            .Where(path => IsNonemptyOpenCover(path, coverageInputs))
+            .Where(path => IsNonemptyOpenCover(path, coverageInputs, pinnedCoverage))
             .OrderBy(x => x, StringComparer.Ordinal).ToArray();
     }
 
-    private static bool IsNonemptyOpenCover(string path, ResolvedGraphInputs? coverageInputs)
+    private static bool IsNonemptyOpenCover(string path, ResolvedGraphInputs? coverageInputs,
+        IDictionary<string, ResolvedGraphFile>? pinnedCoverage)
     {
         try
         {
             XDocument document;
             if (coverageInputs is not null)
             {
-                var bytes = coverageInputs.Read(path, "config").Bytes;
+                var captured = coverageInputs.Read(path, "config");
+                var bytes = captured.Bytes;
                 coverageInputs.ReserveAllocation(checked(bytes.LongLength * 8 + 8192));
                 using var stream = new MemoryStream(bytes, false);
                 using var reader = System.Xml.XmlReader.Create(stream, new System.Xml.XmlReaderSettings {
                     DtdProcessing = System.Xml.DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = ResolvedGraphInputs.MaximumFileBytes });
                 document = XDocument.Load(reader);
+                if (document.Root?.Name.LocalName == "CoverageSession" &&
+                    document.Root.Descendants().Any(item => item.Name.LocalName == "Module"))
+                    pinnedCoverage?.Add(path, captured);
             }
             else document = XDocument.Load(path);
             return document.Root?.Name.LocalName == "CoverageSession" &&
@@ -266,22 +272,24 @@ internal sealed class CoverageMap
     public static CoverageMap? Load(IEnumerable<string> reports, SnapshotClone clone)
         => Load(reports, clone.Root, clone.ToCanonicalPath(clone.Root), clone.ToCanonicalPath);
 
-    public static CoverageMap? Load(IEnumerable<string> reports, SnapshotClone clone, InputSnapshot snapshot, bool resolvedGraph = false, string? graphPackageRoot = null)
+    public static CoverageMap? Load(IEnumerable<string> reports, SnapshotClone clone, InputSnapshot snapshot, bool resolvedGraph = false, string? graphPackageRoot = null,
+        IReadOnlyDictionary<string, ResolvedGraphFile>? pinnedCoverage = null)
     {
         var diagnostics = new List<string>();
         var map = Load(reports, clone.Root, clone.ToCanonicalPath(clone.Root), clone.ToCanonicalPath,
             module => OpenCoverPortablePdb.Load(module, clone, snapshot, value =>
             {
                 if (diagnostics.Count < 12) diagnostics.Add("coverage-span-map=" + value);
-            }, resolvedGraph), resolvedGraph, graphPackageRoot);
+            }, resolvedGraph), resolvedGraph, graphPackageRoot, pinnedCoverage);
         if (map is not null) map.ProjectionDiagnostics = diagnostics;
         return map;
     }
 
     private static CoverageMap? Load(IEnumerable<string> reports, string parseRoot, string canonicalRoot,
-        Func<string, string>? canonicalize, Func<XElement, OpenCoverPortablePdb?>? pdbResolver = null, bool resolvedGraph = false, string? graphPackageRoot = null)
+        Func<string, string>? canonicalize, Func<XElement, OpenCoverPortablePdb?>? pdbResolver = null, bool resolvedGraph = false, string? graphPackageRoot = null,
+        IReadOnlyDictionary<string, ResolvedGraphFile>? pinnedCoverage = null)
     {
-        var paths = reports.Where(File.Exists).Distinct(StringComparer.Ordinal).ToArray();
+        var paths = reports.Where(path => pinnedCoverage is not null || File.Exists(path)).Distinct(StringComparer.Ordinal).ToArray();
         if (paths.Length == 0) return null;
         var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
         var points = new Dictionary<string, Dictionary<int, bool>>(comparer);
@@ -293,7 +301,18 @@ internal sealed class CoverageMap
         {
             try
             {
-                var doc = XDocument.Load(report);
+                XDocument doc;
+                if (pinnedCoverage is not null)
+                {
+                    if (!pinnedCoverage.TryGetValue(report, out var captured))
+                        throw new EvaluationContractException("Complete pinned graph coverage is required.");
+                    using var stream = new MemoryStream(captured.Bytes, false);
+                    using var reader = System.Xml.XmlReader.Create(stream, new System.Xml.XmlReaderSettings {
+                        DtdProcessing = System.Xml.DtdProcessing.Prohibit, XmlResolver = null,
+                        MaxCharactersInDocument = ResolvedGraphInputs.MaximumFileBytes });
+                    doc = XDocument.Load(reader);
+                }
+                else doc = XDocument.Load(report);
                 if (doc.Root?.Name.LocalName != "CoverageSession") { incomplete = true; continue; }
                 var modules = doc.Root.Descendants().Where(x => x.Name.LocalName == "Module").ToArray();
                 if (modules.Length == 0) { incomplete = true; continue; }

@@ -101,6 +101,8 @@ internal sealed class ResolvedGraphBudget
         get { CheckWork(); return _work - Stopwatch.GetElapsedTime(_original); }
     }
 
+    internal bool CancellationRequested => _token.IsCancellationRequested;
+
     // Classification only: observing an expired work endpoint does not admit
     // work or disposition, and does not change this original or its cleanup.
     internal bool WorkEndpointExpired

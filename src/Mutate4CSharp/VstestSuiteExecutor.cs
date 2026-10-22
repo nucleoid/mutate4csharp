@@ -66,7 +66,7 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                 worker = await SnapshotWorkspace.CreateCloneAsync(snapshot,
                     $"baseline-{Sanitize(suite.Aliases[0])}", linked.Token, originalBudget);
                 packages = await environment.CreateWorkerPackageCacheAsync(
-                    $"baseline-{Sanitize(suite.Aliases[0])}", linked.Token);
+                    $"baseline-{Sanitize(suite.Aliases[0])}", linked.Token, originalBudget);
                 if (resolvedGraph)
                     coverageInputs = new(originalBudget ?? throw new EvaluationContractException("Same graph original required for baseline coverage inputs."));
                 var remaining = Remaining();
@@ -83,17 +83,22 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                     originalBudget: originalBudget, coverageInputs: coverageInputs);
                 if (!string.Equals(environment.PackageFingerprint,
                         ExecutionEnvironment.FingerprintPackages(packages.Root,
-                            cancellationToken: linked.Token), StringComparison.Ordinal))
+                            cancellationToken: linked.Token, originalBudget: originalBudget), StringComparison.Ordinal))
                     throw new ExecutionBoundaryIntegrityException(
                         "Baseline execution changed its private frozen package-cache copy.");
                 var disposition = ClassifyBaseline(run);
-                var rawCoverage = TestRunner.FindCoverage(results, coverageInputs);
+                var pinnedCoverage = resolvedGraph ? new Dictionary<string, ResolvedGraphFile>(StringComparer.Ordinal) : null;
+                var rawCoverage = TestRunner.FindCoverage(results, coverageInputs, pinnedCoverage);
                 if (disposition == SuiteRunDisposition.Passed) beforeCoverageParsing?.Invoke(worker, rawCoverage);
+                if (pinnedCoverage is not null)
+                    foreach (var captured in pinnedCoverage.Values) coverageInputs!.Recheck(captured);
                 var coverageMap = disposition == SuiteRunDisposition.Passed
-                    ? CoverageMap.Load(rawCoverage, worker, snapshot, resolvedGraph, resolvedGraph ? packages.Root : null) : null;
+                    ? CoverageMap.Load(rawCoverage, worker, snapshot, resolvedGraph, resolvedGraph ? packages.Root : null, pinnedCoverage) : null;
                 coverage = disposition == SuiteRunDisposition.Passed
-                    ? await PreserveOpenCoverReportsAsync(rawCoverage,
-                        $"baseline-{Sanitize(suite.Aliases[0])}") : null;
+                    ? pinnedCoverage is null
+                        ? await PreserveOpenCoverReportsAsync(rawCoverage, $"baseline-{Sanitize(suite.Aliases[0])}")
+                        : await PreservePinnedOpenCoverReportsAsync(pinnedCoverage.Values, coverageInputs!, $"baseline-{Sanitize(suite.Aliases[0])}")
+                    : null;
                 var diagnostics = BaselineDiagnostics(run, disposition == SuiteRunDisposition.Passed &&
                     coverage is null, worker.Root, packages.Root).ToList();
                 diagnostics.AddRange(coverageMap?.ProjectionDiagnostics ?? []);
@@ -108,8 +113,8 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
                     {
                         CoverageOwner = coverage,
                         CoverageMap = coverageMap,
-                        CoverageSha256 = coverage is null ? null : HashReports(coverage.Reports),
-                        CoverageLength = coverage?.Reports.Sum(path => new FileInfo(path).Length) ?? 0,
+                        CoverageSha256 = coverage is null ? null : coverage.Pins is null ? HashReports(coverage.Reports) : HashPinnedReports(coverage.Pins),
+                        CoverageLength = coverage?.Pins?.Sum(pin => pin.Bytes.LongLength) ?? coverage?.Reports.Sum(path => new FileInfo(path).Length) ?? 0,
                         HealthyControl = disposition == SuiteRunDisposition.Passed
                     };
             }
@@ -255,6 +260,46 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
         }
     }
 
+    internal static async Task<OwnedCoverageReports?> PreservePinnedOpenCoverReportsAsync(
+        IEnumerable<ResolvedGraphFile> reports, ResolvedGraphInputs inputs, string purpose)
+    {
+        var captured = reports.OrderBy(report => report.Path, StringComparer.Ordinal).ToArray();
+        if (captured.Length == 0) return null;
+        var owner = OwnedDirectory.Create(OwnedDirectory.PrivateParent("coverage"), purpose);
+        var pins = new List<ResolvedGraphFile>();
+        try
+        {
+            for (var index = 0; index < captured.Length; index++)
+            {
+                var target = Path.Combine(owner.Root, $"coverage-{index:D4}.opencover.xml");
+                inputs.WriteNewResult(target, captured[index].Bytes);
+                var actual = inputs.Read(target, "config");
+                if (actual.Sha256 != captured[index].Sha256 || !actual.Bytes.AsSpan().SequenceEqual(captured[index].Bytes))
+                    throw new SnapshotDivergedException("Preserved coverage differs from its complete captured bytes.");
+                pins.Add(actual);
+            }
+            return new(owner, pins.Select(pin => pin.Path).ToArray(), pins);
+        }
+        catch (Exception preserveFailure)
+        {
+            try { await owner.DisposeAsync(); }
+            catch (Exception cleanupFailure) { throw new SnapshotCleanupException(preserveFailure, cleanupFailure); }
+            throw;
+        }
+    }
+
+    internal static string HashPinnedReports(IReadOnlyList<ResolvedGraphFile> reports)
+    {
+        using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+        Span<byte> length = stackalloc byte[8];
+        foreach (var report in reports.OrderBy(value => value.Path, StringComparer.Ordinal))
+        {
+            System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(length, report.Bytes.LongLength);
+            hash.AppendData(length); hash.AppendData(report.Bytes);
+        }
+        return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+    }
+
     private static string HashReports(IReadOnlyList<string> reports)
     {
         using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(
@@ -279,8 +324,9 @@ internal sealed class VstestSuiteExecutor(InputSnapshot snapshot, FrozenExecutio
 }
 
 internal sealed class OwnedCoverageReports(OwnedDirectory owner,
-    IReadOnlyList<string> reports) : IAsyncDisposable
+    IReadOnlyList<string> reports, IReadOnlyList<ResolvedGraphFile>? pins = null) : IAsyncDisposable
 {
     public IReadOnlyList<string> Reports { get; } = reports;
+    internal IReadOnlyList<ResolvedGraphFile>? Pins { get; } = pins;
     public ValueTask DisposeAsync() => owner.DisposeAsync();
 }

@@ -168,6 +168,9 @@ public sealed partial class ToolPackagingIntegrationTests
             {
                 Assert.Equal("INCOMPLETE", document.GetProperty("outcome").GetString());
                 Assert.Contains(document.GetProperty("reasons").EnumerateArray(), reason => reason.GetProperty("code").GetString() == "GRAPH_DEPLOYMENT_STALE");
+                if (name == "foreign-correctly-stamped-worker")
+                    Assert.Contains(document.GetProperty("reasons").EnumerateArray(), reason =>
+                        reason.GetProperty("message").GetString()!.Contains("must retain exact packaged paths and bytes", StringComparison.Ordinal));
                 Assert.Equal(0, document.GetProperty("counts").GetProperty("executed").GetInt32());
             }
         }

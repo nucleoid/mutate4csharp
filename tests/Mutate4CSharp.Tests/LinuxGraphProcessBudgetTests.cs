@@ -9,6 +9,58 @@ public sealed class LinuxGraphProcessBudgetTests : IDisposable
     private bool retainRoot;
     public LinuxGraphProcessBudgetTests() => Directory.CreateDirectory(root);
 
+    [Theory(Timeout = 30_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Known_local_timeout_or_scheduler_cancel_retires_then_runs_second_process_on_same_original(bool schedulerCancel)
+    {
+        Assert.SkipWhen(!OperatingSystem.IsLinux(), "Actual Linux per-call retirement and subsequent birth control.");
+        var original = new ResolvedGraphBudget(TimeSpan.FromSeconds(25), TestContext.Current.CancellationToken);
+        var before = original.Observe();
+        using var localTimer = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var ready = Path.Combine(root, "first-local-ready.data");
+        var first = ProcessTree.RunAsync("/bin/sh", ["-c", "printf actual-local-ready > first-local-ready.data.tmp; /bin/mv first-local-ready.data.tmp first-local-ready.data; printf first-local-process; exec /bin/sleep 60"], root,
+            schedulerCancel ? TimeSpan.FromSeconds(10) : TimeSpan.FromMilliseconds(500), localTimer.Token,
+            requireLinuxSessionIsolation: true, originalBudget: original);
+        if (schedulerCancel)
+        {
+            try
+            {
+                // Actual target readiness, not a timer that can cancel setsid
+                // preflight before the target exists. No new work allowance.
+                while (!File.Exists(ready))
+                {
+                    original.CheckWork();
+                    if (first.IsCompleted) await first;
+                    await Task.Delay(10, TestContext.Current.CancellationToken);
+                }
+                Assert.Equal("actual-local-ready", await File.ReadAllTextAsync(ready, TestContext.Current.CancellationToken));
+                localTimer.Cancel();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+            }
+            finally
+            {
+                if (!first.IsCompleted) localTimer.Cancel();
+                try { await first; } catch when (!first.IsCompletedSuccessfully) { }
+            }
+        }
+        else
+        {
+            var timeout = await first;
+            Assert.True(timeout.TimedOut); Assert.Contains("first-local-process", timeout.StandardOutput, StringComparison.Ordinal);
+        }
+        Assert.Equal(before, original.Observe()); original.CheckWork();
+        ProcessTree.LinuxOriginalProcessFrame.AssertDirectoryMayBeRemoved(root);
+        var second = await ProcessTree.RunAsync("/bin/sh", ["-c", "printf second-local-process; exit 7"], root,
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken,
+            requireLinuxSessionIsolation: true, originalBudget: original);
+        Assert.Equal(7, second.ExitCode); Assert.False(second.TimedOut);
+        Assert.Equal("second-local-process", second.StandardOutput);
+        Assert.Equal(before, original.Observe()); original.CheckWork();
+        Assert.True(original.RemainingWork < TimeSpan.FromTicks(before.WorkTicks));
+        ProcessTree.LinuxOriginalProcessFrame.AssertDirectoryMayBeRemoved(root);
+    }
+
     [Theory]
     [InlineData("closing")]
     [InlineData("cancelled")]

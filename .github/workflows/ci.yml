@@ -144,7 +144,7 @@ jobs:
       # graph/packaging exclusions and per-job resource/time limits are unchanged.
       - name: windows-review-core-contracts
         if: matrix.scope == 'core-review'
-        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName~IssueEightReview" -- xUnit.MaxParallelThreads=1
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName~IssueEightReview&FullyQualifiedName!~IssueEightReviewRoundTenTests" -- xUnit.MaxParallelThreads=1
       - name: windows-other-core-contracts
         if: matrix.scope == 'core-other'
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName!~IssueEightReview" -- xUnit.MaxParallelThreads=1

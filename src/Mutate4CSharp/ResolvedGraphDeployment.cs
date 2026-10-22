@@ -17,11 +17,14 @@ internal sealed record ResolvedGraphDeployment(int Version, string SourceRevisio
         "Mutate4CSharp.GraphWorker.deps.json", "Mutate4CSharp.GraphWorker.runtimeconfig.json",
         "Microsoft.CodeAnalysis.dll", "Microsoft.CodeAnalysis.CSharp.dll"];
     internal static ResolvedGraphDeployment LoadForExecution(ResolvedGraphBudget budget)
+        => LoadForExecution(budget, AppContext.BaseDirectory);
+
+    internal static ResolvedGraphDeployment LoadForExecution(ResolvedGraphBudget budget, string installationDirectory)
     {
         var inputs = new ResolvedGraphInputs(budget);
         ResolvedGraphDeployment? result = null;
         Exception? primary = null, disposition = null;
-        try { result = Load(inputs, requireSelectedHost: true); }
+        try { result = Load(inputs, requireSelectedHost: true, installationDirectory); }
         catch (Exception error) { primary = error; budget.BeginFailureCleanup(); }
         // Dispose exactly once before classifying. A using-finally here could
         // replace the graph-specific refusal with a retained input error.
@@ -53,10 +56,14 @@ internal sealed record ResolvedGraphDeployment(int Version, string SourceRevisio
 
     internal static ResolvedGraphDeployment Load(ResolvedGraphInputs inputs) => Load(inputs, requireSelectedHost: false);
 
-    private static ResolvedGraphDeployment Load(ResolvedGraphInputs inputs, bool requireSelectedHost)
+    private static ResolvedGraphDeployment Load(ResolvedGraphInputs inputs, bool requireSelectedHost,
+        string? installationDirectory = null)
     {
-        var packagedPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "graph", "sdk401", "deployment.json"));
+        var installation = installationDirectory ?? AppContext.BaseDirectory;
+        var packagedPath = Path.GetFullPath(Path.Combine(installation, "graph", "sdk401", "deployment.json"));
         var packagedPresent = HasPackagedManifest(packagedPath, inputs);
+        if (!packagedPresent && HasPackagedManifest(Path.Combine(installation, "DotnetToolSettings.xml"), inputs))
+            throw new GraphHostUnavailableException("This installed tool has no packaged graph deployment; external helpers are unavailable.");
         var path = Environment.GetEnvironmentVariable("MUTATE4CSHARP_GRAPH_CAPTURE_MANIFEST") ??
             packagedPath;
         var digest = Environment.GetEnvironmentVariable("MUTATE4CSHARP_GRAPH_CAPTURE_MANIFEST_SHA256");

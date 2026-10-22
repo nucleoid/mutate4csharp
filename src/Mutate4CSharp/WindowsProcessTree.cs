@@ -100,7 +100,12 @@ internal sealed class WindowsProcessTree
         }
         catch (Exception failure) { primary = failure; }
 
-        if (primary is not null) originalBudget?.BeginFailureCleanup();
+        // A subordinate scheduler timer is a caller cancellation here. Only
+        // the SAME original's cancellation/WORK expiry, or a non-timeout fault,
+        // ends aggregate work. Physical retirement still uses its unchanged MIN.
+        var localInterruption = originalBudget is not null && !originalBudget.CancellationRequested &&
+            !originalBudget.WorkEndpointExpired && (primary is OperationCanceledException or TimeoutException);
+        if (primary is not null && !localInterruption) originalBudget?.BeginFailureCleanup();
         Exception? cleanupFailure = null;
         try { await owner.SettleAsync(); }
         catch (Exception failure) { cleanupFailure = failure; }
@@ -108,6 +113,7 @@ internal sealed class WindowsProcessTree
         {
             // Retain the same graph, including actual handles/tasks and first-close
             // records. There is no PID adoption, retry, or unknown-to-success path.
+            originalBudget?.BeginFailureCleanup();
             Unsettled.Add(owner);
             throw primary is null
                 ? new SnapshotCleanupException(cleanupFailure ?? new IOException("Windows process boundary is unsettled."))

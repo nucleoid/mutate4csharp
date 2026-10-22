@@ -62,7 +62,7 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
             budget.CheckWork();
             clone = await SnapshotWorkspace.CreateCloneAsync(snapshot, "resolved-graph", cancellationToken, budget);
             budget.CheckWork();
-            packages = await environment.CreateWorkerPackageCacheAsync("resolved-graph", cancellationToken);
+            packages = await environment.CreateWorkerPackageCacheAsync("resolved-graph", cancellationToken, budget);
             budget.CheckWork();
             capture = new ResolvedGraphCapture(snapshot, clone, packages, budget, logger);
             var pending = new Queue<ResolvedProjectSelection>(configuration.Projects.Select(project =>

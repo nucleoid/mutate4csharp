@@ -9,6 +9,68 @@ public sealed class StrictMutationExecutorTests : IDisposable
     private readonly SnapshotTestRepository _repository = new();
 
     [Fact(Timeout = 420_000)]
+    public async Task Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant()
+    {
+        Assert.SkipWhen(!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux(), "Actual supported native graph process owners.");
+        var cancellation = TestContext.Current.CancellationToken;
+        WriteFixture();
+        _repository.WriteText("src/App/Flag.cs", """
+            namespace App;
+            public static class Flag
+            {
+                public static bool Value()
+                {
+                    bool stay = false;
+                    if (stay) System.IO.File.WriteAllText(System.IO.Path.Combine(System.AppContext.BaseDirectory, "loop-entered.data"), "actual-loop-entered");
+                    while (stay) System.Threading.Thread.Sleep(10);
+                    return true;
+                }
+            }
+            """);
+        _repository.Git("add", "."); _repository.Git("commit", "-m", "two mutant timeout control");
+        await using var snapshot = await SnapshotCapture.CaptureAsync(_repository.Root, "HEAD", [], SnapshotCaptureOptions.Default, cancellation);
+        await using var environment = await ExecutionEnvironment.PrepareDependenciesAsync(snapshot,
+            ["tests/App.Tests/App.Tests.csproj"], DependencyPreparationOptions.Default with { Timeout = TimeSpan.FromMinutes(2) }, cancellation);
+        var suite = new SuiteExecution("suite-identity", ["unit"], "tests/App.Tests/App.Tests.csproj", "vstest", "net10.0", "Release", ["App.Tests.dll"]);
+        await using var baseline = await new VstestSuiteExecutor(snapshot, environment).RunBaselineAsync(suite, TimeSpan.FromMinutes(2), cancellation);
+        Assert.Equal(SuiteRunDisposition.Passed, baseline.Disposition);
+        var source = File.ReadAllText(Path.Combine(_repository.Root, "src/App/Flag.cs"));
+        var tree = CSharpSyntaxTree.ParseText(SourceText.From(source), path: "src/App/Flag.cs", cancellationToken: cancellation);
+        var syntax = tree.GetRoot(cancellation);
+        MutationCandidate Candidate(string text, string replacement)
+        {
+            var token = Assert.Single(syntax.DescendantTokens(), item => item.ValueText == text);
+            var mutation = MutationIdentity.Create("src/App/Flag.cs", syntax, token.Span, "literal.boolean", MutationIdentity.OperatorContractVersion, replacement);
+            var unit = EvaluationUnitIdentity.Compute(new(mutation.MutationId, "src/App/App.csproj", "net10.0", "net10-csharp14"));
+            return new(mutation.MutationId, unit, mutation.Material, "src/App/App.csproj", "net10.0", "net10-csharp14",
+                token.SpanStart, token.Span.Length, token.Text, tree.GetLineSpan(token.Span, cancellation).StartLinePosition.Line + 1);
+        }
+        var loop = Candidate("false", "true"); var normal = Candidate("true", "false");
+        var original = new ResolvedGraphBudget(TimeSpan.FromMinutes(4), cancellation); var before = original.Observe();
+        var actualRuns = new List<TestRunResult>(); var actualLoopEntered = false;
+        var executor = new StrictMutationExecutor(snapshot, environment, [loop, normal], [suite],
+            new Dictionary<string, bool> { [suite.Identity] = true }, compilerEvidenceEvaluator: (run, healthy, target, working) =>
+            {
+                actualRuns.Add(run);
+                actualLoopEntered |= Directory.EnumerateFiles(working, "loop-entered.data", SearchOption.AllDirectories)
+                    .Any(path => File.ReadAllText(path) == "actual-loop-entered");
+                return CompilerEvidence.Evaluate(run, healthy, target, working);
+            }, resolvedGraph: true, originalBudget: original);
+        // These are real fixture mutants and real dotnet/VSTest children. The
+        // callback observes their returned DATA and invokes the actual classifier.
+        var first = await executor.ExecuteAsync(new(loop.MutationId, loop.EvaluationUnitId, [suite.Identity]), TimeSpan.FromSeconds(60), cancellation);
+        Assert.True(actualLoopEntered); Assert.True(Assert.Single(actualRuns).TimedOut);
+        Assert.Equal(UnitDisposition.Error, first.Disposition);
+        original.CheckWork(); Assert.Equal(before, original.Observe());
+        var second = await executor.ExecuteAsync(new(normal.MutationId, normal.EvaluationUnitId, [suite.Identity]), TimeSpan.FromMinutes(2), cancellation);
+        Assert.Collection(actualRuns, run => Assert.True(run.TimedOut), run => Assert.False(run.TimedOut));
+        Assert.Equal(UnitDisposition.Killed, second.Disposition);
+        Assert.Contains(second.Evidence, item => item.Kind == "SUITE_MUTANT_RESULT");
+        original.CheckWork(); Assert.Equal(before, original.Observe());
+        Assert.Equal(source, File.ReadAllText(Path.Combine(_repository.Root, "src/App/Flag.cs")));
+    }
+
+    [Fact(Timeout = 420_000)]
     public async Task ExecutesOneExactMutationInAFreshFrozenWorker()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

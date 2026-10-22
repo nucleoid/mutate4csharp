@@ -63,7 +63,7 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
             worker = await SnapshotWorkspace.CreateCloneAsync(_snapshot,
                 "strict-mutant-" + candidate.EvaluationUnitId[^12..], cancellationToken, _originalBudget);
             packages = await _environment.CreateWorkerPackageCacheAsync(
-                "strict-mutant-" + candidate.EvaluationUnitId[^12..], cancellationToken);
+                "strict-mutant-" + candidate.EvaluationUnitId[^12..], cancellationToken, _originalBudget);
             completed = await ExecuteInOwnedResourcesAsync(worker, packages);
         }
         catch (Exception ex) { failure = ex; }
@@ -107,7 +107,7 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
                     configuration: suite.Configuration, resolvedGraph: _resolvedGraph, originalBudget: _originalBudget);
                 if (!string.Equals(_environment.PackageFingerprint,
                         ExecutionEnvironment.FingerprintPackages(ownedPackages.Root,
-                            cancellationToken: cancellationToken), StringComparison.Ordinal))
+                            cancellationToken: cancellationToken, originalBudget: _originalBudget), StringComparison.Ordinal))
                     throw new ExecutionBoundaryIntegrityException(
                         "Mutant execution changed its private frozen package-cache copy.");
                 var compile = _compilerEvidenceEvaluator(run,
