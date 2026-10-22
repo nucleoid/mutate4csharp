@@ -8,7 +8,8 @@ public sealed class LocalRetirementFollowupTests
     public async Task Actual_frame_observer_join_uses_one_declining_local_cap_without_ending_live_original()
     {
         var original = new ResolvedGraphBudget(TimeSpan.FromMinutes(3), CancellationToken.None);
-        using var frame = new ProcessTree.LinuxOriginalProcessFrame(new Process {
+        using var frame = new ProcessTree.LinuxOriginalProcessFrame(new Process
+        {
             StartInfo = new ProcessStartInfo { WorkingDirectory = Path.Combine(Path.GetTempPath(), "mutate-managed-frame-" + Guid.NewGuid().ToString("N")) }
         }, original);
         var observer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -31,7 +32,8 @@ public sealed class LocalRetirementFollowupTests
     public async Task Actual_frame_retirement_clips_to_original_and_pending_observer_is_retained_terminal()
     {
         var original = new ResolvedGraphBudget(TimeSpan.FromSeconds(2), CancellationToken.None);
-        var frame = new ProcessTree.LinuxOriginalProcessFrame(new Process {
+        var frame = new ProcessTree.LinuxOriginalProcessFrame(new Process
+        {
             StartInfo = new ProcessStartInfo { WorkingDirectory = Path.Combine(Path.GetTempPath(), "mutate-managed-expired-frame-" + Guid.NewGuid().ToString("N")) }
         }, original);
         var observer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -67,7 +69,8 @@ public sealed class LocalRetirementFollowupTests
         while (Stopwatch.GetElapsedTime(expiry.Original).Ticks < expiry.WorkTicks)
             await Task.Delay(5, TestContext.Current.CancellationToken);
         var calls = 0;
-        var executor = new DelegateMutationExecutor((mutation, _, _) => {
+        var executor = new DelegateMutationExecutor((mutation, _, _) =>
+        {
             calls++;
             original.CheckWork();
             return Task.FromResult(new ScheduledMutationResult(mutation.EvaluationUnitId, UnitDisposition.Killed, [new("KILLED", "must not return")]));

@@ -80,14 +80,21 @@ public sealed class ResolvedGraphIncrementalHintTests
             value = value with { Properties = properties };
         }
         else if (change is "relative-profile" or "profile-dot-alias" or "foreign-profile")
-            value = Properties(value, "UserProfile", change switch {
+            value = Properties(value, "UserProfile", change switch
+            {
                 "relative-profile" => "relative-profile",
                 "profile-dot-alias" => Path.Combine(fixture.Profile, "."),
-                _ => fixture.Source });
+                _ => fixture.Source
+            });
         else if (change is "foreign-packages" or "package-dot-alias")
             value = Properties(value, "NuGetPackageRoot", change == "foreign-packages" ? fixture.Source : Path.Combine(fixture.Packages, "."));
-        else value = value with { FirstCsc = value.FirstCsc! with {
-            GlobalProperties = new Dictionary<string, string> { [change] = "explicit-global" } } };
+        else value = value with
+        {
+            FirstCsc = value.FirstCsc! with
+            {
+                GlobalProperties = new Dictionary<string, string> { [change] = "explicit-global" }
+            }
+        };
         // Inspect the import digest itself: changed query/global fields cannot
         // make this pass merely by changing the surrounding semantic record.
         Assert.Equal(Sha(text), fixture.ImportHash(value));
@@ -106,12 +113,14 @@ public sealed class ResolvedGraphIncrementalHintTests
         var value = fixture.BoundContext(fixture.Props);
         fixture.WritePackage(fixture.PackageAlias);
         var accepted = fixture.ImportHash(value);
-        var alias = change switch {
+        var alias = change switch
+        {
             "macro-case" => fixture.PackageAlias.Replace("$(UserProfile)", "$(userprofile)", StringComparison.Ordinal),
             "unknown-macro" => fixture.PackageAlias.Replace("$(UserProfile)", "$(Unknown)", StringComparison.Ordinal),
             "suffix-case" => fixture.PackageAlias[..^"packages".Length] + "PACKAGES",
             "unowned-suffix" => fixture.PackageAlias + "-unowned",
-            _ => "prefix" + fixture.PackageAlias };
+            _ => "prefix" + fixture.PackageAlias
+        };
         var text = fixture.WritePackage(alias);
         Assert.Equal(Sha(text), fixture.ImportHash(value));
         Assert.NotEqual(accepted, fixture.ImportHash(value));
@@ -123,10 +132,20 @@ public sealed class ResolvedGraphIncrementalHintTests
         using var fixture = new Fixture();
         var value = fixture.BoundContext(fixture.Props);
         Assert.NotEqual(fixture.Identity(value), fixture.Identity(Properties(value, "UserProfile", fixture.Source)));
-        var first = value with { FirstCsc = value.FirstCsc! with {
-            GlobalProperties = new Dictionary<string, string> { ["UserProfile"] = "first-global" } } };
-        var second = first with { FirstCsc = first.FirstCsc! with {
-            GlobalProperties = new Dictionary<string, string> { ["UserProfile"] = "second-global" } } };
+        var first = value with
+        {
+            FirstCsc = value.FirstCsc! with
+            {
+                GlobalProperties = new Dictionary<string, string> { ["UserProfile"] = "first-global" }
+            }
+        };
+        var second = first with
+        {
+            FirstCsc = first.FirstCsc! with
+            {
+                GlobalProperties = new Dictionary<string, string> { ["UserProfile"] = "second-global" }
+            }
+        };
         Assert.NotEqual(fixture.Identity(first), fixture.Identity(second));
     }
 
@@ -202,10 +221,12 @@ public sealed class ResolvedGraphIncrementalHintTests
         var before = fixture.Context(fixture.Props);
         var after = fixture.Context(fixture.Targets);
         if (change.StartsWith("suffix-", StringComparison.Ordinal))
-            after = Properties(after, "MSBuildAllProjects", fixture.Targets + (change switch {
+            after = Properties(after, "MSBuildAllProjects", fixture.Targets + (change switch
+            {
                 "suffix-value" => ";;custom-first;changed",
                 "suffix-order" => ";;custom-second;custom-first",
-                _ => ";custom-first;custom-second" }));
+                _ => ";custom-first;custom-second"
+            }));
         else if (change == "source-option")
             after = after with { FirstCsc = after.FirstCsc! with { Tokens = ["/define:CHANGED"] } };
         else after = Properties(after, "CustomSemanticValue", "changed");
@@ -220,14 +241,26 @@ public sealed class ResolvedGraphIncrementalHintTests
         using var fixture = new Fixture();
         var before = fixture.Context(fixture.Props);
         var after = fixture.Context(fixture.Targets);
-        ResolvedProjectCapture Global(ResolvedProjectCapture value) => value with {
-            FirstCsc = value.FirstCsc! with { GlobalProperties = new Dictionary<string, string> {
-                [key] = "owner-selected-custom-value" } } };
+        ResolvedProjectCapture Global(ResolvedProjectCapture value) => value with
+        {
+            FirstCsc = value.FirstCsc! with
+            {
+                GlobalProperties = new Dictionary<string, string>
+                {
+                    [key] = "owner-selected-custom-value"
+                }
+            }
+        };
         Assert.NotEqual(fixture.Identity(Global(before)), fixture.Identity(Global(after)));
         using var record = JsonDocument.Parse(fixture.Bytes(Global(before)));
         Assert.Empty(record.RootElement.GetProperty("IncrementalHintImports").EnumerateArray());
-        var changed = Global(before) with { FirstCsc = Global(before).FirstCsc! with {
-            GlobalProperties = new Dictionary<string, string> { [key] = "other-value" } } };
+        var changed = Global(before) with
+        {
+            FirstCsc = Global(before).FirstCsc! with
+            {
+                GlobalProperties = new Dictionary<string, string> { [key] = "other-value" }
+            }
+        };
         Assert.NotEqual(fixture.Identity(Global(before)), fixture.Identity(changed));
     }
 
@@ -246,7 +279,8 @@ public sealed class ResolvedGraphIncrementalHintTests
         using var fixture = new Fixture();
         var normal = fixture.Context(fixture.Props);
         var other = fixture.Context(fixture.Targets);
-        other = change switch {
+        other = change switch
+        {
             "first-dot-alias" => Properties(other, "MSBuildAllProjects", Path.Combine(fixture.Extensions, ".", Path.GetFileName(fixture.Targets)) + ";;custom-first;custom-second"),
             "first-case-alias" => Properties(other, "MSBuildAllProjects", fixture.Targets[..^"targets".Length] + "TARGETS;;custom-first;custom-second"),
             "extension-dot-alias" => Properties(other, "MSBuildProjectExtensionsPath", Path.Combine(fixture.Extensions, ".") + Path.DirectorySeparatorChar),
@@ -254,7 +288,8 @@ public sealed class ResolvedGraphIncrementalHintTests
             "assets-other-parent" => Properties(other, "ProjectAssetsFile", Path.Combine(fixture.Source, "other", "project.assets.json")),
             "assets-other-name" => Properties(other, "ProjectAssetsFile", Path.Combine(fixture.Extensions, "custom.assets.json")),
             "unselected-project" => Properties(other, "MSBuildProjectFullPath", Path.Combine(fixture.Source, "Other.csproj")),
-            _ => Foreign(other, change == "foreign-root" ? fixture.Packages : fixture.Source + "-unowned") };
+            _ => Foreign(other, change == "foreign-root" ? fixture.Packages : fixture.Source + "-unowned")
+        };
         Assert.NotEqual(fixture.Identity(normal), fixture.Identity(other));
         using var record = JsonDocument.Parse(fixture.Bytes(other));
         Assert.Empty(record.RootElement.GetProperty("IncrementalHintImports").EnumerateArray());
@@ -340,11 +375,13 @@ public sealed class ResolvedGraphIncrementalHintTests
         internal ResolvedProjectCapture Context(string hint)
         {
             var project = Path.Combine(Source, "App.csproj");
-            return new(new("App.csproj", "net10.0", "Release"), new Dictionary<string, string> {
+            return new(new("App.csproj", "net10.0", "Release"), new Dictionary<string, string>
+            {
                 ["MSBuildProjectFullPath"] = project,
                 ["MSBuildProjectExtensionsPath"] = Extensions + Path.DirectorySeparatorChar,
                 ["ProjectAssetsFile"] = Path.Combine(Extensions, "project.assets.json"),
-                ["MSBuildAllProjects"] = hint + ";;custom-first;custom-second" },
+                ["MSBuildAllProjects"] = hint + ";;custom-first;custom-second"
+            },
                 new Dictionary<string, IReadOnlyList<ResolvedGraphItem>>(), [], "raw-" + hint,
                 new("actual-data", project, new Dictionary<string, string>(), "external-compiler", "external-target", ["/define:SAME"], false));
         }

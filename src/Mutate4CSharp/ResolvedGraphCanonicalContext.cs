@@ -81,15 +81,31 @@ internal sealed class ResolvedGraphCanonicalContext
         var packageAlias = incremental.Files.Length == 0 ? null : ReadGeneratedPackageAlias(actual, inputs);
         // Do not include process/event numeric IDs or complete raw-query SHA in
         // semantic identity: they are physical joins, retained on the original.
-        var semantic = new {
-            actual.Selection, Properties = incremental.Properties,
-            IncrementalHintImports = incremental.Files.Select(file => new {
-                Path = Value(file.Path), SemanticBytes = GeneratedImportIdentity(file, inputs, packageAlias) }).ToArray(),
-            Items = actual.Items.ToDictionary(p => p.Key, p => p.Value.Select(i => new { i.Identity,
-                Metadata = SemanticMetadata(i.Metadata, boundary) }).ToArray(), StringComparer.Ordinal),
+        var semantic = new
+        {
+            actual.Selection,
+            Properties = incremental.Properties,
+            IncrementalHintImports = incremental.Files.Select(file => new
+            {
+                Path = Value(file.Path),
+                SemanticBytes = GeneratedImportIdentity(file, inputs, packageAlias)
+            }).ToArray(),
+            Items = actual.Items.ToDictionary(p => p.Key, p => p.Value.Select(i => new
+            {
+                i.Identity,
+                Metadata = SemanticMetadata(i.Metadata, boundary)
+            }).ToArray(), StringComparer.Ordinal),
             Edges = actual.Edges.Select(e => new { e.Selection, ActualMetadata = SemanticMetadata(e.ActualMetadata, boundary) }).ToArray(),
-            Task = new { first.ProjectFile, GlobalProperties = SemanticGlobalProperties(first.GlobalProperties), first.EvaluatedProperties,
-                first.TaskAssemblyLocation, first.TaskFile, first.Tokens, first.SkipCompilerExecution },
+            Task = new
+            {
+                first.ProjectFile,
+                GlobalProperties = SemanticGlobalProperties(first.GlobalProperties),
+                first.EvaluatedProperties,
+                first.TaskAssemblyLocation,
+                first.TaskFile,
+                first.Tokens,
+                first.SkipCompilerExecution
+            },
             Inputs = retained.Select(f => new { Path = Value(f.Path, boundary), f.Role, SemanticBytes = InputIdentity(f, inputs) })
                 .OrderBy(f => f.Path, StringComparer.Ordinal).ThenBy(f => f.Role, StringComparer.Ordinal).ToArray(),
             ExecutionBoundary = boundary is null ? null : new { Path = "$owned-execution-boundary/.editorconfig", boundary.Sha256 }

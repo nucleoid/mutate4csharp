@@ -86,7 +86,8 @@ public sealed class ResolvedGraphBudgetTests
 
         var owner = new ResolvedGraphBudget(TimeSpan.FromSeconds(120), CancellationToken.None);
         var observation = owner.Observe();
-        var restrictive = observation with {
+        var restrictive = observation with
+        {
             Original = System.Diagnostics.Stopwatch.GetTimestamp() - 61 * System.Diagnostics.Stopwatch.Frequency
         };
         var view = new ResolvedGraphBudget(restrictive, CancellationToken.None);
@@ -118,8 +119,10 @@ public sealed class ResolvedGraphBudgetTests
     {
         var owner = new ResolvedGraphBudget(TimeSpan.FromSeconds(30), CancellationToken.None);
         var actual = owner.Observe();
-        Assert.Throws<ResolvedGraphWorkExpiredException>(() => new ResolvedGraphBudget(actual with {
-            Original = Stopwatch.GetTimestamp() - Math.Max(1, Stopwatch.Frequency / 1000), WorkTicks = 1
+        Assert.Throws<ResolvedGraphWorkExpiredException>(() => new ResolvedGraphBudget(actual with
+        {
+            Original = Stopwatch.GetTimestamp() - Math.Max(1, Stopwatch.Frequency / 1000),
+            WorkTicks = 1
         }, CancellationToken.None));
         using var cancellation = new CancellationTokenSource();
         var canceled = new ResolvedGraphBudget(actual, cancellation.Token);

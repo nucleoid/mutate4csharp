@@ -59,9 +59,14 @@ internal static class ProcessTree
             launchArguments = ["--wait", "/bin/sh", "-c", LinuxStrictLaunch.WrapperScript,
                 "mutate4csharp-boundary", strictLaunch.StatusPath, executable, .. arguments];
         }
-        var info = new ProcessStartInfo(launchExecutable) { WorkingDirectory = workingDirectory,
-            RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
-            CreateNoWindow = true };
+        var info = new ProcessStartInfo(launchExecutable)
+        {
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
         foreach (var argument in launchArguments) info.ArgumentList.Add(argument);
         if (environment is not null)
             foreach (var item in environment)
@@ -453,7 +458,9 @@ internal static class ProcessTree
         token.ThrowIfCancellationRequested(); originalBudget?.CheckWork();
         var info = new ProcessStartInfo(executable)
         {
-            RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
             CreateNoWindow = true
         };
         foreach (var argument in arguments) info.ArgumentList.Add(argument);
@@ -1053,8 +1060,11 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
         // Already returned bounded DATA only; no file reads, evaluation or restore retry.
         if (actualReturn.ExitCode == 0 || actualReturn.TimedOut)
             throw new ArgumentException("Only the original nonzero, non-timeout restore return may issue this diagnostic.");
-        static object Digest(string value) => new { Characters = value.Length,
-            Sha256 = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant() };
+        static object Digest(string value) => new
+        {
+            Characters = value.Length,
+            Sha256 = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant()
+        };
         static string Scalar(string? value) => value is null ? "[unspecified]" : value is { Length: > 0 and <= 32 } &&
             value.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-') ? value : "[value-withheld]";
         // Captured diagnostic text is not trusted path syntax. Formatting must not
@@ -1129,12 +1139,21 @@ internal sealed class FrozenExecutionEnvironment(OwnedDirectory owner, string pa
             EvaluationEvidence.MaxDiagnosticLength - prefix.Length));
         failure.Data["FrozenWorkerRestore.ActualReturn"] = actualReturn;
         if (requestedProject is not null)
-            failure.Data["FrozenWorkerRestore.SelectionContext"] = JsonSerializer.Serialize(new { Version = 1, DiagnosticOnly = true,
-                RequestedProjectRole = Label(requestedProject), RequestedProject = Digest(requestedProject),
-                RequestedFramework = Scalar(framework), FrameworkDigest = framework is null ? null : Digest(framework),
-                RequestedConfiguration = Scalar(configuration), ConfigurationDigest = configuration is null ? null : Digest(configuration),
-                ErrorStream = selectedRole, ReportedProjectRole = Label(reportedProject),
-                ReportedProject = reportedProject is null ? null : Digest(reportedProject), ReportedProjectMatchesRequested = matches });
+            failure.Data["FrozenWorkerRestore.SelectionContext"] = JsonSerializer.Serialize(new
+            {
+                Version = 1,
+                DiagnosticOnly = true,
+                RequestedProjectRole = Label(requestedProject),
+                RequestedProject = Digest(requestedProject),
+                RequestedFramework = Scalar(framework),
+                FrameworkDigest = framework is null ? null : Digest(framework),
+                RequestedConfiguration = Scalar(configuration),
+                ConfigurationDigest = configuration is null ? null : Digest(configuration),
+                ErrorStream = selectedRole,
+                ReportedProjectRole = Label(reportedProject),
+                ReportedProject = reportedProject is null ? null : Digest(reportedProject),
+                ReportedProjectMatchesRequested = matches
+            });
         return failure;
     }
 
@@ -1202,15 +1221,15 @@ internal static class ExecutionEnvironment
                     "Snapshot execution parent is not private.");
         }
         foreach (var boundary in new Dictionary<string, string>
-                 {
-                     ["Directory.Build.props"] = "<Project />\n",
-                     ["Directory.Build.targets"] = "<Project />\n",
-                     ["Directory.Packages.props"] = "<Project />\n",
-                     ["Directory.Build.rsp"] = string.Empty,
-                     ["Directory.Solution.props"] = "<Project />\n",
-                     ["Directory.Solution.targets"] = "<Project />\n",
-                     [".editorconfig"] = "root = true\n"
-                 })
+        {
+            ["Directory.Build.props"] = "<Project />\n",
+            ["Directory.Build.targets"] = "<Project />\n",
+            ["Directory.Packages.props"] = "<Project />\n",
+            ["Directory.Build.rsp"] = string.Empty,
+            ["Directory.Solution.props"] = "<Project />\n",
+            ["Directory.Solution.targets"] = "<Project />\n",
+            [".editorconfig"] = "root = true\n"
+        })
         {
             var path = Path.Combine(ownedRoot, boundary.Key);
             if (!File.Exists(path) || (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
@@ -1354,7 +1373,7 @@ internal static class ExecutionEnvironment
             var normalized = Path.GetRelativePath(snapshot.CaptureRoot, fullProject).Replace('\\', '/');
             var relativeDirectory = Path.GetDirectoryName(normalized)?.Replace('\\', '/') ?? string.Empty;
             var applicable = new List<string>();
-            for (var directory = relativeDirectory;;)
+            for (var directory = relativeDirectory; ;)
             {
                 var candidate = string.IsNullOrEmpty(directory)
                     ? "NuGet.Config"
