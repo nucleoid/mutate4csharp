@@ -10,8 +10,16 @@ public sealed class WindowsProcessProfileTests
 {
     private static string PowerShellExecutable()
     {
-        var selected = Environment.GetEnvironmentVariable("MUTATE4CSHARP_TEST_PWSH") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "PowerShell", "7", "pwsh.exe");
-        Assert.True(Path.IsPathFullyQualified(selected) && File.Exists(selected), "An actual existing absolute PowerShell7 executable is required; set MUTATE4CSHARP_TEST_PWSH or install the CI default.");
+        // An explicitly selected missing/relative image remains a refusal. The
+        // fallback is only the existing OS shell, never a PATH/cache/user scan.
+        var selected = Environment.GetEnvironmentVariable("MUTATE4CSHARP_TEST_PWSH");
+        if (selected is null)
+        {
+            var powerShell7 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "PowerShell", "7", "pwsh.exe");
+            selected = File.Exists(powerShell7) ? powerShell7 : Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+        }
+        Assert.True(Path.IsPathFullyQualified(selected) && File.Exists(selected), "An actual existing absolute selected PowerShell, installed PowerShell7, or OS Windows PowerShell executable is required.");
         return selected;
     }
 
@@ -27,9 +35,15 @@ public sealed class WindowsProcessProfileTests
         Assert.False(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ComSpec")), "The actual closed Windows fixture requires inherited ComSpec before its explicit clear.");
         var shell = PowerShellExecutable();
         var observe = """
+            $ErrorActionPreference='Stop'
+            function HashValue([string]$value) {
+                $sha=[Security.Cryptography.SHA256]::Create()
+                try { ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($value)))).Replace('-','') }
+                finally { $sha.Dispose() }
+            }
             $a=[Environment]::GetEnvironmentVariable('MUTATE_WIDE_ENV_A')
             $b=[Environment]::GetEnvironmentVariable('MUTATE_WIDE_ENV_B')
-            @{LengthA=$a.Length;LengthB=$b.Length;HashA=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($a)));HashB=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($b)));Sentinel=[Environment]::GetEnvironmentVariable('MUTATE_WIDE_ENV_SENTINEL');Cleared=($null -eq [Environment]::GetEnvironmentVariable('ComSpec'))}|ConvertTo-Json -Compress
+            @{LengthA=$a.Length;LengthB=$b.Length;HashA=(HashValue $a);HashB=(HashValue $b);Sentinel=[Environment]::GetEnvironmentVariable('MUTATE_WIDE_ENV_SENTINEL');Cleared=($null -eq [Environment]::GetEnvironmentVariable('ComSpec'))}|ConvertTo-Json -Compress
             """;
         var actual = await WindowsProcessTree.RunAsync(shell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Convert.ToBase64String(Encoding.Unicode.GetBytes(observe))], owned.Root,
             TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken, environment, 1024 * 1024);
