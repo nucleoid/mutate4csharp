@@ -603,8 +603,15 @@ public sealed class SnapshotExecutionTests : IDisposable
             _repository.Git("commit", "-m", "fixture");
 
             var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
-            var run = await ProcessTree.RunAsync(dotnet, ["build", "App.csproj", "-m:1", "--nologo"],
-                _repository.Root, TimeSpan.FromMinutes(2), CancellationToken.None);
+            var run = await ProcessTree.RunAsync(dotnet,
+                ["build", "App.csproj", "-m:1", "--nologo", "-nodeReuse:false",
+                    "-p:UseSharedCompilation=false"],
+                _repository.Root, TimeSpan.FromMinutes(2), CancellationToken.None,
+                environment: new Dictionary<string, string?>
+                {
+                    ["MSBUILDDISABLENODEREUSE"] = "1",
+                    ["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0"
+                });
             Assert.True(run.ExitCode == 0, run.StandardError + Environment.NewLine + run.StandardOutput);
             Assert.True(File.Exists(marker));
             var error = await Assert.ThrowsAsync<SnapshotCaptureException>(() => SnapshotCapture.CaptureAsync(
@@ -636,8 +643,15 @@ public sealed class SnapshotExecutionTests : IDisposable
             _repository.Git("commit", "-m", "fixture");
 
             var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
-            var run = await ProcessTree.RunAsync(dotnet, ["build", "App.csproj", "-m:1", "--nologo"],
-                _repository.Root, TimeSpan.FromMinutes(2), CancellationToken.None);
+            var run = await ProcessTree.RunAsync(dotnet,
+                ["build", "App.csproj", "-m:1", "--nologo", "-nodeReuse:false",
+                    "-p:UseSharedCompilation=false"],
+                _repository.Root, TimeSpan.FromMinutes(2), CancellationToken.None,
+                environment: new Dictionary<string, string?>
+                {
+                    ["MSBUILDDISABLENODEREUSE"] = "1",
+                    ["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0"
+                });
             Assert.True(run.ExitCode == 0, run.StandardError + Environment.NewLine + run.StandardOutput);
             var error = await Assert.ThrowsAsync<SnapshotCaptureException>(() => SnapshotCapture.CaptureAsync(
                 _repository.Root, "HEAD", [], SnapshotCaptureOptions.Default, CancellationToken.None));

@@ -138,7 +138,7 @@ jobs:
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~IssueEightReviewRoundTenTests" -- xUnit.MaxParallelThreads=1
       - name: core-contracts
         if: matrix.scope == 'core'
-        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_two_worker_executor_work_expiry_retires_then_omits_remaining_units&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.ExecutesOneExactMutationInAFreshFrozenWorker&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealProcessDistinguishesSurvivedAndCompileInvalidMutants" --logger "console;verbosity=normal" -- xUnit.MaxParallelThreads=1
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_two_worker_executor_work_expiry_retires_then_omits_remaining_units&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.ExecutesOneExactMutationInAFreshFrozenWorker&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealProcessDistinguishesSurvivedAndCompileInvalidMutants&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealCoordinatorBoundaryCannotPublishSuccess" --logger "console;verbosity=normal" -- xUnit.MaxParallelThreads=1
       # The original core filter is partitioned by one predicate and its exact
       # complement on Windows. No case is dropped or sampled; the two existing
       # graph/packaging exclusions and per-job resource/time limits are unchanged.
@@ -147,7 +147,7 @@ jobs:
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName~IssueEightReview&FullyQualifiedName!~IssueEightReviewRoundTenTests" -- xUnit.MaxParallelThreads=1
       - name: windows-other-core-contracts
         if: matrix.scope == 'core-other'
-        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName!~IssueEightReview&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_two_worker_executor_work_expiry_retires_then_omits_remaining_units&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.ExecutesOneExactMutationInAFreshFrozenWorker&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealProcessDistinguishesSurvivedAndCompileInvalidMutants" --logger "console;verbosity=normal" -- xUnit.MaxParallelThreads=1
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName!~IssueEightReview&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_two_worker_executor_work_expiry_retires_then_omits_remaining_units&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.ExecutesOneExactMutationInAFreshFrozenWorker&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealProcessDistinguishesSurvivedAndCompileInvalidMutants&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealCoordinatorBoundaryCannotPublishSuccess" --logger "console;verbosity=normal" -- xUnit.MaxParallelThreads=1
       - name: actual-inherited-compiler-graph
         if: matrix.scope == 'graph'
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~ResolvedGraphInheritedCompilerFixtureTests" -- xUnit.MaxParallelThreads=1
@@ -156,6 +156,19 @@ jobs:
       - name: actual-original-work-retirement
         if: matrix.scope == 'core-review' || (runner.os == 'Linux' && matrix.scope == 'graph')
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_two_worker_executor_work_expiry_retires_then_omits_remaining_units|FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant|FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.ExecutesOneExactMutationInAFreshFrozenWorker|FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealProcessDistinguishesSurvivedAndCompileInvalidMutants" --logger "console;verbosity=normal" -- xUnit.MaxParallelThreads=1
+      # Relocate the complete ten-row Theory once per OS; no case is dropped.
+      # Existing graph jobs have measured headroom; future timing is still validated by CI.
+      - name: actual-coordinator-boundary-contracts
+        id: coordinator_boundary
+        if: matrix.scope == 'graph'
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealCoordinatorBoundaryCannotPublishSuccess" --logger "console;verbosity=normal" --logger "trx;LogFileName=coordinator-boundary.trx" --results-directory "${{ github.workspace }}/coordinator-boundary-results" -- xUnit.MaxParallelThreads=1
+      - name: coordinator-boundary-artifacts
+        if: matrix.scope == 'graph' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coordinator-boundary-${{ runner.os }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ github.workspace }}/coordinator-boundary-results
+          if-no-files-found: ${{ steps.coordinator_boundary.outcome == 'success' && 'error' || 'warn' }}
       - name: isolated-local-package
         if: runner.os == 'Linux' && matrix.scope == 'installed'
         shell: bash
