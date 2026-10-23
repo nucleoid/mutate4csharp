@@ -9,6 +9,8 @@ internal sealed class OwnedDirectory : IAsyncDisposable
     private const string RootMarkerName = ".mutate4csharp-root-owner";
     private static readonly object ProcessRootGate = new();
     private static readonly Lazy<(string Path, string Token)> ProcessPrivateRoot = new(CreateProcessPrivateRoot);
+    private static readonly Dictionary<string, int> ActiveProcessParents = new(
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
     private static int _activeProcessDirectories;
     private readonly string _parent;
     private readonly string _token;
@@ -79,7 +81,7 @@ internal sealed class OwnedDirectory : IAsyncDisposable
         var token = Guid.NewGuid().ToString("N");
         var safePrefix = Sanitize(prefix, "owned");
         safePrefix = safePrefix[..Math.Min(12, safePrefix.Length)];
-        var fullParent = Path.GetFullPath(parent);
+        var fullParent = Path.TrimEndingDirectorySeparator(Path.GetFullPath(parent));
         var processManaged = false;
         lock (ProcessRootGate)
         {
@@ -92,6 +94,8 @@ internal sealed class OwnedDirectory : IAsyncDisposable
             if (processManaged)
             {
                 EnsureProcessRoot();
+                ActiveProcessParents.TryGetValue(fullParent, out var activeInParent);
+                ActiveProcessParents[fullParent] = activeInParent + 1;
                 _activeProcessDirectories++;
             }
         }
@@ -129,7 +133,7 @@ internal sealed class OwnedDirectory : IAsyncDisposable
             {
                 lock (ProcessRootGate)
                 {
-                    _activeProcessDirectories--;
+                    ReleaseProcessDirectory(fullParent);
                     TryRemoveEmptyProcessRoots(fullParent);
                 }
             }
@@ -160,6 +164,9 @@ internal sealed class OwnedDirectory : IAsyncDisposable
             var marker = Path.Combine(fullRoot, MarkerName);
             if (!File.Exists(marker) || !string.Equals(File.ReadAllText(marker), _token, StringComparison.Ordinal))
                 throw new IOException("Refusing cleanup without the matching ownership marker.");
+            WindowsProcessTree.AssertDirectoryMayBeRemoved(fullRoot);
+            ProcessTree.LinuxOriginalProcessFrame.AssertDirectoryMayBeRemoved(fullRoot);
+            ResolvedGraphInputs.AssertDirectoryMayBeRemoved(fullRoot);
             Directory.Delete(fullRoot, recursive: true);
         }
         catch (Exception ex)
@@ -172,7 +179,7 @@ internal sealed class OwnedDirectory : IAsyncDisposable
             {
                 lock (ProcessRootGate)
                 {
-                    _activeProcessDirectories--;
+                    ReleaseProcessDirectory(_parent);
                     try { TryRemoveEmptyProcessRoots(_parent); }
                     catch (Exception ex)
                     {
@@ -189,15 +196,34 @@ internal sealed class OwnedDirectory : IAsyncDisposable
         return ValueTask.CompletedTask;
     }
 
+    // Called under ProcessRootGate. Registration precedes parent/child birth,
+    // so another disposer cannot remove a temporarily empty verified parent
+    // while a SAME-category creation is still in progress.
+    private static void ReleaseProcessDirectory(string parent)
+    {
+        var activeInParent = ActiveProcessParents[parent];
+        if (activeInParent == 1) ActiveProcessParents.Remove(parent);
+        else ActiveProcessParents[parent] = activeInParent - 1;
+        _activeProcessDirectories--;
+    }
+
     private static void TryRemoveEmptyProcessRoots(string parent)
     {
         var (processRoot, processToken) = ProcessPrivateRoot.Value;
-        if (_activeProcessDirectories != 0 || !Directory.Exists(processRoot)) return;
+        if (!Directory.Exists(processRoot)) return;
         var rootMarker = Path.Combine(processRoot, RootMarkerName);
         if (!File.Exists(rootMarker) || !string.Equals(File.ReadAllText(rootMarker), processToken, StringComparison.Ordinal))
             return;
-        if (Directory.Exists(parent) && !Directory.EnumerateFileSystemEntries(parent).Any())
+        // An unrelated active/retained category keeps the process root alive,
+        // but does not own this empty immediate-child category. Never remove a
+        // foreign entry, linked category, or a parent outside this owned root.
+        if (string.Equals(Path.GetDirectoryName(Path.GetFullPath(parent)), Path.GetFullPath(processRoot),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal) &&
+            !ActiveProcessParents.ContainsKey(parent) && Directory.Exists(parent) &&
+            (File.GetAttributes(parent) & FileAttributes.ReparsePoint) == 0 &&
+            !Directory.EnumerateFileSystemEntries(parent).Any())
             Directory.Delete(parent);
+        if (_activeProcessDirectories != 0) return;
         if (Directory.EnumerateFileSystemEntries(processRoot)
             .All(path => string.Equals(Path.GetFullPath(path), Path.GetFullPath(rootMarker),
                 OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)))
@@ -211,18 +237,20 @@ internal sealed class OwnedDirectory : IAsyncDisposable
 internal static class SnapshotWorkspace
 {
     public static async Task<SnapshotClone> CreateCloneAsync(InputSnapshot snapshot, string purpose,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, ResolvedGraphBudget? originalBudget = null)
     {
+        cancellationToken.ThrowIfCancellationRequested(); originalBudget?.CheckWork();
         var parent = OwnedDirectory.PrivateParent("workspaces");
         var owner = OwnedDirectory.Create(parent, Sanitize(purpose));
         try
         {
             var root = Path.Combine(owner.Root, "root");
             Directory.CreateDirectory(root);
-            await ExecutionEnvironment.CreateExecutionBoundaryAsync(owner.Root, snapshot.OriginalRoot, cancellationToken);
+            await ExecutionEnvironment.CreateExecutionBoundaryAsync(owner.Root, snapshot.OriginalRoot, cancellationToken, originalBudget);
             foreach (var file in snapshot.Files.Where(file => file.Exists))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                originalBudget?.CheckWork();
                 var source = Path.Combine(snapshot.CaptureRoot, file.RelativePath.Replace('/', Path.DirectorySeparatorChar));
                 var destination = Path.Combine(root, file.RelativePath.Replace('/', Path.DirectorySeparatorChar));
                 Directory.CreateDirectory(Path.GetDirectoryName(destination)!);

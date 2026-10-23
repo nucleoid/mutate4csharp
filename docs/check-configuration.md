@@ -1,4 +1,14 @@
-# Strict check configuration v1
+# Strict check configuration v1 and resolved graph v2
+
+Version 2 selects `semanticProfile: "resolved-project-graph-v1"` and uses the
+actual selected compiler graph, not the version-1 XML synthesis. See
+[resolved graph setup](resolved-graph-setup.md) for the required same-source
+SDK401 helper deployment, explicit producer path profile and genuine fixture.
+Production projects explicitly name their configuration; suite configuration is
+independent. Complete inherited props/targets, CPM, actual references and
+conditional/generated/package Compile inputs remain part of semantic capture.
+Unsupported effects or missing/stale deployment remain INCOMPLETE; no fallback
+to version 1 occurs. The self-contained limitations below describe version 1.
 
 On Linux, strict execution requires the util-linux `setsid` implementation with `setsid --wait` support. The tool
 probes this capability before launching child processes and fails closed with an explicit compatibility diagnostic;

@@ -428,8 +428,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         {
             var bytes = File.ReadAllBytes(path);
             using var document = System.Text.Json.JsonDocument.Parse(bytes);
-            if (!document.RootElement.EnumerateObject().Any(property =>
-                    property.Name.Equals("testSuites", StringComparison.OrdinalIgnoreCase))) return null;
+            if (!CheckConfiguration.RequiresStrictValidation(document.RootElement)) return null;
             return CheckConfiguration.Load(snapshot.CaptureRoot, bytes);
         }
         catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or
@@ -464,8 +463,7 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
         try
         {
             using var document = System.Text.Json.JsonDocument.Parse(bytes);
-            if (!document.RootElement.EnumerateObject().Any(property =>
-                    property.Name.Equals("testSuites", StringComparison.OrdinalIgnoreCase))) return null;
+            if (!CheckConfiguration.RequiresStrictValidation(document.RootElement)) return null;
             return CheckConfiguration.Load(root, bytes);
         }
         catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or
@@ -526,6 +524,8 @@ internal sealed class EvaluationCoordinator : IEvaluationCoordinator
             "The immutable capture could not be cleaned up safely."),
         SnapshotEnvironmentException => new("SNAPSHOT_ENVIRONMENT",
             "Immutable capture could not create or write its private staging environment."),
+        ExecutionEnvironmentUnavailableException => new("EXECUTION_ENVIRONMENT_UNAVAILABLE",
+            "The configured native execution environment could not be admitted."),
         ExecutionBoundaryIntegrityException => new("EXECUTION_BOUNDARY_INTEGRITY",
             "Execution escaped or changed a frozen private workspace or dependency boundary."),
         SnapshotDivergedException => new("SNAPSHOT_DIVERGED", "Inputs diverged during or after immutable capture."),

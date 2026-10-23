@@ -46,6 +46,7 @@ internal sealed class EvaluationScheduler
         {
             while (true)
             {
+                if (Volatile.Read(ref deadlineExceeded) == 1) return;
                 var index = Interlocked.Increment(ref next);
                 if (index >= ordered.Length) return;
                 if (cancellationToken.IsCancellationRequested)
@@ -101,6 +102,12 @@ internal sealed class EvaluationScheduler
                     Interlocked.Exchange(ref cancelled, 1);
                     results[index] = CancelledOmitted(mutation);
                     return;
+                }
+                catch (ResolvedGraphWorkExpiredException)
+                {
+                    Interlocked.Exchange(ref deadlineExceeded, 1);
+                    results[index] = DeadlineOmitted(mutation);
+                    return; // The SAME original is terminal; no next assignment.
                 }
                 catch (TimeoutException)
                 {

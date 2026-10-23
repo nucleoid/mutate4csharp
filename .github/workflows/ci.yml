@@ -10,22 +10,177 @@ permissions:
 jobs:
   test:
     strategy:
+      fail-fast: false
+      max-parallel: 2
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            scope: core
+          - os: windows-latest
+            scope: core-review
+          - os: windows-latest
+            scope: core-other
+          - os: ubuntu-latest
+            scope: graph
+          - os: windows-latest
+            scope: graph
+          - os: ubuntu-latest
+            scope: installed
+          - os: windows-latest
+            scope: snapshot-capture
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+      MSBUILDDISABLENODEREUSE: 1
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-dotnet@v4
+        env:
+          # runner context is available at step level; the action exports its
+          # selected host/root for subsequent build and compiler steps.
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/mutate-dotnet
         with:
-          dotnet-version: 10.0.103
-      - run: dotnet build mutate4csharp.slnx -m:1
+          dotnet-version: |
+            10.0.103
+            10.0.401
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: ordinary-sdk103-locked-build
+        id: ordinary_sdk103_build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $revision = (& git rev-parse HEAD)
+          if ($LASTEXITCODE -ne 0 -or $revision -cnotmatch '^[0-9a-f]{40}$') { throw 'Actual clean source revision required' }
+          $selectedSdk = (& dotnet --version)
+          if ($LASTEXITCODE -ne 0 -or $selectedSdk -cne '10.0.103') { throw "Ordinary source must select SDK103; observed '$selectedSdk'" }
+          $hostCommand = Get-Command dotnet -CommandType Application | Select-Object -First 1
+          $hostFile = Get-Item -LiteralPath $hostCommand.Source
+          if ($hostFile.LinkType) { $hostFile = $hostFile.ResolveLinkTarget($true) }
+          $hostPath = $hostFile.FullName
+          # setup-dotnet can install a newer standalone runtime than either SDK.
+          # Bind these runtime-fallback tests to SDK103's exact bundled runtime
+          # and reference pack instead of changing production reference selection.
+          $bundledPath = Join-Path $hostFile.DirectoryName 'sdk/10.0.103/Microsoft.NETCoreSdk.BundledVersions.props'
+          [xml]$bundled = Get-Content -LiteralPath $bundledPath -Raw
+          $declaredSdk = @($bundled.SelectNodes("//*[local-name()='NETCoreSdkVersion']"))
+          $runtime = @($bundled.SelectNodes("//*[local-name()='BundledNETCoreAppPackageVersion']"))
+          if ($declaredSdk.Count -ne 1 -or $declaredSdk[0].InnerText.Trim() -cne '10.0.103' -or $runtime.Count -ne 1) { throw 'Exact SDK103 bundled runtime manifest required' }
+          $runtimeVersion = $runtime[0].InnerText.Trim()
+          if ($runtimeVersion -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Exact stable bundled runtime version required' }
+          $runtimeDirectory = Join-Path $hostFile.DirectoryName "shared/Microsoft.NETCore.App/$runtimeVersion"
+          $referenceDirectory = Join-Path $hostFile.DirectoryName "packs/Microsoft.NETCore.App.Ref/$runtimeVersion/ref/net10.0"
+          if (-not (Test-Path -LiteralPath $runtimeDirectory -PathType Container) -or -not (Test-Path -LiteralPath $referenceDirectory -PathType Container)) { throw 'SDK103 exact bundled runtime and reference pack must both be installed' }
+          $runtimeProfile = @("-p:RuntimeFrameworkVersion=$runtimeVersion", '-p:RollForward=Disable')
+          Write-Host "Ordinary SDK103 test runtime and reference pack: $runtimeVersion (roll-forward disabled)"
+          & $hostPath restore mutate4csharp.slnx --locked-mode -m:1 -nodeReuse:false -p:UseSharedCompilation=false @runtimeProfile
+          if ($LASTEXITCODE -ne 0) { throw 'Ordinary locked restore failed' }
+          & $hostPath build mutate4csharp.slnx -m:1 --no-restore -nodeReuse:false -p:UseSharedCompilation=false "-p:SourceRevisionId=$revision" @runtimeProfile
+          if ($LASTEXITCODE -ne 0) { throw 'Ordinary SDK103 build failed' }
+      - name: same-source-sdk401-graph-deployment
+        if: matrix.scope == 'graph'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Existing hosted job owns this finite sequential preparation. This is
+          # not a new native runner or proof of local native resource closure.
+          $revision = (& git rev-parse HEAD)
+          if ($LASTEXITCODE -ne 0 -or $revision -cnotmatch '^[0-9a-f]{40}$') { throw 'Actual source revision required' }
+          $hostCommand = Get-Command dotnet -CommandType Application | Select-Object -First 1
+          $hostFile = Get-Item -LiteralPath $hostCommand.Source
+          if ($hostFile.LinkType) { $hostFile = $hostFile.ResolveLinkTarget($true) }
+          $hostPath = $hostFile.FullName
+          $sdkTask = Join-Path $hostFile.DirectoryName 'sdk/10.0.401/Roslyn/Microsoft.Build.Tasks.CodeAnalysis.dll'
+          if (-not (Test-Path -LiteralPath $sdkTask -PathType Leaf)) { throw 'Actual same-host SDK401 task missing' }
+          $workspace = Join-Path $env:RUNNER_TEMP "mutate4csharp-graph-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if (Test-Path -LiteralPath $workspace) { throw 'Graph preparation must be fresh' }
+          [void][IO.Directory]::CreateDirectory($workspace)
+          $clone = Join-Path $workspace 'source'
+          & git clone --quiet --no-local $env:GITHUB_WORKSPACE $clone
+          if ($LASTEXITCODE -ne 0) { throw 'Same-source clone failed' }
+          & git -C $clone checkout --quiet --detach $revision
+          if ($LASTEXITCODE -ne 0) { throw 'Exact same-source checkout failed' }
+          $dirty = @(& git -C $clone status --porcelain=v1 --untracked-files=all)
+          if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) { throw 'Clone must be clean before explicit SDK profile' }
+          $profile = Join-Path $clone 'global.json'
+          [IO.File]::WriteAllBytes((Join-Path $workspace 'original-global103.json'), [IO.File]::ReadAllBytes($profile))
+          [IO.File]::WriteAllText($profile, '{"sdk":{"version":"10.0.401","rollForward":"disable","allowPrerelease":false}}' + "`n", [Text.UTF8Encoding]::new($false))
+          Push-Location $clone
+          try {
+            if ((& $hostPath --version) -cne '10.0.401' -or $LASTEXITCODE -ne 0) { throw 'Actual graph SDK must be401' }
+            foreach ($role in @('logger','worker')) {
+              $project = if ($role -eq 'logger') { 'Mutate4CSharp.GraphCapture' } else { 'Mutate4CSharp.GraphWorker' }
+              $output = Join-Path $workspace $role
+              $obj = (Join-Path $workspace "obj/$role") + [IO.Path]::DirectorySeparatorChar
+              [void][IO.Directory]::CreateDirectory($output)
+              & $hostPath build "src/$project/$project.csproj" --configuration Release -m:1 -nodeReuse:false -p:UseSharedCompilation=false -p:BuildInParallel=false "-p:GraphSelectedSdkVersion=10.0.401" "-p:SourceRevisionId=$revision" "-p:BaseIntermediateOutputPath=$obj" "-p:MSBuildProjectExtensionsPath=$obj" "-p:OutputPath=$output$([IO.Path]::DirectorySeparatorChar)" -p:AppendTargetFrameworkToOutputPath=false "-p:RestoreConfigFile=$env:GITHUB_WORKSPACE/NuGet.Config"
+              if ($LASTEXITCODE -ne 0) { throw "Actual graph $role build failed" }
+            }
+            & git diff --exit-code -- . ':(exclude)global.json'
+            if ($LASTEXITCODE -ne 0) { throw 'Graph preparation changed authored source outside explicit SDK profile' }
+            if ([IO.File]::ReadAllText($profile) -cne ('{"sdk":{"version":"10.0.401","rollForward":"disable","allowPrerelease":false}}' + "`n")) { throw 'Explicit SDK profile drifted' }
+          } finally { Pop-Location }
+          $manifest = Join-Path $workspace 'deployment.json'
+          # This is an explicit external source-test deployment, never the
+          # package preparation route below, even though outputs are colocated.
+          $digest = @(& python -I scripts/create-graph-deployment.py --external-manifest --host $hostPath --logger-dir (Join-Path $workspace 'logger') --worker-dir (Join-Path $workspace 'worker') --task $sdkTask --source-revision $revision --output $manifest)
+          if ($LASTEXITCODE -ne 0 -or $digest.Count -ne 1 -or $digest[0] -cnotmatch '^[0-9a-f]{64}$') { throw 'Exact fresh graph deployment publication failed' }
+          if ((Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant() -cne $digest[0]) { throw 'Published graph digest differs' }
+          # Native paths from PowerShell/BCL avoid MSYS path conversion in both
+          # process arguments and the exact manifest/environment path values.
+          @("DOTNET_HOST_PATH=$hostPath", "MUTATE4CSHARP_GRAPH_CAPTURE_MANIFEST=$manifest", "MUTATE4CSHARP_GRAPH_CAPTURE_MANIFEST_SHA256=$($digest[0])") | Out-File -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: round-ten-contract-regressions
+        if: matrix.scope == 'core-review'
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~IssueEightReviewRoundTenTests" -- xUnit.MaxParallelThreads=1
-      - run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests" -- xUnit.MaxParallelThreads=1
+      - name: core-contracts
+        if: matrix.scope == 'core'
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_two_worker_executor_work_expiry_retires_then_omits_remaining_units&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.ExecutesOneExactMutationInAFreshFrozenWorker&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealProcessDistinguishesSurvivedAndCompileInvalidMutants&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealCoordinatorBoundaryCannotPublishSuccess" --logger "console;verbosity=normal" -- xUnit.MaxParallelThreads=1
+      # Windows core scopes retain exact class complements; no case is dropped
+      # or sampled. Graph/packaging exclusions and per-job limits stay unchanged.
+      - name: windows-review-core-contracts
+        if: matrix.scope == 'core-review'
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName~IssueEightReview&FullyQualifiedName!~IssueEightReviewRoundTenTests" -- xUnit.MaxParallelThreads=1
+      - name: windows-other-core-contracts
+        if: matrix.scope == 'core-other'
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName!~IssueEightReview&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_two_worker_executor_work_expiry_retires_then_omits_remaining_units&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.ExecutesOneExactMutationInAFreshFrozenWorker&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealProcessDistinguishesSurvivedAndCompileInvalidMutants&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealCoordinatorBoundaryCannotPublishSuccess&FullyQualifiedName!~Mutate4CSharp.Tests.StrictMutationExecutorTests.&FullyQualifiedName!~Mutate4CSharp.Tests.SnapshotCaptureTests." --logger "console;verbosity=normal" -- xUnit.MaxParallelThreads=1
+      # Same seven-job capacity: retain this Windows class once in its own carrier.
+      - name: windows-snapshot-capture-contracts
+        if: matrix.scope == 'snapshot-capture'
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName!~IssueEightReview&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_two_worker_executor_work_expiry_retires_then_omits_remaining_units&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.ExecutesOneExactMutationInAFreshFrozenWorker&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealProcessDistinguishesSurvivedAndCompileInvalidMutants&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealCoordinatorBoundaryCannotPublishSuccess&FullyQualifiedName!~Mutate4CSharp.Tests.StrictMutationExecutorTests.&FullyQualifiedName~Mutate4CSharp.Tests.SnapshotCaptureTests." --logger "console;verbosity=normal" -- xUnit.MaxParallelThreads=1
+      - name: actual-inherited-compiler-graph
+        if: matrix.scope == 'graph'
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~ResolvedGraphInheritedCompilerFixtureTests" -- xUnit.MaxParallelThreads=1
+      # Move the four measured serial controls out of crowded core
+      # jobs, once per OS. Keep all seven jobs, caps and parallelism unchanged.
+      - name: actual-original-work-retirement
+        if: matrix.scope == 'core-review' || (runner.os == 'Linux' && matrix.scope == 'graph')
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_two_worker_executor_work_expiry_retires_then_omits_remaining_units|FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant|FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.ExecutesOneExactMutationInAFreshFrozenWorker|FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealProcessDistinguishesSurvivedAndCompileInvalidMutants" --logger "console;verbosity=normal" -- xUnit.MaxParallelThreads=1
+      # Transfer the complete remaining Strict class to the measured Windows
+      # review job; the four retirement controls and ten-row Theory stay separate.
+      - name: windows-remaining-strict-contracts
+        if: matrix.scope == 'core-review'
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~Mutate4CSharp.Tests.StrictMutationExecutorTests.&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_two_worker_executor_work_expiry_retires_then_omits_remaining_units&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.ExecutesOneExactMutationInAFreshFrozenWorker&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealProcessDistinguishesSurvivedAndCompileInvalidMutants&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealCoordinatorBoundaryCannotPublishSuccess" --logger "console;verbosity=normal" -- xUnit.MaxParallelThreads=1
+      # Relocate the complete ten-row Theory once per OS; no case is dropped.
+      # Existing graph jobs have measured headroom; future timing is still validated by CI.
+      - name: actual-coordinator-boundary-contracts
+        id: coordinator_boundary
+        timeout-minutes: ${{ runner.os == 'Windows' && 11 || 8 }}
+        if: matrix.scope == 'graph'
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealCoordinatorBoundaryCannotPublishSuccess" --logger "console;verbosity=normal" --logger "trx;LogFileName=coordinator-boundary.trx" --results-directory "${{ github.workspace }}/coordinator-boundary-results" -- xUnit.MaxParallelThreads=1
+      - name: coordinator-boundary-artifacts
+        if: matrix.scope == 'graph' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coordinator-boundary-${{ runner.os }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ github.workspace }}/coordinator-boundary-results
+          if-no-files-found: ${{ steps.coordinator_boundary.outcome == 'success' && 'error' || 'warn' }}
       - name: isolated-local-package
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.scope == 'installed'
         shell: bash
         run: |
           set -euo pipefail
@@ -35,19 +190,19 @@ jobs:
           echo "MUTATE4CSHARP_PACKED_FEED=${WORKSPACE}/feed" >> "$GITHUB_ENV"
       - name: local-tool-workflow
         id: installed_contract
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.scope == 'installed'
         env:
           MUTATE4CSHARP_CERTIFICATION_DIRECTORY: ${{ runner.temp }}/mutate4csharp-installed-certification
-        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~ToolPackagingIntegrationTests" -- xUnit.MaxParallelThreads=1
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~ToolPackagingIntegrationTests&FullyQualifiedName!~InstalledResolvedGraphUsesPackagedHelpersAndExplicitRegeneration" -- xUnit.MaxParallelThreads=1
       - name: installed-certification-artifacts
-        if: runner.os == 'Linux' && always()
+        if: runner.os == 'Linux' && matrix.scope == 'installed' && always()
         uses: actions/upload-artifact@v4
         with:
           name: installed-certification-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ runner.temp }}/mutate4csharp-installed-certification
           if-no-files-found: ${{ steps.installed_contract.outcome == 'success' && 'error' || 'warn' }}
       - name: round-seven-shipped-workflow
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.scope == 'installed'
         shell: bash
         run: |
           set -euo pipefail
@@ -98,3 +253,32 @@ jobs:
           git -C "$CONSUMER" commit --quiet -m changed-head
           ! scripts/agent-gate.sh gate "$CONSUMER" "$RECEIPT" "$PACKAGE_SHA256" "$PAYLOAD_SHA256" "$TOOL_SOURCE_COMMIT" "$TASK_START" "$EXPECTED_TARGET_HEAD" "${WORKSPACE}.head.json" no-state 2>"${WORKSPACE}.head.log"
           grep -F 'target repository HEAD changed from its approved current commit' "${WORKSPACE}.head.log"
+      - name: isolated-installed-v2-package
+        id: installed_graph_prepare
+        if: runner.os == 'Linux' && matrix.scope == 'installed' && !cancelled() && steps.ordinary_sdk103_build.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I scripts/test-create-graph-deployment.py
+          WORKSPACE="${RUNNER_TEMP}/mutate4csharp-installed-graph-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          RECEIPT="${WORKSPACE}.receipt.tsv"
+          scripts/agent-gate.sh prepare "$GITHUB_WORKSPACE" "$WORKSPACE" "$RECEIPT" graph-sdk401 | tee "${WORKSPACE}.prepare.txt"
+          HOST=$(awk -F= '$1 == "DOTNET_HOST" { print substr($0, index($0,"=")+1) }' "${WORKSPACE}.prepare.txt")
+          test -n "$HOST"
+          echo "MUTATE4CSHARP_INSTALLED_GRAPH_FEED=${WORKSPACE}/feed" >> "$GITHUB_ENV"
+          echo "MUTATE4CSHARP_INSTALLED_GRAPH_HOST=${HOST}" >> "$GITHUB_ENV"
+      - name: installed-v2-real-mutation-and-refusal
+        id: installed_graph_contract
+        if: runner.os == 'Linux' && matrix.scope == 'installed' && !cancelled() && steps.installed_graph_prepare.outcome == 'success'
+        env:
+          MUTATE4CSHARP_CERTIFICATION_DIRECTORY: ${{ runner.temp }}/mutate4csharp-installed-graph-certification
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~InstalledResolvedGraphUsesPackagedHelpersAndExplicitRegeneration" -- xUnit.MaxParallelThreads=1
+      - name: installed-v2-artifacts
+        if: runner.os == 'Linux' && matrix.scope == 'installed' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-graph-certification-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/mutate4csharp-installed-graph-certification
+            ${{ runner.temp }}/mutate4csharp-installed-graph-*.prepare.txt
+          if-no-files-found: ${{ steps.installed_graph_contract.outcome == 'success' && 'error' || 'warn' }}

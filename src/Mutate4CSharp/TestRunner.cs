@@ -13,8 +13,13 @@ internal static class TestRunner
         TimeSpan timeout, bool collectCoverage, CancellationToken cancellationToken,
         IReadOnlyDictionary<string, string?>? environment = null, bool noRestore = false,
         bool requireExecutionBoundary = false, string? dotnetExecutable = null,
-        string? framework = null, string? configuration = null)
+        string? framework = null, string? configuration = null, bool resolvedGraph = false,
+        ResolvedGraphBudget? originalBudget = null, ResolvedGraphInputs? coverageInputs = null)
     {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (resolvedGraph) (originalBudget ?? throw new EvaluationContractException("Same graph original required before test effects.")).CheckWork();
+        if (resolvedGraph && (!requireExecutionBoundary || !noRestore))
+            throw new EvaluationContractException("Resolved graph tests require the actual restored private worker boundary.");
         if (requireExecutionBoundary) ExecutionEnvironment.ValidateExecutionAncestors(root);
         Directory.CreateDirectory(resultsDirectory);
         var dotnet = dotnetExecutable ?? Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
@@ -39,11 +44,54 @@ internal static class TestRunner
             var insertion = separator < 0 ? arguments.Count : separator;
             arguments.Insert(insertion++, "-nodeReuse:false");
             arguments.Insert(insertion++, "-p:UseSharedCompilation=false");
+            if (resolvedGraph) arguments.Insert(insertion++, ResolvedGraphPathProfile.Argument(root, packageRoot));
             arguments.Insert(insertion, $"-p:NuGetPackageRoot={Path.GetFullPath(packageRoot).TrimEnd(
                 Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)}{Path.DirectorySeparatorChar}");
         }
-        var run = await ProcessTree.RunAsync(dotnet, arguments, root, timeout, cancellationToken,
-            processEnvironment, requireLinuxSessionIsolation: requireExecutionBoundary);
+        // Legacy Windows commands now share the creation-owned Job boundary.
+        // Disable invocation-started build servers without changing Linux legacy arguments.
+        if (!requireExecutionBoundary && OperatingSystem.IsWindows())
+        {
+            processEnvironment["MSBUILDDISABLENODEREUSE"] = "1";
+            processEnvironment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
+            var separator = arguments.IndexOf("--");
+            var insertion = separator < 0 ? arguments.Count : separator;
+            arguments.Insert(insertion++, "-nodeReuse:false");
+            arguments.Insert(insertion, "-p:UseSharedCompilation=false");
+        }
+        var preparationRemaining = timeout - System.Diagnostics.Stopwatch.GetElapsedTime(started);
+        if (preparationRemaining <= TimeSpan.Zero) throw new TimeoutException("Complete test operation allowance ended before birth.");
+        var mapping = resolvedGraph && collectCoverage
+            ? await ResolvedGraphCoverletMapping.BuildAsync(dotnet, root, testPath,
+                processEnvironment.Last(item => item.Key.Equals("NUGET_PACKAGES", StringComparison.OrdinalIgnoreCase)).Value!,
+                framework ?? throw new EvaluationContractException("Actual graph framework is required."),
+                configuration ?? throw new EvaluationContractException("Actual graph configuration is required."),
+                resultsDirectory, processEnvironment, noRestore, preparationRemaining,
+                originalBudget ?? throw new EvaluationContractException("Same graph original is required for coverage preparation."),
+                coverageInputs ?? throw new EvaluationContractException("Actual baseline-owned coverage inputs are required."),
+                cancellationToken)
+            : null;
+        if (mapping is not null)
+        {
+            mapping.Recheck();
+            // The normal build already returned. No subsequent build may
+            // regenerate the exact post-compiler collector mapping artifact.
+            arguments.Insert(1, "--no-build");
+            if (!arguments.Contains("--no-restore", StringComparer.Ordinal)) arguments.Insert(1, "--no-restore");
+        }
+        var remaining = timeout - System.Diagnostics.Stopwatch.GetElapsedTime(started);
+        if (remaining <= TimeSpan.Zero) throw new TimeoutException("Complete graph coverage build/test allowance ended.");
+        var run = await ProcessTree.RunAsync(dotnet, arguments, root, remaining, cancellationToken,
+            processEnvironment, requireLinuxSessionIsolation: requireExecutionBoundary, originalBudget: originalBudget);
+        mapping?.Recheck();
+        if (mapping is not null)
+        {
+            originalBudget!.Resources.AdmitSemantic(checked(2L * (mapping.ActualBuild.StandardOutput.Length +
+                mapping.ActualBuild.StandardError.Length + run.StandardOutput.Length + run.StandardError.Length + 2)));
+            run = run with { Duration = System.Diagnostics.Stopwatch.GetElapsedTime(started),
+                StandardOutput = mapping.ActualBuild.StandardOutput + "\n" + run.StandardOutput,
+                StandardError = mapping.ActualBuild.StandardError + "\n" + run.StandardError };
+        }
         var evidence = AnalyzeTrx(resultsDirectory);
         if (run.TimedOut)
         {
@@ -163,18 +211,37 @@ internal static class TestRunner
 
     private static string Bound(string value, int maximum) => EvaluationTextBounds.Prefix(value, maximum);
 
-    public static IReadOnlyList<string> FindCoverage(string directory) => Directory.Exists(directory)
-        ? ProjectLocator.EnumerateFilesSafe(directory, "*.xml")
+    public static IReadOnlyList<string> FindCoverage(string directory, ResolvedGraphInputs? coverageInputs = null,
+        IDictionary<string, ResolvedGraphFile>? pinnedCoverage = null)
+    {
+        if (!Directory.Exists(directory)) return [];
+        return (coverageInputs is null ? ProjectLocator.EnumerateFilesSafe(directory, "*.xml") : RetainedCoverageFailure.EnumerateResultFiles(directory, coverageInputs))
+            .Where(x => x.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
             .Where(x => Path.GetFileName(x).Contains("coverage", StringComparison.OrdinalIgnoreCase))
-            .Where(IsNonemptyOpenCover)
-            .OrderBy(x => x, StringComparer.Ordinal).ToArray()
-        : [];
+            .Where(path => IsNonemptyOpenCover(path, coverageInputs, pinnedCoverage))
+            .OrderBy(x => x, StringComparer.Ordinal).ToArray();
+    }
 
-    private static bool IsNonemptyOpenCover(string path)
+    private static bool IsNonemptyOpenCover(string path, ResolvedGraphInputs? coverageInputs,
+        IDictionary<string, ResolvedGraphFile>? pinnedCoverage)
     {
         try
         {
-            var document = XDocument.Load(path);
+            XDocument document;
+            if (coverageInputs is not null)
+            {
+                var captured = coverageInputs.Read(path, "config");
+                var bytes = captured.Bytes;
+                coverageInputs.ReserveAllocation(checked(bytes.LongLength * 8 + 8192));
+                using var stream = new MemoryStream(bytes, false);
+                using var reader = System.Xml.XmlReader.Create(stream, new System.Xml.XmlReaderSettings {
+                    DtdProcessing = System.Xml.DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = ResolvedGraphInputs.MaximumFileBytes });
+                document = XDocument.Load(reader);
+                if (document.Root?.Name.LocalName == "CoverageSession" &&
+                    document.Root.Descendants().Any(item => item.Name.LocalName == "Module"))
+                    pinnedCoverage?.Add(path, captured);
+            }
+            else document = XDocument.Load(path);
             return document.Root?.Name.LocalName == "CoverageSession" &&
                 document.Root.Descendants().Any(item => item.Name.LocalName == "Module");
         }
@@ -216,22 +283,24 @@ internal sealed class CoverageMap
     public static CoverageMap? Load(IEnumerable<string> reports, SnapshotClone clone)
         => Load(reports, clone.Root, clone.ToCanonicalPath(clone.Root), clone.ToCanonicalPath);
 
-    public static CoverageMap? Load(IEnumerable<string> reports, SnapshotClone clone, InputSnapshot snapshot)
+    public static CoverageMap? Load(IEnumerable<string> reports, SnapshotClone clone, InputSnapshot snapshot, bool resolvedGraph = false, string? graphPackageRoot = null,
+        IReadOnlyDictionary<string, ResolvedGraphFile>? pinnedCoverage = null)
     {
         var diagnostics = new List<string>();
         var map = Load(reports, clone.Root, clone.ToCanonicalPath(clone.Root), clone.ToCanonicalPath,
             module => OpenCoverPortablePdb.Load(module, clone, snapshot, value =>
             {
                 if (diagnostics.Count < 12) diagnostics.Add("coverage-span-map=" + value);
-            }));
+            }, resolvedGraph), resolvedGraph, graphPackageRoot, pinnedCoverage);
         if (map is not null) map.ProjectionDiagnostics = diagnostics;
         return map;
     }
 
     private static CoverageMap? Load(IEnumerable<string> reports, string parseRoot, string canonicalRoot,
-        Func<string, string>? canonicalize, Func<XElement, OpenCoverPortablePdb?>? pdbResolver = null)
+        Func<string, string>? canonicalize, Func<XElement, OpenCoverPortablePdb?>? pdbResolver = null, bool resolvedGraph = false, string? graphPackageRoot = null,
+        IReadOnlyDictionary<string, ResolvedGraphFile>? pinnedCoverage = null)
     {
-        var paths = reports.Where(File.Exists).Distinct(StringComparer.Ordinal).ToArray();
+        var paths = reports.Where(path => pinnedCoverage is not null || File.Exists(path)).Distinct(StringComparer.Ordinal).ToArray();
         if (paths.Length == 0) return null;
         var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
         var points = new Dictionary<string, Dictionary<int, bool>>(comparer);
@@ -243,7 +312,18 @@ internal sealed class CoverageMap
         {
             try
             {
-                var doc = XDocument.Load(report);
+                XDocument doc;
+                if (pinnedCoverage is not null)
+                {
+                    if (!pinnedCoverage.TryGetValue(report, out var captured))
+                        throw new EvaluationContractException("Complete pinned graph coverage is required.");
+                    using var stream = new MemoryStream(captured.Bytes, false);
+                    using var reader = System.Xml.XmlReader.Create(stream, new System.Xml.XmlReaderSettings {
+                        DtdProcessing = System.Xml.DtdProcessing.Prohibit, XmlResolver = null,
+                        MaxCharactersInDocument = ResolvedGraphInputs.MaximumFileBytes });
+                    doc = XDocument.Load(reader);
+                }
+                else doc = XDocument.Load(report);
                 if (doc.Root?.Name.LocalName != "CoverageSession") { incomplete = true; continue; }
                 var modules = doc.Root.Descendants().Where(x => x.Name.LocalName == "Module").ToArray();
                 if (modules.Length == 0) { incomplete = true; continue; }
@@ -260,9 +340,15 @@ internal sealed class CoverageMap
                         { incomplete = true; continue; }
                         try
                         {
-                            var normalized = Normalize(fullPath, parseRoot);
+                            var packageDocument = resolvedGraph && fullPath.StartsWith(ResolvedGraphPathProfile.Packages + "/", StringComparison.Ordinal);
+                            var physicalPath = packageDocument
+                                ? ResolvedGraphPathProfile.UnmapPackages(fullPath, graphPackageRoot ?? throw new EvaluationContractException("Actual graph package root required."))
+                                : resolvedGraph ? ResolvedGraphPathProfile.UnmapSource(fullPath, parseRoot) : fullPath;
+                            var normalized = Normalize(physicalPath, parseRoot);
                             cloneFiles.Add(uid, normalized);
-                            files.Add(uid, canonicalize is null ? normalized : canonicalize(normalized));
+                            files.Add(uid, packageDocument
+                                ? Path.GetFullPath("$graph-packages/" + SnapshotInputPolicy.NormalizeRelative(fullPath[(ResolvedGraphPathProfile.Packages.Length + 1)..]), canonicalRoot)
+                                : canonicalize is null ? normalized : canonicalize(normalized));
                         }
                         catch { incomplete = true; }
                     }

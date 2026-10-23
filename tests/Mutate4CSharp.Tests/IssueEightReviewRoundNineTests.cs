@@ -26,9 +26,22 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
     [Fact]
     public async Task DirectPackWithoutIsolationContractFailsWithStableDiagnostic()
     {
-        var revision = (await RunAsync(RepositoryRoot, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
-        var result = await RunAsync(RepositoryRoot, DotnetHost(), "pack",
-            "src/Mutate4CSharp/Mutate4CSharp.csproj", "-c", "Release", "-m:1", "--no-restore",
+        // The unsupported route is genuine, but every producer side effect belongs to this copy.
+        // NoBuild alone still permits PackAsTool Publish/settings targets before the guard.
+        var repository = Path.Combine(_root, "unsupported-direct-source");
+        await CopyDirectPackRepositoryAsync(repository);
+        var revision = (await RunAsync(repository, "git", "rev-parse", "HEAD")).StandardOutput.Trim();
+        Assert.Matches("^[0-9a-f]{40}$", revision);
+        const string project = "src/Mutate4CSharp/Mutate4CSharp.csproj";
+        var restored = await RunDisposableDotnetAsync(repository, "restore", project,
+            "--locked-mode", "--disable-parallel", "-m:1", "-nr:false");
+        Assert.True(restored.ExitCode == 0, restored.Diagnostic);
+        var built = await RunDisposableDotnetAsync(repository, "build", project,
+            "-c", "Release", "--no-restore", "-m:1", "-nr:false",
+            "-p:UseSharedCompilation=false", "-p:BuildInParallel=false");
+        Assert.True(built.ExitCode == 0, built.Diagnostic);
+        var result = await RunDisposableDotnetAsync(repository, "pack", project,
+            "-c", "Release", "-m:1", "-nr:false", "--no-restore", "--no-build",
             $"-p:Version=0.1.0-local.{revision}", $"-p:SourceRevisionId={revision}",
             "-o", Path.Combine(_root, "unsupported-direct-feed"));
         Assert.NotEqual(0, result.ExitCode);
@@ -342,6 +355,81 @@ public sealed class IssueEightReviewRoundNineTests : IDisposable
             head, head, Path.Combine(_root, "cancelled.json"), "no-state");
         Assert.Equal(retained == "execution-snapshot" ? 4 : OrchestrationRefusal, result.ExitCode);
         if (retained != "execution-snapshot") Assert.Contains("unbound cancellation contradicts", result.Diagnostic, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task CopyDirectPackRepositoryAsync(string destination)
+    {
+        var listed = await RunAsync(RepositoryRoot, "git", "ls-files", "-z");
+        Assert.True(listed.ExitCode == 0, listed.Diagnostic);
+        var paths = listed.StandardOutput.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+        Assert.InRange(paths.Length, 1, 4096);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var sourceRoot = Path.GetFullPath(RepositoryRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var targetRoot = Path.GetFullPath(destination).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        Assert.False(targetRoot.StartsWith(sourceRoot, StringComparison.OrdinalIgnoreCase));
+        Assert.False(Directory.Exists(destination));
+        Directory.CreateDirectory(destination);
+        long copiedBytes = 0;
+        foreach (var relative in paths)
+        {
+            TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+            Assert.InRange(relative.Length, 1, 4096);
+            Assert.False(Path.IsPathRooted(relative));
+            var segments = relative.Split('/', '\\');
+            Assert.DoesNotContain(segments, segment => segment is "" or "." or ".." ||
+                segment.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+                segment.Equals("bin", StringComparison.OrdinalIgnoreCase) ||
+                segment.Equals("obj", StringComparison.OrdinalIgnoreCase));
+            Assert.True(seen.Add(relative), "Duplicate tracked source path");
+            var source = Path.GetFullPath(Path.Combine(RepositoryRoot, relative));
+            var target = Path.GetFullPath(Path.Combine(destination, relative));
+            Assert.StartsWith(sourceRoot, source, StringComparison.OrdinalIgnoreCase);
+            Assert.StartsWith(targetRoot, target, StringComparison.OrdinalIgnoreCase);
+            for (var cursor = source; cursor is not null && cursor.Length >= sourceRoot.Length;
+                 cursor = Path.GetDirectoryName(cursor))
+                Assert.Equal(0, (int)(File.GetAttributes(cursor) & FileAttributes.ReparsePoint));
+            var bytes = new FileInfo(source).Length;
+            Assert.InRange(bytes, 0, 64L * 1024 * 1024);
+            copiedBytes = checked(copiedBytes + bytes);
+            Assert.InRange(copiedBytes, 0, 512L * 1024 * 1024);
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(source, target, overwrite: false);
+            if (!OperatingSystem.IsWindows())
+                File.SetUnixFileMode(target, File.GetUnixFileMode(source));
+            Assert.Equal(Sha256File(source), Sha256File(target));
+        }
+        await RunRequiredAsync(destination, "git", "init", "--quiet");
+        await RunRequiredAsync(destination, "git", "config", "user.email", "fixture@example.invalid");
+        await RunRequiredAsync(destination, "git", "config", "user.name", "fixture");
+        await RunRequiredAsync(destination, "git", new[] { "add", "--" }.Concat(paths).ToArray());
+        await RunRequiredAsync(destination, "git", "commit", "--quiet", "-m", "disposable direct-pack fixture");
+    }
+
+    private async Task<ProcessResult> RunDisposableDotnetAsync(string repository, params string[] arguments)
+    {
+        Assert.StartsWith(Path.GetFullPath(_root) + Path.DirectorySeparatorChar,
+            Path.GetFullPath(repository), StringComparison.OrdinalIgnoreCase);
+        var start = new ProcessStartInfo(DotnetHost())
+        {
+            WorkingDirectory = repository,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        // Regenerate assets here; never borrow absolute-path OBJ or cache metadata from the producer.
+        start.Environment["DOTNET_CLI_HOME"] = Path.Combine(_root, "direct-dotnet-home");
+        start.Environment["NUGET_PACKAGES"] = Path.Combine(_root, "direct-nuget-packages");
+        start.Environment["NUGET_HTTP_CACHE_PATH"] = Path.Combine(_root, "direct-nuget-http");
+        start.Environment["NUGET_SCRATCH"] = Path.Combine(_root, "direct-nuget-scratch");
+        start.Environment["NUGET_PLUGINS_CACHE_PATH"] = Path.Combine(_root, "direct-nuget-plugins");
+        start.Environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] = "1";
+        start.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start)!;
+        var stdout = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+        var stderr = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+        await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+        return new(process.ExitCode, await stdout, await stderr);
     }
 
     private async Task<ToolFixture> CreateToolFixtureAsync(string json, int processExit, string action = "")
