@@ -160,6 +160,7 @@ jobs:
       # Existing graph jobs have measured headroom; future timing is still validated by CI.
       - name: actual-coordinator-boundary-contracts
         id: coordinator_boundary
+        timeout-minutes: 8
         if: matrix.scope == 'graph'
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealCoordinatorBoundaryCannotPublishSuccess" --logger "console;verbosity=normal" --logger "trx;LogFileName=coordinator-boundary.trx" --results-directory "${{ github.workspace }}/coordinator-boundary-results" -- xUnit.MaxParallelThreads=1
       - name: coordinator-boundary-artifacts
