@@ -147,7 +147,7 @@ jobs:
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName~IssueEightReview&FullyQualifiedName!~IssueEightReviewRoundTenTests" -- xUnit.MaxParallelThreads=1
       - name: windows-other-core-contracts
         if: matrix.scope == 'core-other'
-        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName!~IssueEightReview&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_two_worker_executor_work_expiry_retires_then_omits_remaining_units&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.ExecutesOneExactMutationInAFreshFrozenWorker&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealProcessDistinguishesSurvivedAndCompileInvalidMutants&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealCoordinatorBoundaryCannotPublishSuccess" --logger "console;verbosity=normal" -- xUnit.MaxParallelThreads=1
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName!~ToolPackagingIntegrationTests&FullyQualifiedName!~ResolvedGraphInheritedCompilerFixtureTests&FullyQualifiedName!~IssueEightReview&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_two_worker_executor_work_expiry_retires_then_omits_remaining_units&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.ExecutesOneExactMutationInAFreshFrozenWorker&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealProcessDistinguishesSurvivedAndCompileInvalidMutants&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealCoordinatorBoundaryCannotPublishSuccess&FullyQualifiedName!~Mutate4CSharp.Tests.StrictMutationExecutorTests." --logger "console;verbosity=normal" -- xUnit.MaxParallelThreads=1
       - name: actual-inherited-compiler-graph
         if: matrix.scope == 'graph'
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~ResolvedGraphInheritedCompilerFixtureTests" -- xUnit.MaxParallelThreads=1
@@ -156,11 +156,16 @@ jobs:
       - name: actual-original-work-retirement
         if: matrix.scope == 'core-review' || (runner.os == 'Linux' && matrix.scope == 'graph')
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_two_worker_executor_work_expiry_retires_then_omits_remaining_units|FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant|FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.ExecutesOneExactMutationInAFreshFrozenWorker|FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealProcessDistinguishesSurvivedAndCompileInvalidMutants" --logger "console;verbosity=normal" -- xUnit.MaxParallelThreads=1
+      # Transfer the complete remaining Strict class to the measured Windows
+      # review job; the four retirement controls and ten-row Theory stay separate.
+      - name: windows-remaining-strict-contracts
+        if: matrix.scope == 'core-review'
+        run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName~Mutate4CSharp.Tests.StrictMutationExecutorTests.&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_two_worker_executor_work_expiry_retires_then_omits_remaining_units&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.Actual_loop_mutant_timeout_does_not_end_same_original_before_second_mutant&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.ExecutesOneExactMutationInAFreshFrozenWorker&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealProcessDistinguishesSurvivedAndCompileInvalidMutants&FullyQualifiedName!=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealCoordinatorBoundaryCannotPublishSuccess" --logger "console;verbosity=normal" -- xUnit.MaxParallelThreads=1
       # Relocate the complete ten-row Theory once per OS; no case is dropped.
       # Existing graph jobs have measured headroom; future timing is still validated by CI.
       - name: actual-coordinator-boundary-contracts
         id: coordinator_boundary
-        timeout-minutes: 8
+        timeout-minutes: ${{ runner.os == 'Windows' && 11 || 8 }}
         if: matrix.scope == 'graph'
         run: dotnet test mutate4csharp.slnx -m:1 --no-build --filter "FullyQualifiedName=Mutate4CSharp.Tests.StrictMutationExecutorTests.RealCoordinatorBoundaryCannotPublishSuccess" --logger "console;verbosity=normal" --logger "trx;LogFileName=coordinator-boundary.trx" --results-directory "${{ github.workspace }}/coordinator-boundary-results" -- xUnit.MaxParallelThreads=1
       - name: coordinator-boundary-artifacts
