@@ -70,6 +70,7 @@ On Windows, default legacy `TestRunner` calls add only per-invocation `-nodeReus
 to keep build servers from outliving the command inside its private Job. These flags do not stop global services
 or confer full strict snapshot isolation; Linux legacy arguments remain unchanged. All launched test processes now share
 bounded output capture and descendant-aware timeout/cancellation cleanup.
+Per-invocation compiler isolation can make Windows legacy compilations slower; existing time limits still apply.
 
 Windows launches use a private Job assigned before the suspended root is resumed; hosts must permit that
 assignment, including nesting under an existing Job. There is no portable-process fallback when assignment

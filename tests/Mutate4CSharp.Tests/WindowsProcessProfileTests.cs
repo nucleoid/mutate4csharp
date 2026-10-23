@@ -314,11 +314,21 @@ public sealed class WindowsProcessProfileTests
         // Its unique owner/directory remain retained until test-host exit.
         var owned = OwnedDirectory.Create(OwnedDirectory.PrivateParent("windows-legacy-grace-terminal"), "fixture");
         var packages = Path.Combine(owned.Root, "packages");
+        var work = Path.Combine(owned.Root, "work");
+        var resultsSibling = Path.Combine(owned.Root, "results");
         Directory.CreateDirectory(packages);
+        Directory.CreateDirectory(work);
+        Directory.CreateDirectory(resultsSibling);
         var cscript = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cscript.exe");
         Assert.True(File.Exists(cscript), "The required Windows terminal-grace fixture needs the actual inbox WSH console host; missing/disabled WSH is setup failure, not a skipped native proof.");
         var shell = PowerShellExecutable();
         var nonce = Guid.NewGuid().ToString("N");
+        var parentSentinel = Path.Combine(owned.Root, "parent-sentinel.bin");
+        var resultsSentinel = Path.Combine(resultsSibling, "results-sentinel.bin");
+        var parentSentinelBytes = Encoding.UTF8.GetBytes("parent:" + nonce);
+        var resultsSentinelBytes = Encoding.UTF8.GetBytes("results:" + nonce);
+        File.WriteAllBytes(parentSentinel, parentSentinelBytes);
+        File.WriteAllBytes(resultsSentinel, resultsSentinelBytes);
         var closed = Path.Combine(owned.Root, "child-closed-streams");
         var ready = Path.Combine(owned.Root, "ready.json");
         var releaseRoot = Path.Combine(owned.Root, "release-root");
@@ -376,7 +386,7 @@ public sealed class WindowsProcessProfileTests
             """;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var run = ProcessTree.RunAsync(shell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Convert.ToBase64String(Encoding.Unicode.GetBytes(root))],
-            owned.Root, TimeSpan.FromSeconds(15), cancellation.Token,
+            work, TimeSpan.FromSeconds(15), cancellation.Token,
             new Dictionary<string, string?> { ["NUGET_PACKAGES"] = packages }); // No graph original.
         Process? actualRoot = null, actualChild = null;
         Exception? primary = null;
@@ -417,6 +427,11 @@ public sealed class WindowsProcessProfileTests
                 Assert.True(actualChild.HasExited);
                 WindowsProcessTree.AssertDirectoryMayBeRemoved(owned.Root);
                 WindowsProcessTree.AssertDirectoryMayBeRemoved(packages);
+                MutationExecutor.TryRemoveDirectory(resultsSibling, owned.Root);
+                Assert.False(Directory.Exists(resultsSibling));
+                Assert.True(Directory.Exists(owned.Root)); Assert.True(Directory.Exists(work));
+                Assert.Equal(parentSentinelBytes, File.ReadAllBytes(parentSentinel));
+                Assert.True(File.Exists(childPath));
                 knownCancellationClosure = true;
             }
             else
@@ -430,12 +445,26 @@ public sealed class WindowsProcessProfileTests
                 Assert.False(actualChild.HasExited, "Grace expiry must not perform a late success-time kill.");
                 Assert.Throws<SnapshotCleanupException>(() => WindowsProcessTree.AssertDirectoryMayBeRemoved(owned.Root));
                 Assert.Throws<SnapshotCleanupException>(() => WindowsProcessTree.AssertDirectoryMayBeRemoved(packages));
+                // Exercise BOTH real finally cleanup targets while the SAME Job
+                // still owns a live child. The results sibling does not overlap work.
+                MutationExecutor.TryRemoveDirectory(owned.Root, owned.Root);
+                MutationExecutor.TryRemoveDirectory(resultsSibling, owned.Root);
+                Assert.True(Directory.Exists(owned.Root)); Assert.True(Directory.Exists(work));
+                Assert.True(Directory.Exists(resultsSibling));
+                Assert.Equal(parentSentinelBytes, File.ReadAllBytes(parentSentinel));
+                Assert.Equal(resultsSentinelBytes, File.ReadAllBytes(resultsSentinel));
                 File.WriteAllText(releaseChild, nonce); // Only the SAME identified fixture child.
                 await actualChild.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5));
                 Assert.Equal(0, actualChild.ExitCode); Assert.Equal(nonce, File.ReadAllText(finished));
-                var repeated = await Assert.ThrowsAsync<SnapshotCleanupException>(() => run);
-                Assert.Same(failure, repeated); // Late physical exit cannot turn UNKNOWN into PASS.
+                // Actual directory barriers, rather than reawaiting a faulted
+                // Task, prove that late physical exit did not release retention.
                 Assert.Throws<SnapshotCleanupException>(() => WindowsProcessTree.AssertDirectoryMayBeRemoved(owned.Root));
+                MutationExecutor.TryRemoveDirectory(owned.Root, owned.Root);
+                MutationExecutor.TryRemoveDirectory(resultsSibling, owned.Root);
+                Assert.True(Directory.Exists(owned.Root)); Assert.True(Directory.Exists(work));
+                Assert.True(Directory.Exists(resultsSibling));
+                Assert.Equal(parentSentinelBytes, File.ReadAllBytes(parentSentinel));
+                Assert.Equal(resultsSentinelBytes, File.ReadAllBytes(resultsSentinel));
             }
         }
         catch (Exception failure) { primary = failure; }
