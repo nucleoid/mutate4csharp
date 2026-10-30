@@ -241,9 +241,18 @@ internal sealed class ResolvedGraphCapture : IAsyncDisposable
             "-getItem:" + string.Join(',', ResolvedProjectCapture.ItemNames) }
             .Concat(CompilerFrameworkArguments(_firstTasks.TryGetValue(selection, out var firstActual) ? firstActual : null, selection.Framework)).ToArray();
         _budget.CheckWork();
+        // MSBuild's query logger shares the central event source with this
+        // logger and requests evaluation-finished properties. Pin the selected
+        // SDK's compatibility switch for this compiler process so the actual
+        // ProjectStarted instance still carries the evaluated context consumed
+        // by ResolvedGraphCscLogger. This changes event placement, not values.
+        var compilerEnvironment = new Dictionary<string, string?>(ExecutionEnvironment.ProcessEnvironment(_packages.Root))
+        {
+            ["MSBUILDLOGPROPERTIESANDITEMSAFTEREVALUATION"] = "0"
+        };
         var run = await ProcessTree.RunAsync(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet",
             arguments, Root, remaining < _budget.RemainingWork ? remaining : _budget.RemainingWork,
-            cancellationToken, ExecutionEnvironment.ProcessEnvironment(_packages.Root),
+            cancellationToken, compilerEnvironment,
             MaxQueryBytes, requireLinuxSessionIsolation: true, originalBudget: _budget);
         _actualProducerReturns.Add(run); // DATA; ProcessTree owns its actual process.
         if (run.TimedOut || run.ExitCode != 0)
