@@ -1,5 +1,11 @@
 # Verified support matrix
 
+The source32 resolved-graph implementation adds an explicit SDK401 capture/worker
+profile described in [resolved graph setup](resolved-graph-setup.md). Its new
+public dispatch, portable path mapping and compiler-source correspondence are
+pending fresh distinct review and genuine RED/GREEN/default103/package/Linux
+validation. They are not added to the verified rows below by source inspection.
+
 The release candidate is intentionally narrow. Evidence is scoped by mode; this is not a statement that nearby
 combinations probably work.
 
@@ -17,6 +23,42 @@ sandbox. The shipped orchestration script is currently a Linux Bash workflow and
 `stat`, and Python 3 with isolated imports for report validation and safe XML rewriting. Windows CI currently
 covers build/test configuration, not package creation or execution of the Bash orchestration script. Direct pack
 is intentionally refused on every platform.
+
+## Windows creation-owned process limits
+
+Actual Windows launches, including null-original legacy/v1 calls, require a private Job assigned to the suspended
+root before resume. Nested Jobs must be permitted by the host; assignment failure is a refusal, with no unowned
+fallback. This process boundary does not make trusted project/test execution a security sandbox.
+Default legacy Windows `TestRunner` calls add only per-invocation `-nodeReuse:false`,
+`-p:UseSharedCompilation=false`, `MSBUILDDISABLENODEREUSE=1` and `DOTNET_CLI_USE_MSBUILD_SERVER=0`
+to avoid persistent build servers inside that Job; these are not full strict private-package/ancestor-import
+isolation, do not stop global services, and leave Linux legacy arguments unchanged.
+
+For a null-original successful root, the one five-second output/descendant grace starts the same cleanup clock
+used by subsequent settlement and first-close. Its endpoint is the earlier of that clock plus five seconds and
+the original command start plus its timeout plus five seconds. There is no new command WORK allowance and no
+reset on cancellation, Job termination, output join, or close. Success requires actual Job emptiness, terminal
+output tasks and known returned first-closes. A detached child that closes its standard output/error but remains
+alive past this grace yields retained UNKNOWN, not a success-time kill or PASS. Even a child exiting near the
+endpoint may leave too little time for first-close; a late close remains conservative UNKNOWN under the existing
+post-close checks. No deadline check is waived merely because an OS close physically returned.
+
+An unsettled original owner remains rooted for the rest of that tool/test-host process, and overlapping working
+and `NUGET_PACKAGES` directories are refused removal. Independent later child exit does not issue a replacement
+owner or promote the old failed invocation. Killing the tool closes its retained kill-on-close Job; artifacts from
+failed/unknown invocations remain diagnostic DATA. A rollback to the earlier process dispatch changes this
+compatibility behavior but does not migrate or repair retained proof.
+
+The existing finite native profile also applies to legacy calls: at most 4096 environment entries, 32767 UTF-16
+characters independently per key/value, 4 Mi UTF-16 characters for the complete environment block, and 32766
+characters for the serialized executable/argument command line. Invalid or oversized inputs refuse before native
+birth. Environment overrides and inherited values are both checked. Graph-original work/cleanup behavior is
+unchanged; these limits do not promise that arbitrary background-server or detached-process workloads succeed.
+
+The terminal-grace native test requires the actual inbox Windows Script Host console executable (`cscript.exe`)
+to close both standard streams and publish its witness before the root exits. Missing/disabled WSH is explicit
+test setup failure, not skipped native evidence; the product does not acquire a WSH runtime dependency. Fresh
+hosted timing and full legacy CLI compatibility require their own actual results; source inspection is not proof.
 
 ## Representative observation
 

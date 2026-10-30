@@ -1,0 +1,1 @@
+<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Compile Include="../../shared/LinkedValue.cs" Link="LinkedValue.cs" /></ItemGroup></Project>

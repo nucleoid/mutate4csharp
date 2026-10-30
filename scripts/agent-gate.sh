@@ -521,7 +521,9 @@ bind_canonical_tool() {
 }
 
 prepare() {
-  [[ $# -eq 3 ]] || fail "prepare requires SOURCE_REPOSITORY WORKSPACE RECEIPT"
+  [[ $# -eq 3 || ( $# -eq 4 && "$4" = graph-sdk401 ) ]] ||
+    fail "prepare requires SOURCE_REPOSITORY WORKSPACE RECEIPT [graph-sdk401]"
+  local graph_profile=${4:-}
   local source_repository workspace receipt
   source_repository=$(canonical_boundary "$1" "source repository")
   workspace=$(canonical_new_target "$2" workspace)
@@ -587,6 +589,45 @@ prepare() {
     "-p:PackageOutputPath=$feed"
     "-p:Mutate4CSharpNoAutoResponse=true"
   )
+  if [[ "$graph_profile" = graph-sdk401 ]]; then
+    # Explicit additional profile. Original source/global103 and ordinary3arg
+    # preparation are unchanged. The SAME externally admitted owner contains all
+    # native descendants; these commands do not create another process runner.
+    local graph_root="$workspace/graph-deployment" graph_sdk="$workspace/graph-sdk"
+    local graph_build_repository="$workspace/graph-source"
+    mkdir -p "$graph_root/logger" "$graph_root/worker" "$graph_sdk"
+    # A separate complete clean commit clone avoids resolver ambiguity from the
+    # official repository's103 global.json. Its sole deliberate source-profile
+    # delta is the401 global; the original103 clone remains clean for packing.
+    git clone --quiet --no-local "$source_repository" "$graph_build_repository"
+    git -C "$graph_build_repository" checkout --quiet --detach "$source_commit"
+    [[ -z "$(git -C "$graph_build_repository" status --porcelain=v1 --untracked-files=all)" ]] || fail "graph source clone is not clean before its explicit SDK profile"
+    cp -- "$graph_build_repository/global.json" "$graph_sdk/original-global103.json"
+    printf '%s\n' '{"sdk":{"version":"10.0.401","rollForward":"disable","allowPrerelease":false}}' > "$graph_sdk/global.json"
+    cp -- "$graph_sdk/global.json" "$graph_build_repository/global.json"
+    [[ "$(cd "$graph_sdk" && trusted_dotnet --version)" = 10.0.401 ]] || fail "graph profile requires actual SDK401"
+    local role graph_project
+    for role in logger worker; do
+      if [[ "$role" = logger ]]; then graph_project=Mutate4CSharp.GraphCapture; else graph_project=Mutate4CSharp.GraphWorker; fi
+      mkdir -p "$workspace/graph-obj/$role"
+      (cd "$graph_sdk" && trusted_dotnet msbuild "$graph_build_repository/src/$graph_project/$graph_project.csproj" \
+        -noAutoResponse -restore -target:Build -m:1 -nr:false -p:Configuration=Release \
+        -p:UseSharedCompilation=false -p:BuildInParallel=false \
+        "${isolation[@]}" "-p:MSBuildProjectExtensionsPath=$workspace/graph-obj/$role/" \
+        "-p:BaseIntermediateOutputPath=$workspace/graph-obj/$role/" \
+        "-p:BaseOutputPath=$graph_root/$role/" "-p:OutputPath=$graph_root/$role/" \
+        "-p:SourceRevisionId=$source_commit" -p:GraphSelectedSdkVersion=10.0.401 \
+        -p:RestoreLockedMode=false "-p:RestoreConfigFile=$build_repository/NuGet.Config" \
+        "-p:RestorePackagesPath=$NUGET_PACKAGES")
+    done
+    git -C "$graph_build_repository" diff --exit-code -- . ':(exclude)global.json' >/dev/null || fail "graph build changed source outside the explicit SDK profile"
+    cmp -- "$graph_sdk/global.json" "$graph_build_repository/global.json" || fail "graph SDK profile changed during build"
+    python3 -I "$build_repository/scripts/create-graph-deployment.py" --host "$TRUSTED_DOTNET" \
+      --logger-dir "$graph_root/logger" --worker-dir "$graph_root/worker" \
+      --task "$(dirname "$TRUSTED_DOTNET")/sdk/10.0.401/Roslyn/Microsoft.Build.Tasks.CodeAnalysis.dll" \
+      --source-revision "$source_commit" --output "$graph_root/deployment.json"
+    isolation+=("-p:GraphDeploymentDirectory=$graph_root")
+  fi
   # -noAutoResponse disables MSBuild.rsp and Directory.Build.rsp discovery.
   (cd "$SDK_DIRECTORY" && trusted_dotnet msbuild "$project" -noAutoResponse -t:Restore -m:1 "-p:RestoreConfigFile=$build_repository/NuGet.Config" "-p:RestorePackagesPath=$NUGET_PACKAGES" -p:RestoreLockedMode=true "${isolation[@]}")
   (cd "$SDK_DIRECTORY" && trusted_dotnet msbuild "$project" -noAutoResponse -t:Pack -m:1 -p:Configuration=Release -p:NoRestore=true "-p:Version=$local_tool_version" "-p:SourceRevisionId=$source_commit" "-p:RepositoryCommit=$source_commit" "${isolation[@]}")

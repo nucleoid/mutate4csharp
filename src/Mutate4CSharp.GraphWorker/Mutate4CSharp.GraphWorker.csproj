@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Owned deployment only; this is not a second public mutation CLI/tool. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DefineConstants>$(DefineConstants);MUTATE_RESOLVED_GRAPH_WORKER</DefineConstants>
+    <StartupObject>Mutate4CSharp.ResolvedGraphWorkerProgram</StartupObject>
+    <UseAppHost>false</UseAppHost>
+    <PackAsTool>false</PackAsTool>
+    <IsPackable>false</IsPackable>
+    <UseSharedCompilation>false</UseSharedCompilation>
+  </PropertyGroup>
+  <ItemGroup><AssemblyMetadata Include="MutateSourceRevision" Value="$(SourceRevisionId)" /></ItemGroup>
+  <ItemGroup>
+<AssemblyMetadata Include="MutateSelectedSdk" Value="$(NETCoreSdkVersion)" />
+    <!-- Exactly the production mutation/declaration/identity algorithms. No copy. -->
+    <Compile Include="../Mutate4CSharp/*.cs" />
+    <Reference Include="Microsoft.CodeAnalysis">
+      <HintPath>$(MSBuildSDKsPath)/../Roslyn/bincore/Microsoft.CodeAnalysis.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Microsoft.CodeAnalysis.CSharp">
+      <HintPath>$(MSBuildSDKsPath)/../Roslyn/bincore/Microsoft.CodeAnalysis.CSharp.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+  <Target Name="RequireSelectedCompilerDeployment" BeforeTargets="CoreCompile">
+    <Error Condition="'@(PackageReference)' != ''" Text="Graph helper profile has no NuGet package dependencies; review locked restoration before adding one." />
+    <Error Condition="'$(GraphSelectedSdkVersion)' == '' Or '$(NETCoreSdkVersion)' != '$(GraphSelectedSdkVersion)'"
+           Text="Owned graph worker requires the exact actually selected SDK version; no compiler-package fallback." />
+  </Target>
+</Project>

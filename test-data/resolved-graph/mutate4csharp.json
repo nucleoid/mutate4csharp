@@ -1,0 +1,5 @@
+{
+  "version":2,"semanticProfile":"resolved-project-graph-v1",
+  "projects":[{"id":"production","project":"src/Production/Production.csproj","targetFramework":"net10.0","configuration":"Release","parseContext":"inherited-release","languageVersion":"14.0","nullable":"enable","sources":["src/Production/Subject.cs","src/Production/ReleaseOnly.cs","shared/LinkedValue.cs"],"sharedSources":["shared/LinkedValue.cs"],"testSuites":["unit"]}],
+  "testSuites":[{"id":"unit","path":"tests/Production.Tests/Production.Tests.csproj","runner":"vstest","framework":"net10.0","configuration":"Release","expectedMembers":["Production.Tests.dll"]}]
+}

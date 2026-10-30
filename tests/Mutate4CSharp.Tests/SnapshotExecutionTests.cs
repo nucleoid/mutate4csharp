@@ -130,17 +130,11 @@ public sealed class SnapshotExecutionTests : IDisposable
         var packages = Path.Combine(_repository.Root, "cancelled-packages");
         Directory.CreateDirectory(packages);
         File.WriteAllBytes(Path.Combine(packages, "package.bin"), new byte[1024]);
-        var method = typeof(ExecutionEnvironment).GetMethod("FingerprintPackages",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static,
-            [typeof(string), typeof(int), typeof(long), typeof(CancellationToken)]);
-        Assert.NotNull(method);
         using var cancelled = new CancellationTokenSource();
         cancelled.Cancel();
 
-        var failure = Assert.Throws<System.Reflection.TargetInvocationException>(() =>
-            method!.Invoke(null, [packages, int.MaxValue, long.MaxValue, cancelled.Token]));
-
-        Assert.IsType<OperationCanceledException>(failure.InnerException);
+        Assert.Throws<OperationCanceledException>(() =>
+            ExecutionEnvironment.FingerprintPackages(packages, cancellationToken: cancelled.Token));
     }
 
     [Fact]
@@ -609,8 +603,15 @@ public sealed class SnapshotExecutionTests : IDisposable
             _repository.Git("commit", "-m", "fixture");
 
             var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
-            var run = await ProcessTree.RunAsync(dotnet, ["build", "App.csproj", "-m:1", "--nologo"],
-                _repository.Root, TimeSpan.FromMinutes(2), CancellationToken.None);
+            var run = await ProcessTree.RunAsync(dotnet,
+                ["build", "App.csproj", "-m:1", "--nologo", "-nodeReuse:false",
+                    "-p:UseSharedCompilation=false"],
+                _repository.Root, TimeSpan.FromMinutes(2), CancellationToken.None,
+                environment: new Dictionary<string, string?>
+                {
+                    ["MSBUILDDISABLENODEREUSE"] = "1",
+                    ["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0"
+                });
             Assert.True(run.ExitCode == 0, run.StandardError + Environment.NewLine + run.StandardOutput);
             Assert.True(File.Exists(marker));
             var error = await Assert.ThrowsAsync<SnapshotCaptureException>(() => SnapshotCapture.CaptureAsync(
@@ -642,8 +643,15 @@ public sealed class SnapshotExecutionTests : IDisposable
             _repository.Git("commit", "-m", "fixture");
 
             var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
-            var run = await ProcessTree.RunAsync(dotnet, ["build", "App.csproj", "-m:1", "--nologo"],
-                _repository.Root, TimeSpan.FromMinutes(2), CancellationToken.None);
+            var run = await ProcessTree.RunAsync(dotnet,
+                ["build", "App.csproj", "-m:1", "--nologo", "-nodeReuse:false",
+                    "-p:UseSharedCompilation=false"],
+                _repository.Root, TimeSpan.FromMinutes(2), CancellationToken.None,
+                environment: new Dictionary<string, string?>
+                {
+                    ["MSBUILDDISABLENODEREUSE"] = "1",
+                    ["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0"
+                });
             Assert.True(run.ExitCode == 0, run.StandardError + Environment.NewLine + run.StandardOutput);
             var error = await Assert.ThrowsAsync<SnapshotCaptureException>(() => SnapshotCapture.CaptureAsync(
                 _repository.Root, "HEAD", [], SnapshotCaptureOptions.Default, CancellationToken.None));

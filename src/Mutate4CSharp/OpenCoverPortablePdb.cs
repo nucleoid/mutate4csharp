@@ -20,7 +20,7 @@ internal sealed class OpenCoverPortablePdb
     private OpenCoverPortablePdb(string root) => _root = root;
 
     internal static OpenCoverPortablePdb? Load(XElement module, SnapshotClone clone, InputSnapshot snapshot,
-        Action<string>? diagnostic = null)
+        Action<string>? diagnostic = null, bool resolvedGraph = false)
     {
         try
         {
@@ -83,7 +83,9 @@ internal sealed class OpenCoverPortablePdb
             foreach (var handle in reader.Documents)
             {
                 var document = reader.GetDocument(handle);
-                var file = Path.GetFullPath(reader.GetString(document.Name), clone.Root);
+                var documentName = reader.GetString(document.Name);
+                if (resolvedGraph && documentName.StartsWith(ResolvedGraphPathProfile.Packages + "/", StringComparison.Ordinal)) continue;
+                var file = Path.GetFullPath(resolvedGraph ? ResolvedGraphPathProfile.UnmapSource(documentName, clone.Root) : documentName, clone.Root);
                 EnsureWithin(clone.Root, file);
                 var relative = Path.GetRelativePath(clone.Root, file).Replace('\\', '/');
                 if (!captured.TryGetValue(relative, out var input)) continue;

@@ -1,0 +1,9 @@
+<Project>
+  <Target Name="EmitActualGraphFixtureSource" BeforeTargets="CoreCompile" Condition="'$(MSBuildProjectName)' == 'Production'">
+    <PropertyGroup><_FixtureGenerated>$(IntermediateOutputPath)OwnedGraphGenerated.cs</_FixtureGenerated></PropertyGroup>
+    <MakeDir Directories="$(IntermediateOutputPath)" />
+    <WriteLinesToFile File="$(_FixtureGenerated)" Overwrite="true" Encoding="UTF-8"
+      Lines="namespace GraphFixture.Production%3B internal static class GeneratedOffset { internal const int Value = 1%3B }" />
+    <ItemGroup><Compile Include="$(_FixtureGenerated)" /></ItemGroup>
+  </Target>
+</Project>

@@ -143,6 +143,16 @@ internal static class ScopePlanner
                             $"{basePath} left production scope even though {path} is excluded as {disposition.ReasonCode}."))]));
                 if (!disposition.Overridden) continue;
             }
+            if (configuration.IsResolvedGraph)
+            {
+                // The captured compiler owns syntax and inherited parse options.
+                // The legacy declaration parser cannot safely narrow this scope.
+                productionPaths.Add(path);
+                files.Add(new(path, change.BasePath, change.Kind, [], [], true,
+                    [new("RESOLVED_GRAPH_SCOPE_EXPANSION", Bound(
+                        $"{path} requires complete configured project scope with the captured compiler context."))]));
+                continue;
+            }
             var comparison = DeclarationCatalog.Compare(path, change.BaseBytes, change.CurrentBytes);
             var fileReasons = comparison.Reasons.ToList();
             var expansion = comparison.RequiresProjectExpansion;

@@ -50,7 +50,7 @@ internal static class MutationExecutor
                 }
                 finally
                 {
-                    try { if (Directory.Exists(resultDirectory)) Directory.Delete(resultDirectory, true); } catch { }
+                    TryRemoveDirectory(resultDirectory, worker.OwnedRoot);
                 }
             }
             catch (OperationCanceledException) { results[index] = new(site, MutantStatus.Error, TimeSpan.Zero, "cancelled"); }
@@ -108,8 +108,23 @@ internal static class MutationExecutor
         }
         finally
         {
-            try { if (Directory.Exists(runRoot)) Directory.Delete(runRoot, recursive: true); } catch { }
+            TryRemoveDirectory(runRoot, runRoot);
         }
+    }
+
+    internal static void TryRemoveDirectory(string directory, string ownershipScope)
+    {
+        try
+        {
+            // Results can be a sibling of the retained working directory.
+            // Check the complete caller-owned scope before any dependent deletion.
+            WindowsProcessTree.AssertDirectoryMayBeRemoved(ownershipScope);
+            ProcessTree.LinuxOriginalProcessFrame.AssertDirectoryMayBeRemoved(ownershipScope);
+            WindowsProcessTree.AssertDirectoryMayBeRemoved(directory);
+            ProcessTree.LinuxOriginalProcessFrame.AssertDirectoryMayBeRemoved(directory);
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+        catch { } // Keep the existing best-effort cleanup and the original execution failure.
     }
 
     internal static MutantStatus Classify(TestRunResult run)

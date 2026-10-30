@@ -8,12 +8,15 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
     private readonly IReadOnlyDictionary<string, SuiteExecution> _suites;
     private readonly IReadOnlyDictionary<string, bool> _healthyControls;
     private readonly TimeProvider _timeProvider;
+    private readonly bool _resolvedGraph;
+    private readonly ResolvedGraphBudget? _originalBudget;
     private readonly Func<TestRunResult, bool, string, string, CompileEvidence> _compilerEvidenceEvaluator;
 
     public StrictMutationExecutor(InputSnapshot snapshot, FrozenExecutionEnvironment environment,
         IReadOnlyList<MutationCandidate> candidates, IReadOnlyList<SuiteExecution> suites,
         IReadOnlyDictionary<string, bool> healthyControls, TimeProvider? timeProvider = null,
-        Func<TestRunResult, bool, string, string, CompileEvidence>? compilerEvidenceEvaluator = null)
+        Func<TestRunResult, bool, string, string, CompileEvidence>? compilerEvidenceEvaluator = null, bool resolvedGraph = false,
+        ResolvedGraphBudget? originalBudget = null)
     {
         _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
         _environment = environment ?? throw new ArgumentNullException(nameof(environment));
@@ -24,6 +27,10 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
         _suites = suites.ToDictionary(item => item.Identity, StringComparer.Ordinal);
         _healthyControls = healthyControls;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        if (resolvedGraph && originalBudget is null)
+            throw new EvaluationContractException("Same live graph original required before mutant birth.");
+        _resolvedGraph = resolvedGraph;
+        _originalBudget = originalBudget;
         _compilerEvidenceEvaluator = compilerEvidenceEvaluator ??
             ((run, healthy, targetPath, workingDirectory) =>
                 CompilerEvidence.Evaluate(run, healthy, targetPath, workingDirectory));
@@ -54,9 +61,9 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
         try
         {
             worker = await SnapshotWorkspace.CreateCloneAsync(_snapshot,
-                "strict-mutant-" + candidate.EvaluationUnitId[^12..], cancellationToken);
+                "strict-mutant-" + candidate.EvaluationUnitId[^12..], cancellationToken, _originalBudget);
             packages = await _environment.CreateWorkerPackageCacheAsync(
-                "strict-mutant-" + candidate.EvaluationUnitId[^12..], cancellationToken);
+                "strict-mutant-" + candidate.EvaluationUnitId[^12..], cancellationToken, _originalBudget);
             completed = await ExecuteInOwnedResourcesAsync(worker, packages);
         }
         catch (Exception ex) { failure = ex; }
@@ -86,7 +93,7 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
                 if (remaining <= TimeSpan.Zero)
                     return Timeout(mutation, suite.Identity);
                 await _environment.RestoreWorkerAsync(ownedWorker, suite.Path, ownedPackages, remaining,
-                    cancellationToken, suite.Framework, suite.Configuration);
+                    cancellationToken, suite.Framework, suite.Configuration, originalBudget: _originalBudget);
                 remaining = timeout - (_timeProvider.GetUtcNow() - started);
                 if (remaining <= TimeSpan.Zero)
                     return Timeout(mutation, suite.Identity);
@@ -97,10 +104,10 @@ internal sealed class StrictMutationExecutor : IIsolatedMutationExecutor
                     collectCoverage: false, cancellationToken,
                     ExecutionEnvironment.ProcessEnvironment(ownedPackages.Root), noRestore: true,
                     requireExecutionBoundary: true, framework: suite.Framework,
-                    configuration: suite.Configuration);
+                    configuration: suite.Configuration, resolvedGraph: _resolvedGraph, originalBudget: _originalBudget);
                 if (!string.Equals(_environment.PackageFingerprint,
                         ExecutionEnvironment.FingerprintPackages(ownedPackages.Root,
-                            cancellationToken: cancellationToken), StringComparison.Ordinal))
+                            cancellationToken: cancellationToken, originalBudget: _originalBudget), StringComparison.Ordinal))
                     throw new ExecutionBoundaryIntegrityException(
                         "Mutant execution changed its private frozen package-cache copy.");
                 var compile = _compilerEvidenceEvaluator(run,
