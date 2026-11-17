@@ -178,6 +178,8 @@ internal static class ReportWriter
              report.Counts.Executed == 0 || report.Counts.Killed == 0 || report.Suites.Count == 0))
             throw new EvaluationContractException(
                 "PASS requires nonzero enumerated, selected, executed, killed, and suite evidence.");
+        if (report.Outcome == EvaluationOutcome.Pass)
+            foreach (var suite in report.Suites) ValidatePassSuite(suite);
         var expected = EvaluationReducer.Reduce(new(report.Baseline, report.Counts.Enumerated,
             report.Units, report.Policy.AllowNotApplicable, report.IncompleteConditions));
         if (report.Outcome != expected.Outcome || report.ExitCode != expected.ExitCode)
@@ -195,6 +197,36 @@ internal static class ReportWriter
         if (values.Length != 1)
             throw new EvaluationContractException("Configured suite identity evidence is incomplete or ambiguous.");
         return values[0];
+    }
+
+    private static void ValidatePassSuite(SuiteEvidence suite)
+    {
+        var baselines = suite.Evidence.Where(item => item.Kind == "SUITE_BASELINE").ToArray();
+        if (baselines.Length != 1 || baselines[0].Diagnostics is null || suite.Evidence.Count != 1)
+            throw new EvaluationContractException(
+                "PASS suite evidence requires one exact fresh baseline record.");
+        var baseline = baselines[0];
+        if (SingleDiagnostic(baseline, "disposition=") != SuiteRunDisposition.Passed.ToString() ||
+            !int.TryParse(SingleDiagnostic(baseline, "tests="),
+                System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture,
+                out var tests) || tests <= 0 ||
+            !EvaluationFingerprint.IsSha256(SingleDiagnostic(baseline, "coverageSha256=")) ||
+            !long.TryParse(SingleDiagnostic(baseline, "coverageLength="),
+                System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture,
+                out var coverageLength) || coverageLength <= 0 ||
+            SingleDiagnostic(baseline, "pathMap=") != "baseline-clone-to-snapshot-v1")
+            throw new EvaluationContractException(
+                "PASS suite evidence requires green tests and fresh exact coverage provenance.");
+        var accounted = ParseMembers(SingleDiagnostic(baseline, "accountedMembers="));
+        var expected = ParseMembers(SingleDiagnostic(baseline, "expectedMembers="));
+        if (accounted.Length == 0 || expected.Length == 0 ||
+            !accounted.Order(StringComparer.OrdinalIgnoreCase)
+                .SequenceEqual(expected.Order(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase))
+            throw new EvaluationContractException(
+                "PASS suite evidence must account for every expected test member exactly.");
+
+        static string[] ParseMembers(string value) => value == "<none>" ? [] :
+            value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
     private static string SuiteSetIdentity(IEnumerable<string> suiteIds)
